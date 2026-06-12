@@ -116,9 +116,9 @@ class CompressConfig:
 
     # How aggressive
     target_ratio: float | None = None
-    """Keep ratio for Kompress. None = model decides (~15% kept, aggressive).
+    """Keep ratio for the text compressor. None = model decides (~15% kept, aggressive).
     0.5 = keep 50% (safe for documents). 0.7 = keep 70% (conservative).
-    Only affects Kompress (text compression). SmartCrusher (JSON) has its
+    Only affects the text compressor. SmartCrusher (JSON) has its
     own logic based on array dedup."""
 
     min_tokens_to_compress: int = 250
@@ -128,10 +128,14 @@ class CompressConfig:
 
     # Model variant
     kompress_model: str | None = None
-    """Kompress model ID. None = default (chopratejas/kompress-v2-base).
+    """English text compressor model ID. None = default (chopratejas/kompress-v2-base).
     Set to a HuggingFace model ID for domain-specific compression.
     Set to 'disabled' to skip ML compression entirely
     (only SmartCrusher + CacheAligner will run)."""
+
+    kompress_zh_model: str | None = None
+    """Chinese text compressor adapter ID. None = default (Deserveall/kompress_zh-baseline-v1-lora).
+    Used only when the router detects Chinese-dominant plain text."""
 
 
 @dataclass
@@ -246,6 +250,7 @@ def compress(
             protect_analysis_context=cfg.protect_analysis_context,
             min_tokens_to_compress=cfg.min_tokens_to_compress,
             kompress_model=cfg.kompress_model,
+            kompress_zh_model=cfg.kompress_zh_model,
         )
 
         tokens_before = result.tokens_before
@@ -340,7 +345,7 @@ def _get_pipeline() -> Any:
         # Default pipeline: CacheAligner → ContentRouter
         # CacheAligner: stabilizes prefix for provider KV cache hits
         # ContentRouter: routes to the right compressor per content type
-        #   (SmartCrusher for JSON, CodeCompressor for code, Kompress for text)
+        #   (SmartCrusher for JSON, CodeCompressor for code, text compressor for prose)
         # Phase B PR-B1 retired the trailing context-management stage —
         # live-zone-only compression never drops messages.
         _pipeline = TransformPipeline()

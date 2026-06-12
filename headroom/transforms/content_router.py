@@ -53,6 +53,10 @@ from .content_detector import detect_content_type as _regex_detect_content_type
 
 logger = logging.getLogger(__name__)
 
+_CJK_CHAR_PATTERN = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
+_LATIN_WORD_PATTERN = re.compile(r"[A-Za-z]{2,}")
+_PATHLIKE_PATTERN = re.compile(r"(https?://|[A-Za-z]:\\|/|\\\\|\.py\b|\.md\b|\.json\b|\.yaml\b|\.yml\b)")
+
 
 def _router_debug_dumps(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, default=str, separators=(",", ":"))
@@ -89,6 +93,26 @@ def _mixed_indicators(content: str) -> dict[str, bool]:
         "has_prose": len(_PROSE_PATTERN.findall(content)) > 5,
         "has_search_results": bool(_SEARCH_RESULT_PATTERN.search(content)),
     }
+
+
+def _is_chinese_dominant_text(content: str, *, min_cjk_chars: int = 10, ratio: float = 0.30) -> bool:
+    """Return True when a plain-text block is Chinese-dominant.
+
+    Path-like fragments, URLs, and file suffixes are allowed to coexist with
+    Chinese prose and should not force the router back onto the English path.
+    """
+    if not content:
+        return False
+
+    cjk_chars = len(_CJK_CHAR_PATTERN.findall(content))
+    if cjk_chars < min_cjk_chars:
+        return False
+
+    latin_words = len(_LATIN_WORD_PATTERN.findall(content))
+    pathlike_hits = len(_PATHLIKE_PATTERN.findall(content))
+    adjusted_latin = max(0, latin_words - pathlike_hits)
+    score = cjk_chars / max(1, cjk_chars + adjusted_latin * 1.5)
+    return score >= ratio
 
 
 def _section_debug(section: ContentSection, index: int) -> dict[str, Any]:
@@ -764,6 +788,8 @@ class ContentRouter(Transform):
         self._diff_compressor: Any = None
         self._html_extractor: Any = None
         self._kompress: Any = None
+        self._kompress_zh: Any = None
+        self._kompress_zh_adapter_model_id: str | None = None
 
         # TOIN integration for cross-strategy learning
         self._toin: Any = None
@@ -1447,10 +1473,10 @@ class ContentRouter(Transform):
     def _try_ml_compressor(
         self, content: str, context: str, question: str | None = None
     ) -> tuple[str, int]:
-        """ML-based compression using Kompress.
+        """ML-based text compression with language-aware routing.
 
-        Kompress (ModernBERT, trained on 330K structured tool outputs)
-        auto-downloads from HuggingFace on first use. No heuristic fallback.
+        English or non-Chinese-dominant prose stays on the original Kompress
+        path. Chinese-dominant plain text is routed to kompress_zh.
 
         Custom/workflow XML tags (<system-reminder>, <tool_call>, <thinking>)
         are protected before compression and restored after.  Standard HTML
@@ -1481,9 +1507,9 @@ class ContentRouter(Transform):
         compressed: str | None = None
         compressed_tokens: int | None = None
 
-        # Primary: Kompress — downloads from chopratejas/kompress-v2-base on first use
         if self.config.enable_kompress:
-            compressor = self._get_kompress()
+            use_kompress_zh = _is_chinese_dominant_text(text_to_compress)
+            compressor = self._get_kompress_zh() if use_kompress_zh else self._get_kompress()
             if compressor:
                 try:
                     result = compressor.compress(
@@ -1495,7 +1521,11 @@ class ContentRouter(Transform):
                     compressed = result.compressed
                     compressed_tokens = result.compressed_tokens
                 except Exception as e:
-                    logger.warning("Kompress failed: %s", e)
+                    logger.warning(
+                        "%s failed: %s",
+                        "kompress_zh" if use_kompress_zh else "Kompress",
+                        e,
+                    )
 
         if compressed is None:
             return content, len(content.split())
@@ -1733,6 +1763,32 @@ class ContentRouter(Transform):
                 logger.debug("Kompress dependencies not available")
         return self._kompress
 
+    def _get_kompress_zh(self) -> Any:
+        """Get KompressZhCompressor (lazy load) for Chinese-dominant plain text."""
+        adapter_model_id = getattr(self, "_runtime_kompress_zh_model", None)
+        if adapter_model_id == "disabled":
+            return None
+
+        if self._kompress_zh is None or adapter_model_id != self._kompress_zh_adapter_model_id:
+            try:
+                from .kompress_zh_compressor import (
+                    KompressZhCompressor,
+                    KompressZhConfig,
+                    is_kompress_zh_available,
+                )
+
+                if is_kompress_zh_available():
+                    if adapter_model_id:
+                        self._kompress_zh = KompressZhCompressor(
+                            KompressZhConfig(adapter_model_id=adapter_model_id)
+                        )
+                    else:
+                        self._kompress_zh = KompressZhCompressor()
+                    self._kompress_zh_adapter_model_id = adapter_model_id
+            except ImportError:
+                logger.debug("kompress_zh dependencies not available")
+        return self._kompress_zh
+
     def _get_image_optimizer(self) -> Any:
         """Create an ImageCompressor for one optimization pass.
 
@@ -1900,6 +1956,7 @@ class ContentRouter(Transform):
         # Store runtime options on self for access by _route_and_compress_block
         self._runtime_target_ratio: float | None = kwargs.get("target_ratio")
         self._runtime_kompress_model: str | None = kwargs.get("kompress_model")
+        self._runtime_kompress_zh_model: str | None = kwargs.get("kompress_zh_model")
         # F2.2: capture the per-request CompressionPolicy so
         # ``_record_to_toin`` can gate TOIN writes on
         # ``policy.toin_read_only``. ``None`` when the caller didn't

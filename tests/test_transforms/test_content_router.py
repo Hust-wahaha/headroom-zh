@@ -9,14 +9,18 @@ Comprehensive tests covering:
 """
 
 import pytest
+import sys
+from types import SimpleNamespace
 
 from headroom.transforms.content_detector import ContentType
+from headroom.transforms.content_detector import DetectionResult
 from headroom.transforms.content_router import (
     CompressionStrategy,
     ContentRouter,
     ContentRouterConfig,
     RouterCompressionResult,
     RoutingDecision,
+    _is_chinese_dominant_text,
 )
 
 # =============================================================================
@@ -313,6 +317,20 @@ class TestStrategyDetection:
         strategy = router._determine_strategy(text)
         assert strategy in CompressionStrategy
 
+    def test_chinese_dominant_text_detector_true(self):
+        content = (
+            "请按以下规则继续推进：保留 scripts/eval_compare_full.py、"
+            "Qwen/Qwen3.5-0.8B、language-model-only 与 http://localhost:8080。"
+        )
+        assert _is_chinese_dominant_text(content) is True
+
+    def test_chinese_dominant_text_detector_false_for_english(self):
+        content = (
+            "Keep the benchmark contract unchanged. Use scripts/eval_compare_full.py "
+            "and preserve max_tokens, model ids, and URLs."
+        )
+        assert _is_chinese_dominant_text(content) is False
+
 
 # =============================================================================
 # TestContentRouter
@@ -361,6 +379,83 @@ class TestContentRouter:
     def test_name_property(self, router):
         """Router has correct name."""
         assert router.name == "content_router"
+
+    def test_plain_english_text_uses_original_kompress(self, router, monkeypatch):
+        english = (
+            "Please keep the benchmark contract stable and preserve file paths, "
+            "commands, model ids, and URLs while making this passage shorter."
+        )
+
+        def fake_kompress():
+            return SimpleNamespace(
+                compress=lambda content, **kwargs: SimpleNamespace(
+                    compressed="english compressed",
+                    compressed_tokens=2,
+                )
+            )
+
+        monkeypatch.setattr(router, "_get_kompress", fake_kompress)
+        monkeypatch.setattr(router, "_get_kompress_zh", lambda: None)
+        monkeypatch.setattr(router, "_record_to_toin", lambda **kwargs: None)
+        monkeypatch.setitem(
+            sys.modules,
+            "headroom.transforms.tag_protector",
+            SimpleNamespace(
+                protect_tags=lambda text, compress_tagged_content=False: (text, []),
+                restore_tags=lambda text, protected_blocks: text,
+            ),
+        )
+        monkeypatch.setattr(
+            "headroom.transforms.content_router._detect_content",
+            lambda content: DetectionResult(
+                content_type=ContentType.PLAIN_TEXT,
+                confidence=1.0,
+                metadata={},
+            ),
+        )
+
+        result = router.compress(english)
+        assert result.compressed == "english compressed"
+        assert result.strategy_used == CompressionStrategy.TEXT
+
+    def test_chinese_dominant_text_uses_kompress_zh(self, router, monkeypatch):
+        chinese = (
+            "当前统一基线评测入口是 scripts/eval_compare_full.py，"
+            "请保留路径、命令、Qwen/Qwen3.5-0.8B 和 language-model-only 约束。"
+        )
+
+        monkeypatch.setattr(router, "_get_kompress", lambda: None)
+        monkeypatch.setattr(router, "_record_to_toin", lambda **kwargs: None)
+        monkeypatch.setitem(
+            sys.modules,
+            "headroom.transforms.tag_protector",
+            SimpleNamespace(
+                protect_tags=lambda text, compress_tagged_content=False: (text, []),
+                restore_tags=lambda text, protected_blocks: text,
+            ),
+        )
+        monkeypatch.setattr(
+            router,
+            "_get_kompress_zh",
+            lambda: SimpleNamespace(
+                compress=lambda content, **kwargs: SimpleNamespace(
+                    compressed="中文压缩输出",
+                    compressed_tokens=2,
+                )
+            ),
+        )
+        monkeypatch.setattr(
+            "headroom.transforms.content_router._detect_content",
+            lambda content: DetectionResult(
+                content_type=ContentType.PLAIN_TEXT,
+                confidence=1.0,
+                metadata={},
+            ),
+        )
+
+        result = router.compress(chinese)
+        assert result.compressed == "中文压缩输出"
+        assert result.strategy_used == CompressionStrategy.TEXT
 
 
 # =============================================================================
