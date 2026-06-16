@@ -56,6 +56,7 @@ logger = logging.getLogger(__name__)
 _CJK_CHAR_PATTERN = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
 _LATIN_WORD_PATTERN = re.compile(r"[A-Za-z]{2,}")
 _PATHLIKE_PATTERN = re.compile(r"(https?://|[A-Za-z]:\\|/|\\\\|\.py\b|\.md\b|\.json\b|\.yaml\b|\.yml\b)")
+_WHITESPACE_PATTERN = re.compile(r"\s+")
 
 
 def _router_debug_dumps(value: Any) -> str:
@@ -115,6 +116,14 @@ def _is_chinese_dominant_text(content: str, *, min_cjk_chars: int = 10, ratio: f
     return score >= ratio
 
 
+def _estimate_text_tokens(content: str) -> int:
+    if not content:
+        return 0
+    if _is_chinese_dominant_text(content, min_cjk_chars=1, ratio=0.15):
+        return len(_WHITESPACE_PATTERN.sub("", content))
+    return len(content.split())
+
+
 def _section_debug(section: ContentSection, index: int) -> dict[str, Any]:
     return {
         "index": index,
@@ -125,7 +134,7 @@ def _section_debug(section: ContentSection, index: int) -> dict[str, Any]:
         "is_code_fence": getattr(section, "is_code_fence", False),
         "chars": len(section.content),
         "bytes": len(section.content.encode("utf-8", errors="replace")),
-        "tokens_estimate": len(section.content.split()),
+        "tokens_estimate": _estimate_text_tokens(section.content),
         "json_shape": _json_shape(section.content),
         "content": section.content,
     }
@@ -927,7 +936,7 @@ class ContentRouter(Transform):
             {
                 "chars": len(content),
                 "bytes": len(content.encode("utf-8", errors="replace")),
-                "tokens_estimate": len(content.split()),
+                "tokens_estimate": _estimate_text_tokens(content),
                 "json_shape": _json_shape(content),
                 "mixed_indicators": _mixed_indicators(content),
                 "context_chars": len(context),
@@ -1131,7 +1140,7 @@ class ContentRouter(Transform):
             strategy = self._strategy_from_detection_type(section.content_type)
 
             # Compress section
-            original_tokens = len(section.content.split())
+            original_tokens = _estimate_text_tokens(section.content)
             compressed_content, compressed_tokens, _section_chain = self._apply_strategy_to_content(
                 section.content,
                 strategy,
@@ -1184,7 +1193,7 @@ class ContentRouter(Transform):
         Returns:
             RouterCompressionResult.
         """
-        original_tokens = len(content.split())
+        original_tokens = _estimate_text_tokens(content)
 
         compressed, compressed_tokens, strategy_chain = self._apply_strategy_to_content(
             content, strategy, context, question=question, bias=bias
@@ -1234,7 +1243,7 @@ class ContentRouter(Transform):
             final compressor without parsing decision_reason strings.
         """
         # Track original tokens for TOIN recording
-        original_tokens = len(content.split())
+        original_tokens = _estimate_text_tokens(content)
         compressed: str | None = None
         compressed_tokens: int | None = None
         requested_strategy = strategy
@@ -1273,7 +1282,7 @@ class ContentRouter(Transform):
                         result = crusher.crush(content, query=context, bias=bias)
                         compressed, compressed_tokens = (
                             result.compressed,
-                            len(result.compressed.split()),
+                            _estimate_text_tokens(result.compressed),
                         )
                         smart_crusher_fallback = False
                         if result.compressed == content:
@@ -1299,7 +1308,7 @@ class ContentRouter(Transform):
                         result = compressor.compress(content, context=context, bias=bias)
                         compressed, compressed_tokens = (
                             result.compressed,
-                            len(result.compressed.split()),
+                            _estimate_text_tokens(result.compressed),
                         )
                         decision_reason = "search_compressor"
 
@@ -1315,7 +1324,7 @@ class ContentRouter(Transform):
                         # ratios meaningless against `original_tokens`.
                         compressed, compressed_tokens = (
                             result.compressed,
-                            len(result.compressed.split()),
+                            _estimate_text_tokens(result.compressed),
                         )
                         decision_reason = "log_compressor"
 
@@ -1326,7 +1335,7 @@ class ContentRouter(Transform):
                     result = compressor.compress(content, context=context)
                     compressed, compressed_tokens = (
                         result.compressed,
-                        len(result.compressed.split()),
+                        _estimate_text_tokens(result.compressed),
                     )
                     decision_reason = "diff_compressor"
 
@@ -1338,7 +1347,7 @@ class ContentRouter(Transform):
                         result = extractor.extract(content)
                         compressed = result.extracted
                         # Estimate tokens from extracted text (simple word count)
-                        compressed_tokens = len(compressed.split()) if compressed else 0
+                        compressed_tokens = _estimate_text_tokens(compressed) if compressed else 0
                         decision_reason = "html_extractor"
 
             elif strategy == CompressionStrategy.KOMPRESS:
@@ -1400,7 +1409,9 @@ class ContentRouter(Transform):
                             except Exception as exc:  # noqa: BLE001
                                 logger.debug("Log fallback failed for SMART_CRUSHER: %s", exc)
                             else:
-                                log_compressed_tokens = len(log_result.compressed.split())
+                                log_compressed_tokens = _estimate_text_tokens(
+                                    log_result.compressed
+                                )
                                 if log_compressed_tokens < compressed_tokens:
                                     compressed = log_result.compressed
                                     compressed_tokens = log_compressed_tokens
@@ -1500,7 +1511,7 @@ class ContentRouter(Transform):
 
         # If the entire content is custom tags with nothing to compress
         if protected and not cleaned.strip():
-            return content, len(content.split())
+            return content, _estimate_text_tokens(content)
 
         # Use the cleaned (tag-free) text for compression
         text_to_compress = cleaned if protected else content
@@ -1528,14 +1539,14 @@ class ContentRouter(Transform):
                     )
 
         if compressed is None:
-            return content, len(content.split())
+            return content, _estimate_text_tokens(content)
 
         # Restore protected tag blocks into the compressed text
         if protected:
             compressed = restore_tags(compressed, protected)
-            compressed_tokens = len(compressed.split())
+            compressed_tokens = _estimate_text_tokens(compressed)
 
-        return compressed, compressed_tokens or len(compressed.split())
+        return compressed, compressed_tokens or _estimate_text_tokens(compressed)
 
     def _strategy_from_detection_type(self, content_type: ContentType) -> CompressionStrategy:
         """Get strategy from ContentType enum."""

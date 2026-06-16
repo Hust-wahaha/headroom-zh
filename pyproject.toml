@@ -92,6 +92,7 @@ ml = [
     "torch>=2.0.0",
     "transformers>=4.30.0,<6.0",
     "peft>=0.11.0,<1.0",
+    "ms-swift>=4.1.3",
     # transformers >= 5.x requires huggingface-hub >= 1.5.0,<2.0; pinning
     # the floor here prevents Kompress from silently falling back to
     # "unavailable" when a sibling install (e.g. `pip install
