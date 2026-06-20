@@ -1,45 +1,32 @@
-# docs
+# Headroom ZH Docs
 
-This is a Next.js application generated with
-[Create Fumadocs](https://github.com/fuma-nama/fumadocs).
+This directory contains the documentation site for `headroom-zh-audit`.
 
-Run development server:
+## Local development
 
 ```bash
+npm install
 npm run dev
-# or
-pnpm dev
-# or
-yarn dev
 ```
 
-Open http://localhost:3000 with your browser to see the result.
+Open `http://localhost:3000`.
 
-## Explore
+## Project focus
 
-In the project, you can see:
+- `headroom` stays the host framework name.
+- `kompress_zh` is the Chinese plain-text compression branch.
+- The current demo path is the AutoDL smoke flow on port `8790`.
 
-- `lib/source.ts`: Code for content source adapter, [`loader()`](https://fumadocs.dev/docs/headless/source-api) provides the interface to access your content.
-- `lib/layout.shared.tsx`: Shared options for layouts, optional but preferred to keep.
+## Where to look
 
-| Route                     | Description                                            |
-| ------------------------- | ------------------------------------------------------ |
-| `app/(home)`              | The route group for your landing page and other pages. |
-| `app/docs`                | The documentation layout and pages.                    |
-| `app/api/search/route.ts` | The Route Handler for search.                          |
-
-### Fumadocs MDX
-
-A `source.config.ts` config file has been included, you can customise different options like frontmatter schema.
-
-Read the [Introduction](https://fumadocs.dev/docs/mdx) for further details.
-
-## Learn More
-
-To learn more about Next.js and Fumadocs, take a look at the following
-resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js
-  features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-- [Fumadocs](https://fumadocs.dev) - learn about Fumadocs
+- `scripts/README.md` for runnable smoke and replay helpers.
+- `docs/HEADROOM_ZH_REPLACEMENT_CHECKLIST.md` for the replacement boundary.
+- `docs/HEADROOM_ZH_STATUS_2026-06-20.md` for the latest real Codex + AutoDL
+  verification state.
+- `docs/HEADROOM_ZH_STATUS_2026-06-17.md` for the current AutoDL status and
+  demo-case conclusions.
+- `docs/HEADROOM_ZH_AUTODL_DEMO_RUNBOOK.md` for the terminal + browser demo
+  playback path.
+- `docs/HEADROOM_ZH_DEMO_PLAN.md` for the Chinese demo workload plan.
+- `README.md` at repo root for the project-facing overview.
+- `demo_assets/headroom_zh_agent_cases/` for the actual Chinese demo materials.

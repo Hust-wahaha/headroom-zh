@@ -69,6 +69,76 @@ captured traffic to replay instead.
 A smoke test at `tests/test_scripts/test_repro_codex_replay_smoke.py`
 exercises the script against a mock FastAPI server on every PR.
 
+## AutoDL smoke for Headroom ZH
+
+`smoke_autodl_headroom.py` is the narrow end-to-end check for the Chinese
+compression deployment path. It starts a mock upstream, launches the local
+proxy on `8790` by default, and verifies:
+
+- `/readyz`
+- `/dashboard`
+- `/stats-history`
+- `/v1/chat/completions`
+
+### Run
+
+```bash
+python scripts/smoke_autodl_headroom.py
+
+# Stronger check: require the Chinese route to record a kompress hit.
+python scripts/smoke_autodl_headroom.py --expect-kompress
+
+# Keep the proxy running so CodeX / CC can be pointed at it manually.
+python scripts/smoke_autodl_headroom.py --keep-running
+```
+
+Defaults:
+
+- proxy port: `8790`
+- mock upstream port: `8791`
+- Rust core opt-out: `HEADROOM_REQUIRE_RUST_CORE=false`
+- repo root auto-detection: the script searches upward for `pyproject.toml`
+  and `headroom/`, so it also works from a flattened AutoDL copy.
+
+The script is intentionally separate from the reconnect-storm harness so the
+demo path stays short and reproducible.
+
+## AutoDL Codex GPT-5.4 demo bootstrap
+
+`start_autodl_codex_gpt54_demo.sh` prepares the current recommended recording
+path on the AutoDL machine:
+
+- starts the proxy in `screen`
+- points OpenAI-compatible traffic at `https://yunwu.ai/v1`
+- resets a per-port workspace so dashboard starts from zero
+- writes a Codex provider config with `env_key = "OPENAI_API_KEY"`
+- isolates `HOME` / `CODEX_HOME` per port so stale `~/.codex` state does not
+  pollute recordings
+- keeps `rtk` on `PATH` and allows a longer cold-start wait for `kompress_zh`
+
+### Run
+
+```bash
+export OPENAI_API_KEY='your_yunwu_key'
+bash scripts/start_autodl_codex_gpt54_demo.sh
+```
+
+Then launch Codex in the foreground:
+
+```bash
+bash scripts/launch_autodl_codex_gpt54.sh
+```
+
+This script is intentionally Codex-only.
+Do not switch that demo path to DeepSeek, because Codex depends on
+`/v1/responses`, and the Yunwu DeepSeek route currently does not support that
+API.
+
+Current docs for this path:
+
+- `docs/HEADROOM_ZH_STATUS_2026-06-20.md`
+- `docs/HEADROOM_ZH_AUTODL_DEMO_RUNBOOK.md`
+
 ## Install scripts
 
 - `install.sh` — POSIX installer.

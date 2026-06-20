@@ -130,6 +130,26 @@ Reproduce: `python -m headroom.evals suite --tier 1` · [Full benchmarks & metho
  </picture>
 </a>
 
+## Headroom ZH demo status
+
+This fork also carries a Chinese-first `kompress_zh` demo stack for long
+document, log, and codebase-reading workloads.
+
+Current verified path:
+
+- `Codex CLI`
+- local Headroom proxy
+- Yunwu `https://yunwu.ai/v1`
+- model `gpt-5.4-2026-03-05`
+- browser-open `/dashboard` + `/stats-history`
+- Chinese heavy context flowing through `/v1/responses`
+
+Latest verified docs:
+
+- [`docs/HEADROOM_ZH_STATUS_2026-06-20.md`](docs/HEADROOM_ZH_STATUS_2026-06-20.md)
+- [`docs/HEADROOM_ZH_AUTODL_DEMO_RUNBOOK.md`](docs/HEADROOM_ZH_AUTODL_DEMO_RUNBOOK.md)
+- [`demo_assets/headroom_zh_agent_cases/`](demo_assets/headroom_zh_agent_cases/)
+
 ## Agent compatibility matrix
 
 | Agent       | `headroom wrap` | Notes                            |

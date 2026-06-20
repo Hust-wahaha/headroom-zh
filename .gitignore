@@ -30,6 +30,8 @@ scripts/*
 !scripts/audit_wheel_glibc_symbols.py
 !scripts/replay_codex_ws_load.py
 !scripts/export_kompress_v2_onnx.py
+!scripts/start_autodl_codex_gpt54_demo.sh
+!scripts/launch_autodl_codex_gpt54.sh
 
 # Rust / Cargo build artifacts
 /target/
