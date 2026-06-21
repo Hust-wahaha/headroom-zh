@@ -7,6 +7,12 @@ Show two things at the same time:
 1. a real code agent running inside the AutoDL server terminal,
 2. a browser-open dashboard that can be switched live during recording.
 
+If you are trying to reproduce or continue this path on a fresh or partially
+fresh AutoDL environment, read
+`docs/HEADROOM_ZH_AUTODL_REPRO_GUIDE.md` first.
+This runbook is optimized for the already-prepared demo flow, not for a
+blank-machine rebuild.
+
 ## Fixed demo baseline
 
 For the current AutoDL recording path, lock the stack to:

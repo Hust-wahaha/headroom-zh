@@ -8,6 +8,11 @@ measured, and replay-validated.
 
 This is the current source-of-truth status for the Chinese demo stack.
 
+For teammate-oriented environment continuation and fresh-environment caveats,
+also read:
+
+- `docs/HEADROOM_ZH_AUTODL_REPRO_GUIDE.md`
+
 ## Executive summary
 
 `headroom_zh` is now beyond smoke-only validation.
