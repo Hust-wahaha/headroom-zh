@@ -105,7 +105,7 @@ The agent is asked to read the bundle first, then report:
 3. next three priority steps
 4. risks and dependencies
 
-**Representative source fragment**
+**Before: raw handoff fragment**
 
 ```md
 当前项目代号为 `Headroom ZH Demo Stack`，目标是在 AutoDL 服务器上把中文压缩模型
@@ -117,6 +117,32 @@ Code Agent 前置压缩层使用。
 `scripts/smoke_autodl_headroom.py`。
 ```
 
+**After: representative compressed form**
+
+This is an illustrative agent-facing compressed form for the same bundle style.
+It is shown to make the retention target obvious, not to claim a byte-exact
+verbatim model output.
+
+```md
+目标: AutoDL 挂 `Deserveall/kompress_zh-baseline-v1-lora` 到 `headroom` 代理链路,
+证实可作 Code Agent 前置压缩层; 重点=长中文上下文入代理后仍保锚点并显著省 token。
+
+路径:
+- repo `E:\codex_cli\hustwahaha_proj\headroom-zh-audit`
+- remote `/root/autodl-tmp/headroom_zh_smoke`
+
+脚本:
+- smoke `scripts/smoke_autodl_headroom.py`
+- push helper `E:\codex_cli\hustwahaha_proj\tmp_headroom_remote\push_and_smoke.py`
+```
+
+**What remains actionable after compression**
+
+- model ID is still explicit
+- local and remote paths are still explicit
+- the smoke entry script is still explicit
+- the agent can still answer goal / progress / next-step questions from it
+
 **Why this is a good `headroom-zh` case**
 
 - It is long enough that compression actually matters.
@@ -125,9 +151,10 @@ Code Agent 前置压缩层使用。
 
 **Recorded result**
 
-- representative payload: `14,342 bytes → 4,200 bytes`
-- saved bytes on that payload: `3,442`
-- same bundle family also produced visible `/dashboard` and `/stats-history`
+- recorded payload envelope: `14,342 bytes → 4,200 bytes`
+- the same recorded call also reported router-side `saved=3442` on the
+  attempted compressed unit
+- the same bundle family produced visible `/dashboard` and `/stats-history`
   growth during the verified AutoDL Codex demo
 
 This is the kind of workload `headroom-zh` is built for: not generic chat, but
