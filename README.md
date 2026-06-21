@@ -12,24 +12,23 @@
 <p align="center"><strong>Bringing Headroom to real Chinese coding workflows · Chinese-first compression · same agent quality · far fewer tokens</strong></p>
 
 <p align="center">
-  <a href="https://github.com/chopratejas/headroom/actions/workflows/ci.yml"><img src="https://github.com/chopratejas/headroom/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="https://app.codecov.io/gh/chopratejas/headroom"><img src="https://codecov.io/gh/chopratejas/headroom/graph/badge.svg" alt="codecov"></a>
-  <a href="https://pypi.org/project/headroom-ai/"><img src="https://img.shields.io/pypi/v/headroom-ai.svg" alt="PyPI"></a>
-  <a href="https://www.npmjs.com/package/headroom-ai"><img src="https://img.shields.io/npm/v/headroom-ai.svg" alt="npm"></a>
+  <a href="https://github.com/Hust-wahaha/headroom-zh"><img src="https://img.shields.io/badge/repo-headroom--zh-black.svg?logo=github" alt="Repo: headroom-zh"></a>
+  <a href="docs/HEADROOM_ZH_STATUS_2026-06-20.md"><img src="https://img.shields.io/badge/status-AutoDL%20demo%20verified-success.svg" alt="Status: AutoDL demo verified"></a>
   <a href="https://huggingface.co/chopratejas/kompress-v2-base"><img src="https://img.shields.io/badge/model-Kompress--v2--base-yellow.svg" alt="Model: Kompress-v2-base"></a>
   <a href="https://huggingface.co/Deserveall/kompress_zh-baseline-v1-lora"><img src="https://img.shields.io/badge/model-kompress__zh--baseline--v1--lora-lightgrey.svg" alt="Model: kompress_zh-baseline-v1-lora"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License: Apache 2.0"></a>
-  <a href="https://headroom-docs.vercel.app/docs"><img src="https://img.shields.io/badge/docs-online-blue.svg" alt="Docs"></a>
+  <a href="docs/HEADROOM_ZH_AUTODL_DEMO_RUNBOOK.md"><img src="https://img.shields.io/badge/docs-demo%20runbook-blue.svg" alt="Docs: demo runbook"></a>
 </p>
 
 <p align="center">
-  <a href="https://headroom-docs.vercel.app/docs">Docs</a> ·
+  <a href="#why-headroom-zh-exists">Why</a> ·
+  <a href="#what-makes-headroom-zh-different">What is unique</a> ·
+  <a href="#headroom-zh-demo-status">Demo Status</a> ·
   <a href="#get-started-60-seconds">Install</a> ·
-  <a href="#proof">Proof</a> ·
+  <a href="#upstream-foundation">Foundation</a> ·
   <a href="#agent-compatibility-matrix">Agents</a> ·
-  <a href="https://discord.gg/yRmaUNpsPJ">Discord</a> ·
-  <a href="llms.txt">llms.txt</a> ·
-  <a href="ENTERPRISE.md">Enterprise</a>
+  <a href="https://huggingface.co/Deserveall/kompress_zh-baseline-v1-lora">Model</a> ·
+  <a href="https://headroom-docs.vercel.app/docs">Upstream Docs</a>
 </p>
 
 <p align="center"><sub>
@@ -37,7 +36,6 @@
 </sub></p>
 
 ---
-<p align="center"><a href="https://trendshift.io/repositories/20881" target="_blank"><img src="https://trendshift.io/api/badge/repositories/20881" alt="chopratejas%2Fheadroom | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a></p>
 
 ## Why headroom-zh exists
 
@@ -58,6 +56,17 @@ coding workflows, without giving up anchors, structure, or agent usefulness.
 
 In short: `headroom-zh` is the layer that makes Headroom genuinely usable for
 Chinese project contexts.
+
+## What makes headroom-zh different
+
+- **Dual-lane prose compression**: keep upstream `Kompress` for English and
+  general plain text, but route Chinese-dominant prose to `kompress_zh`.
+- **Chinese-agent-oriented output style**: compressed text is tuned for LLM
+  readers, often using light structure and concise Chinese shorthand rather
+  than human-facing polished prose.
+- **Anchor-aware by design**: the data and review flow intentionally mix paths,
+  URLs, identifiers, commands, risks, next steps, and other "do not drop"
+  spans that code-agent workflows depend on.
 
 <p align="center">
   <img src="HeadroomDemo-Fast.gif" alt="Headroom in action" width="820">
@@ -105,25 +114,37 @@ Chinese project contexts.
 
 ## Get started (60 seconds)
 
-```bash
-# 1 — Install
-pip install "headroom-ai[all]"          # Python
-npm install headroom-ai                 # Node / TypeScript
+`headroom-zh` is currently a source-first fork: use upstream `headroom` package
+artifacts for the baseline runtime, or install this repository from source to
+reproduce the verified Chinese-first demo path.
 
-# 2 — Pick your mode
+```bash
+# 1 — Install a baseline runtime
+pip install "headroom-ai[all]"          # upstream Python package
+npm install headroom-ai                 # upstream Node / TypeScript package
+
+# 2 — Or run the verified fork directly
+git clone https://github.com/Hust-wahaha/headroom-zh.git
+cd headroom-zh
+pip install -e ".[dev]"
+
+# 3 — Pick your mode
 headroom wrap claude                    # wrap a coding agent
 headroom proxy --port 8787              # drop-in proxy, zero code changes
 # or: from headroom import compress      # inline library
 
-# 3 — See the savings
+# 4 — See the savings
 headroom perf
 ```
 
 Granular extras: `[proxy]`, `[mcp]`, `[ml]`, `[code]`, `[memory]`, `[relevance]`, `[image]`, `[agno]`, `[langchain]`, `[evals]`. Requires **Python 3.10+**.
 
-## Proof
+## Upstream foundation
 
-**Savings on real agent workloads:**
+The original `headroom` project already established the broader context
+compression foundation that `headroom-zh` builds on.
+
+Representative upstream results:
 
 | Workload                      | Before | After  | Savings |
 |-------------------------------|-------:|-------:|--------:|
@@ -141,13 +162,8 @@ Granular extras: `[proxy]`, `[mcp]`, `[ml]`, `[code]`, `[memory]`, `[relevance]`
 | SQuAD v2   | QA       | 100 |        — |  **97%** | 19% compression |
 | BFCL       | Tools    | 100 |        — |  **97%** | 32% compression |
 
-Reproduce: `python -m headroom.evals suite --tier 1` · [Full benchmarks & methodology](https://headroom-docs.vercel.app/docs/benchmarks)
-
-<a href="https://www.star-history.com/?repos=chopratejas%2Fheadroom&type=date&legend=top-left">
- <picture>
-   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=chopratejas/headroom&type=date&legend=top-left" />
- </picture>
-</a>
+See the upstream methodology here:
+`python -m headroom.evals suite --tier 1` · [Full benchmarks & methodology](https://headroom-docs.vercel.app/docs/benchmarks)
 
 ## Headroom ZH demo status
 
@@ -158,8 +174,7 @@ Current verified path:
 
 - `Codex CLI`
 - local Headroom proxy
-- Yunwu `https://yunwu.ai/v1`
-- model `gpt-5.4-2026-03-05`
+- OpenAI-compatible `/v1/responses` path
 - browser-open `/dashboard` + `/stats-history`
 - Chinese heavy context flowing through `/v1/responses`
 
@@ -264,12 +279,15 @@ Provider and tool-specific behavior lives under `headroom/providers/` so core or
 ## Install
 
 ```bash
-pip install "headroom-ai[all]"          # Python, everything
-npm install headroom-ai                 # TypeScript / Node
-docker pull ghcr.io/chopratejas/headroom:latest
+pip install "headroom-ai[all]"          # upstream Python package
+npm install headroom-ai                 # upstream TypeScript / Node package
+docker pull ghcr.io/chopratejas/headroom:latest   # upstream base image
 ```
 
 Granular extras: `[proxy]`, `[mcp]`, `[ml]` (Kompress + kompress_zh), `[code]`, `[memory]`, `[relevance]`, `[image]`, `[agno]`, `[langchain]`, `[evals]`. Requires **Python 3.10+**.
+
+For the verified `headroom-zh` route shown in this repository, prefer source
+install from `Hust-wahaha/headroom-zh`.
 
 Using `pipx`? Choose a supported interpreter explicitly:
 
@@ -315,7 +333,7 @@ Headroom runs **locally**, covers **every** content type, works with every major
 ## Contributing
 
 ```bash
-git clone https://github.com/chopratejas/headroom.git && cd headroom
+git clone https://github.com/Hust-wahaha/headroom-zh.git && cd headroom-zh
 pip install -e ".[dev]" && pytest
 ```
 
@@ -323,7 +341,8 @@ Devcontainers in `.devcontainer/` (default + `memory-stack` with Qdrant & Neo4j)
 
 ## Community
 
-- **[Discord](https://discord.gg/yRmaUNpsPJ)** — questions, feedback, war stories.
+- **[headroom-zh repository](https://github.com/Hust-wahaha/headroom-zh)** — the fork that adds the Chinese-first compressor lane and demo path.
+- **[Upstream Headroom docs](https://headroom-docs.vercel.app/docs)** — core architecture, proxy, MCP, and benchmark documentation.
 - **[Kompress-v2-base on HuggingFace](https://huggingface.co/chopratejas/kompress-v2-base)** — the default English/plain-text compression model.
 - **[kompress_zh-baseline-v1-lora on HuggingFace](https://huggingface.co/Deserveall/kompress_zh-baseline-v1-lora)** — the Chinese plain-text compression branch.
 
