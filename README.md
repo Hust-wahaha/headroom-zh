@@ -96,6 +96,10 @@ The clearest homepage case is `case_01_docs_review`: a long Chinese project
 handoff bundle that mixes prose with model IDs, file paths, ports, scripts, and
 execution constraints.
 
+<p align="center">
+  <img src="docs/assets/headroom-zh-case-card.png" alt="headroom-zh representative case card" width="1120">
+</p>
+
 **Task shape**
 
 The agent is asked to read the bundle first, then report:
@@ -173,7 +177,7 @@ long Chinese context that still has to remain actionable after compression.
 
 <p align="center">
   <img src="HeadroomDemo-Fast.gif" alt="Headroom in action" width="820">
-  <br/><sub>Recorded docs-review run: compression visible in the dashboard, with paths, ports, scripts, and model IDs still preserved for the agent.</sub>
+  <br/><sub>Recorded docs-review run: compression visible in the dashboard, with paths, ports, scripts, execution order, and risk signals still preserved for the agent.</sub>
 </p>
 
 ## What it does

@@ -32,6 +32,7 @@ scripts/*
 !scripts/export_kompress_v2_onnx.py
 !scripts/start_autodl_codex_gpt54_demo.sh
 !scripts/launch_autodl_codex_gpt54.sh
+!scripts/render_headroom_zh_case_card.py
 
 # Rust / Cargo build artifacts
 /target/
