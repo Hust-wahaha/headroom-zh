@@ -6,10 +6,12 @@
   ██║  ██║███████╗██║  ██║██████╔╝██║  ██║╚██████╔╝╚██████╔╝██║ ╚═╝ ██║
   ╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝╚═════╝ ╚═╝  ╚═╝ ╚═════╝  ╚═════╝ ╚═╝     ╚═╝
                           headroom-zh
-           Chinese-first context compression for AI agents
+       Chinese-first context compression for real coding agents
 </pre></div>
 
-<p align="center"><strong>Bringing Headroom to real Chinese coding workflows · Chinese-first compression · same agent quality · far fewer tokens</strong></p>
+<p align="center"><strong>Bring Headroom to real Chinese coding workflows with a dedicated Chinese compression lane.</strong></p>
+
+<p align="center"><strong>Verified on real code-agent traffic: 10,144 → 1,260 tokens in the recorded demo, while preserving the signal the agent actually needed.</strong></p>
 
 <p align="center">
   <a href="https://github.com/Hust-wahaha/headroom-zh"><img src="https://img.shields.io/badge/repo-headroom--zh-black.svg?logo=github" alt="Repo: headroom-zh"></a>
@@ -23,6 +25,7 @@
 <p align="center">
   <a href="#why-headroom-zh-exists">Why</a> ·
   <a href="#what-makes-headroom-zh-different">What is unique</a> ·
+  <a href="#where-it-is-meant-to-win">Use Cases</a> ·
   <a href="#headroom-zh-demo-status">Demo Status</a> ·
   <a href="#get-started-60-seconds">Install</a> ·
   <a href="#upstream-foundation">Foundation</a> ·
@@ -36,6 +39,12 @@
 </sub></p>
 
 ---
+
+| What it changes | Why it matters |
+|---|---|
+| **Adds `kompress_zh` without removing upstream `Kompress`** | English/plain-text traffic keeps the original lane; Chinese-heavy traffic finally gets a lane built for it. |
+| **Optimized for code-agent context, not pretty summaries** | Compresses docs, logs, handoff notes, tool outputs, and source bundles into forms that Claude/Codex/GPT can still act on. |
+| **Anchor-aware by design** | Paths, URLs, commands, identifiers, risks, and next steps are treated as first-class signals instead of disposable wording. |
 
 ## Why headroom-zh exists
 
@@ -67,6 +76,19 @@ Chinese project contexts.
 - **Anchor-aware by design**: the data and review flow intentionally mix paths,
   URLs, identifiers, commands, risks, next steps, and other "do not drop"
   spans that code-agent workflows depend on.
+
+## Where it is meant to win
+
+- **Chinese repo handoff and project-state reading**: long `CURRENT_STATE`,
+  `AGENT_HANDOFF`, planning, and execution docs that an agent must read before
+  acting.
+- **Logs and failure triage**: mixed Chinese explanations with stack traces,
+  commands, paths, and environment details.
+- **Codebase exploration bundles**: source summaries, file digests, repo notes,
+  and RAG chunks prepared for Codex, Claude Code, or similar agents.
+- **Mixed-language reality**: Chinese prose can coexist with English symbols,
+  paths, URLs, JSON fragments, and code identifiers without forcing the whole
+  request onto an English-only compression path.
 
 <p align="center">
   <img src="HeadroomDemo-Fast.gif" alt="Headroom in action" width="820">
