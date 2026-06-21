@@ -11,7 +11,7 @@
 
 <p align="center"><strong>Bring Headroom to real Chinese coding workflows with a dedicated Chinese compression lane.</strong></p>
 
-<p align="center"><strong>Verified on real code-agent traffic: 10,144 → 1,260 tokens in the recorded demo, while preserving the signal the agent actually needed.</strong></p>
+<p align="center"><strong>Verified on a real docs-review agent workload: one recorded Chinese payload shrank from 14,342 bytes to 4,200 bytes while preserving the anchors the agent still needed.</strong></p>
 
 <p align="center">
   <a href="https://github.com/Hust-wahaha/headroom-zh"><img src="https://img.shields.io/badge/repo-headroom--zh-black.svg?logo=github" alt="Repo: headroom-zh"></a>
@@ -90,9 +90,52 @@ Chinese project contexts.
   paths, URLs, JSON fragments, and code identifiers without forcing the whole
   request onto an English-only compression path.
 
+## Representative case
+
+The clearest homepage case is `case_01_docs_review`: a long Chinese project
+handoff bundle that mixes prose with model IDs, file paths, ports, scripts, and
+execution constraints.
+
+**Task shape**
+
+The agent is asked to read the bundle first, then report:
+
+1. current project goal
+2. completed work
+3. next three priority steps
+4. risks and dependencies
+
+**Representative source fragment**
+
+```md
+当前项目代号为 `Headroom ZH Demo Stack`，目标是在 AutoDL 服务器上把中文压缩模型
+`Deserveall/kompress_zh-baseline-v1-lora` 挂到 `headroom` 代理链路里，并证明它可以作为
+Code Agent 前置压缩层使用。
+
+仓库主目录固定为 `E:\codex_cli\hustwahaha_proj\headroom-zh-audit`。远端调试目录固定为
+`/root/autodl-tmp/headroom_zh_smoke`。目前标准 smoke 入口脚本是
+`scripts/smoke_autodl_headroom.py`。
+```
+
+**Why this is a good `headroom-zh` case**
+
+- It is long enough that compression actually matters.
+- It contains anchors the agent cannot afford to lose.
+- It looks like a real Chinese code-agent reading task, not a benchmark toy.
+
+**Recorded result**
+
+- representative payload: `14,342 bytes → 4,200 bytes`
+- saved bytes on that payload: `3,442`
+- same bundle family also produced visible `/dashboard` and `/stats-history`
+  growth during the verified AutoDL Codex demo
+
+This is the kind of workload `headroom-zh` is built for: not generic chat, but
+long Chinese context that still has to remain actionable after compression.
+
 <p align="center">
   <img src="HeadroomDemo-Fast.gif" alt="Headroom in action" width="820">
-  <br/><sub>Live: 10,144 → 1,260 tokens — same FATAL found.</sub>
+  <br/><sub>Recorded docs-review run: compression visible in the dashboard, with paths, ports, scripts, and model IDs still preserved for the agent.</sub>
 </p>
 
 ## What it does
