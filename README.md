@@ -9,7 +9,7 @@
            Chinese-first context compression for AI agents
 </pre></div>
 
-<p align="center"><strong>60–95% fewer tokens · library · proxy · MCP · 6 algorithms · local-first · reversible</strong></p>
+<p align="center"><strong>Bringing Headroom to real Chinese coding workflows · Chinese-first compression · same agent quality · far fewer tokens</strong></p>
 
 <p align="center">
   <a href="https://github.com/chopratejas/headroom/actions/workflows/ci.yml"><img src="https://github.com/chopratejas/headroom/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
@@ -39,11 +39,25 @@
 ---
 <p align="center"><a href="https://trendshift.io/repositories/20881" target="_blank"><img src="https://trendshift.io/api/badge/repositories/20881" alt="chopratejas%2Fheadroom | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a></p>
 
-Headroom compresses everything your AI agent reads — tool outputs, logs, RAG chunks, files, and conversation history — before it reaches the LLM. Same answers, fraction of the tokens.
+## Why headroom-zh exists
 
-`headroom-zh` is the Chinese-first demo layer on top of that stack: it keeps
-the upstream `Kompress` path, adds `kompress_zh` for Chinese-dominant prose,
-and proves the whole chain on real AutoDL code-agent traffic.
+Upstream `headroom` is already a powerful context-compression system. But for
+Chinese-heavy projects, one missing piece matters a lot: without a strong
+Chinese plain-text compressor, a large part of real Chinese tool outputs,
+handoff docs, logs, and repo context still cannot enjoy the full Headroom
+effect.
+
+`headroom-zh` exists to close exactly that gap.
+
+It keeps the upstream `Kompress` path for English and general plain-text
+workloads, and adds `kompress_zh` for Chinese-dominant prose. That turns
+Headroom from "great in principle" into something Chinese coders can actually
+use on real projects. The result is simple and important: many more Chinese
+developers can finally experience Headroom's token savings in their own daily
+coding workflows, without giving up anchors, structure, or agent usefulness.
+
+In short: `headroom-zh` is the layer that makes Headroom genuinely usable for
+Chinese project contexts.
 
 <p align="center">
   <img src="HeadroomDemo-Fast.gif" alt="Headroom in action" width="820">
