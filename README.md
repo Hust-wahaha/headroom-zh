@@ -108,13 +108,21 @@ The agent is asked to read the bundle first, then report:
 **Before: raw handoff fragment**
 
 ```md
-当前项目代号为 `Headroom ZH Demo Stack`，目标是在 AutoDL 服务器上把中文压缩模型
-`Deserveall/kompress_zh-baseline-v1-lora` 挂到 `headroom` 代理链路里，并证明它可以作为
-Code Agent 前置压缩层使用。
+目前最大的展示短板不是代理或模型本身，而是缺少高质量中文 demo 工作负载。
+如果从零给 agent 扔一个很短的空任务，它几乎不需要读任何东西，Headroom 的优势就看不出来。
 
-仓库主目录固定为 `E:\codex_cli\hustwahaha_proj\headroom-zh-audit`。远端调试目录固定为
-`/root/autodl-tmp/headroom_zh_smoke`。目前标准 smoke 入口脚本是
-`scripts/smoke_autodl_headroom.py`。
+推荐执行顺序：
+1. 在 AutoDL 上启动 `scripts/smoke_autodl_headroom.py --keep-running`
+2. 保持代理运行在 `8790`
+3. 把 CodeX 或 Claude Code 指向代理
+4. 让 agent 先读取大体量中文材料，再回答问题或执行探索
+5. 截图 `/dashboard`
+6. 导出或截图 `/stats-history`
+
+风险与依赖：
+- 依赖远端 AutoDL 网络与模型缓存
+- 演示时如果任务太短，节省数字会弱
+- 纯英文任务可能更多落到原生 `kompress`
 ```
 
 **After: representative compressed form**
@@ -124,24 +132,27 @@ It is shown to make the retention target obvious, not to claim a byte-exact
 verbatim model output.
 
 ```md
-目标: AutoDL 挂 `Deserveall/kompress_zh-baseline-v1-lora` 到 `headroom` 代理链路,
-证实可作 Code Agent 前置压缩层; 重点=长中文上下文入代理后仍保锚点并显著省 token。
+问题: 若任务过短, agent 无需读长中文材料, Headroom 优势不显。
 
-路径:
-- repo `E:\codex_cli\hustwahaha_proj\headroom-zh-audit`
-- remote `/root/autodl-tmp/headroom_zh_smoke`
+执行顺序:
+1. AutoDL 起 `scripts/smoke_autodl_headroom.py --keep-running`
+2. 代理端口固定 `8790`
+3. CodeX / Claude Code 指向代理
+4. 先读长中文材料, 后回答/探索
+5. 展示 `/dashboard` 与 `/stats-history`
 
-脚本:
-- smoke `scripts/smoke_autodl_headroom.py`
-- push helper `E:\codex_cli\hustwahaha_proj\tmp_headroom_remote\push_and_smoke.py`
+风险:
+- 依赖 AutoDL 网络与模型缓存
+- 短任务节省数字弱
+- 纯英文任务可能走原生 `kompress`
 ```
 
 **What remains actionable after compression**
 
-- model ID is still explicit
-- local and remote paths are still explicit
-- the smoke entry script is still explicit
-- the agent can still answer goal / progress / next-step questions from it
+- the core decision logic is still explicit
+- the execution order is still explicit
+- the key command, port, and dashboard endpoints are still explicit
+- the agent can still answer what to do next and what could go wrong
 
 **Why this is a good `headroom-zh` case**
 
