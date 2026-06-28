@@ -766,8 +766,23 @@ def parse_sse_events_from_byte_buffer(
 # Maximum message array length (prevents DoS from deeply nested payloads)
 MAX_MESSAGE_ARRAY_LENGTH = 10000
 
-# Compression pipeline timeout in seconds
-COMPRESSION_TIMEOUT_SECONDS = 30
+# Compression pipeline timeout in seconds.
+# Configurable via HEADROOM_COMPRESSION_TIMEOUT_SECONDS so consumer GPUs can
+# raise it (first-request cold load + large Chinese inference on a weak GPU
+# easily exceeds the default 30s).
+def _compression_timeout_default() -> int:
+    raw = os.getenv("HEADROOM_COMPRESSION_TIMEOUT_SECONDS")
+    if raw:
+        try:
+            val = int(raw)
+            if val > 0:
+                return val
+        except ValueError:
+            pass
+    return 30
+
+
+COMPRESSION_TIMEOUT_SECONDS = _compression_timeout_default()
 
 # Maximum compression cache sessions (prevents unbounded memory growth)
 MAX_COMPRESSION_CACHE_SESSIONS = 500

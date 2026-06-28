@@ -153,7 +153,22 @@ def _detect_content(content: str) -> DetectionResult:
     `confidence=1.0` and an empty metadata dict. Existing callers
     only consumed `.content_type` from it; the strategy mapping in
     `_strategy_from_detection` keys off that field alone.
+
+    Escape hatch (HEADROOM_RUST_DETECT=0): on some Windows builds the
+    prebuilt `headroom/_core.pyd` `detect_content_type` hangs indefinitely
+    on ANY input (reproduced single-threaded). Because this call sits on the
+    text-unit compression path, the hang blocks kompress_zh entirely and
+    real-time compression silently fails (the request times out and is
+    forwarded uncompressed). Set `HEADROOM_RUST_DETECT=0` to route detection
+    through the pure-Python regex detector (`content_detector`) instead. The
+    default remains the Rust path, preserving upstream behavior on platforms
+    where the Rust core works (e.g. Linux/AutoDL).
     """
+    import os as _os
+
+    if _os.environ.get("HEADROOM_RUST_DETECT", "1") == "0":
+        return _regex_detect_content_type(content)
+
     from headroom._core import detect_content_type as _rust_detect
 
     rust_result = _rust_detect(content)
@@ -1673,6 +1688,31 @@ class ContentRouter(Transform):
                 status["kompress_backend"] = str(backend)
             else:
                 status["kompress"] = "unavailable"
+
+        # 1b. ML Chinese text compressor: kompress_zh
+        # Mirror the English Kompress preload: build + cache the Swift/Qwen
+        # engine at startup so the first Chinese block does not pay a
+        # ~20-25s cold load inside the executor thread (which blows the
+        # compression timeout on the very first request).
+        try:
+            from .kompress_zh_compressor import (
+                _get_engine,
+                is_kompress_zh_available,
+            )
+
+            if is_kompress_zh_available():
+                zh = self._get_kompress_zh()
+                if zh is not None:
+                    _get_engine(zh.config)  # build + cache the engine now (load only, no inference)
+                    logger.info("kompress_zh pre-loaded at startup")
+                    status["kompress_zh"] = "enabled"
+                else:
+                    status["kompress_zh"] = "unavailable"
+            else:
+                status["kompress_zh"] = "not installed"
+        except Exception as e:
+            logger.warning("kompress_zh pre-load skipped: %s", e)
+            status["kompress_zh"] = "skipped"
 
         # 2. Magika content detector (avoids 100-200ms on first content detection)
         try:
