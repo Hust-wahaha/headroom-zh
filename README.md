@@ -416,6 +416,19 @@ pipx install --python python3.13 "headroom-ai[all]"
 | [Failure learning](https://headroom-docs.vercel.app/docs/failure-learning)    | [Benchmarks](https://headroom-docs.vercel.app/docs/benchmarks)                    |
 | [Configuration](https://headroom-docs.vercel.app/docs/configuration)          | [Limitations](https://headroom-docs.vercel.app/docs/limitations)                  |
 
+### Chinese compression accuracy evaluation (`eval/`)
+
+Direct evidence that `kompress_zh` **keeps task accuracy while cutting tokens**:
+a 20-task Chinese benchmark that compresses tool-output context with the real
+`kompress_zh` and compares answers from the same upstream LLM on original vs.
+compressed context.
+
+- v1 result: normal preset saved **38.5 %** tokens at **95 %** accuracy
+  (baseline 100 %); an aggressive "destruction" preset (saved 95.6 %) drops
+  accuracy to 0 %, proving the metric has discriminative power.
+- How to run, materials, and metrics: [`eval/README.md`](eval/README.md)
+- Windows deployment & real-time troubleshooting records: [`eval_docs/`](eval_docs/)
+
 ## Compared to
 
 Headroom runs **locally**, covers **every** content type, works with every major framework, and is **reversible**.
