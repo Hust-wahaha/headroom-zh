@@ -76,10 +76,6 @@
 
 首页最能说明问题的 case 是 `case_01_docs_review`：一份长中文项目交接包，里面混有模型 ID、文件路径、端口、脚本、执行顺序和约束。
 
-<p align="center">
-  <img src="docs/assets/headroom-zh-case-card.png" alt="headroom-zh representative case card" width="1120">
-</p>
-
 **任务形态**
 
 让 agent 先读完整 bundle，再回答：

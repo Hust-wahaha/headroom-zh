@@ -93,10 +93,6 @@ The clearest homepage case is `case_01_docs_review`: a long Chinese project
 handoff bundle that mixes prose with model IDs, file paths, ports, scripts, and
 execution constraints.
 
-<p align="center">
-  <img src="docs/assets/headroom-zh-case-card.png" alt="headroom-zh representative case card" width="1120">
-</p>
-
 **Task shape**
 
 The agent is asked to read the bundle first, then report:
