@@ -1,0 +1,602 @@
+{
+  "J000": {
+    "id": "A1",
+    "condition": "baseline",
+    "run": 0,
+    "anchor_hit_rate": 0.8
+  },
+  "J001": {
+    "id": "A1",
+    "condition": "baseline",
+    "run": 1,
+    "anchor_hit_rate": 0.8
+  },
+  "J002": {
+    "id": "A2",
+    "condition": "baseline",
+    "run": 0,
+    "anchor_hit_rate": 1.0
+  },
+  "J003": {
+    "id": "A2",
+    "condition": "baseline",
+    "run": 1,
+    "anchor_hit_rate": 1.0
+  },
+  "J004": {
+    "id": "A3",
+    "condition": "baseline",
+    "run": 0,
+    "anchor_hit_rate": 0.8
+  },
+  "J005": {
+    "id": "A3",
+    "condition": "baseline",
+    "run": 1,
+    "anchor_hit_rate": 0.8
+  },
+  "J006": {
+    "id": "A4",
+    "condition": "baseline",
+    "run": 0,
+    "anchor_hit_rate": 1.0
+  },
+  "J007": {
+    "id": "A4",
+    "condition": "baseline",
+    "run": 1,
+    "anchor_hit_rate": 1.0
+  },
+  "J008": {
+    "id": "A5",
+    "condition": "baseline",
+    "run": 0,
+    "anchor_hit_rate": 0.8
+  },
+  "J009": {
+    "id": "A5",
+    "condition": "baseline",
+    "run": 1,
+    "anchor_hit_rate": 1.0
+  },
+  "J010": {
+    "id": "B1",
+    "condition": "baseline",
+    "run": 0,
+    "anchor_hit_rate": 0.333
+  },
+  "J011": {
+    "id": "B1",
+    "condition": "baseline",
+    "run": 1,
+    "anchor_hit_rate": 0.333
+  },
+  "J012": {
+    "id": "B2",
+    "condition": "baseline",
+    "run": 0,
+    "anchor_hit_rate": 0.5
+  },
+  "J013": {
+    "id": "B2",
+    "condition": "baseline",
+    "run": 1,
+    "anchor_hit_rate": 0.5
+  },
+  "J014": {
+    "id": "B3",
+    "condition": "baseline",
+    "run": 0,
+    "anchor_hit_rate": 1.0
+  },
+  "J015": {
+    "id": "B3",
+    "condition": "baseline",
+    "run": 1,
+    "anchor_hit_rate": 1.0
+  },
+  "J016": {
+    "id": "B4",
+    "condition": "baseline",
+    "run": 0,
+    "anchor_hit_rate": 0.5
+  },
+  "J017": {
+    "id": "B4",
+    "condition": "baseline",
+    "run": 1,
+    "anchor_hit_rate": 0.5
+  },
+  "J018": {
+    "id": "B5",
+    "condition": "baseline",
+    "run": 0,
+    "anchor_hit_rate": 0.6
+  },
+  "J019": {
+    "id": "B5",
+    "condition": "baseline",
+    "run": 1,
+    "anchor_hit_rate": 0.6
+  },
+  "J020": {
+    "id": "C1",
+    "condition": "baseline",
+    "run": 0,
+    "anchor_hit_rate": 0.8
+  },
+  "J021": {
+    "id": "C1",
+    "condition": "baseline",
+    "run": 1,
+    "anchor_hit_rate": 0.8
+  },
+  "J022": {
+    "id": "C2",
+    "condition": "baseline",
+    "run": 0,
+    "anchor_hit_rate": 1.0
+  },
+  "J023": {
+    "id": "C2",
+    "condition": "baseline",
+    "run": 1,
+    "anchor_hit_rate": 1.0
+  },
+  "J024": {
+    "id": "C3",
+    "condition": "baseline",
+    "run": 0,
+    "anchor_hit_rate": 0.8
+  },
+  "J025": {
+    "id": "C3",
+    "condition": "baseline",
+    "run": 1,
+    "anchor_hit_rate": 0.8
+  },
+  "J026": {
+    "id": "C4",
+    "condition": "baseline",
+    "run": 0,
+    "anchor_hit_rate": 0.8
+  },
+  "J027": {
+    "id": "C4",
+    "condition": "baseline",
+    "run": 1,
+    "anchor_hit_rate": 0.8
+  },
+  "J028": {
+    "id": "C5",
+    "condition": "baseline",
+    "run": 0,
+    "anchor_hit_rate": 0.4
+  },
+  "J029": {
+    "id": "C5",
+    "condition": "baseline",
+    "run": 1,
+    "anchor_hit_rate": 0.4
+  },
+  "J030": {
+    "id": "D1",
+    "condition": "baseline",
+    "run": 0,
+    "anchor_hit_rate": 1.0
+  },
+  "J031": {
+    "id": "D1",
+    "condition": "baseline",
+    "run": 1,
+    "anchor_hit_rate": 1.0
+  },
+  "J032": {
+    "id": "D2",
+    "condition": "baseline",
+    "run": 0,
+    "anchor_hit_rate": 0.8
+  },
+  "J033": {
+    "id": "D2",
+    "condition": "baseline",
+    "run": 1,
+    "anchor_hit_rate": 0.8
+  },
+  "J034": {
+    "id": "D3",
+    "condition": "baseline",
+    "run": 0,
+    "anchor_hit_rate": 0.8
+  },
+  "J035": {
+    "id": "D3",
+    "condition": "baseline",
+    "run": 1,
+    "anchor_hit_rate": 1.0
+  },
+  "J036": {
+    "id": "D4",
+    "condition": "baseline",
+    "run": 0,
+    "anchor_hit_rate": 1.0
+  },
+  "J037": {
+    "id": "D4",
+    "condition": "baseline",
+    "run": 1,
+    "anchor_hit_rate": 1.0
+  },
+  "J038": {
+    "id": "D5",
+    "condition": "baseline",
+    "run": 0,
+    "anchor_hit_rate": 1.0
+  },
+  "J039": {
+    "id": "D5",
+    "condition": "baseline",
+    "run": 1,
+    "anchor_hit_rate": 1.0
+  },
+  "J040": {
+    "id": "A1",
+    "condition": "kompress_zh_aggressive",
+    "run": 0,
+    "anchor_hit_rate": 0.0
+  },
+  "J041": {
+    "id": "A1",
+    "condition": "kompress_zh_aggressive",
+    "run": 1,
+    "anchor_hit_rate": 0.0
+  },
+  "J042": {
+    "id": "A2",
+    "condition": "kompress_zh_aggressive",
+    "run": 0,
+    "anchor_hit_rate": 0.0
+  },
+  "J043": {
+    "id": "A2",
+    "condition": "kompress_zh_aggressive",
+    "run": 1,
+    "anchor_hit_rate": 0.0
+  },
+  "J044": {
+    "id": "A3",
+    "condition": "kompress_zh_aggressive",
+    "run": 0,
+    "anchor_hit_rate": 0.2
+  },
+  "J045": {
+    "id": "A3",
+    "condition": "kompress_zh_aggressive",
+    "run": 1,
+    "anchor_hit_rate": 0.2
+  },
+  "J046": {
+    "id": "A4",
+    "condition": "kompress_zh_aggressive",
+    "run": 0,
+    "anchor_hit_rate": 0.0
+  },
+  "J047": {
+    "id": "A4",
+    "condition": "kompress_zh_aggressive",
+    "run": 1,
+    "anchor_hit_rate": 0.0
+  },
+  "J048": {
+    "id": "A5",
+    "condition": "kompress_zh_aggressive",
+    "run": 0,
+    "anchor_hit_rate": 0.0
+  },
+  "J049": {
+    "id": "A5",
+    "condition": "kompress_zh_aggressive",
+    "run": 1,
+    "anchor_hit_rate": 0.0
+  },
+  "J050": {
+    "id": "C1",
+    "condition": "kompress_zh_aggressive",
+    "run": 0,
+    "anchor_hit_rate": 0.2
+  },
+  "J051": {
+    "id": "C1",
+    "condition": "kompress_zh_aggressive",
+    "run": 1,
+    "anchor_hit_rate": 0.2
+  },
+  "J052": {
+    "id": "C2",
+    "condition": "kompress_zh_aggressive",
+    "run": 0,
+    "anchor_hit_rate": 0.4
+  },
+  "J053": {
+    "id": "C2",
+    "condition": "kompress_zh_aggressive",
+    "run": 1,
+    "anchor_hit_rate": 0.4
+  },
+  "J054": {
+    "id": "C3",
+    "condition": "kompress_zh_aggressive",
+    "run": 0,
+    "anchor_hit_rate": 0.4
+  },
+  "J055": {
+    "id": "C3",
+    "condition": "kompress_zh_aggressive",
+    "run": 1,
+    "anchor_hit_rate": 0.4
+  },
+  "J056": {
+    "id": "C4",
+    "condition": "kompress_zh_aggressive",
+    "run": 0,
+    "anchor_hit_rate": 0.2
+  },
+  "J057": {
+    "id": "C4",
+    "condition": "kompress_zh_aggressive",
+    "run": 1,
+    "anchor_hit_rate": 0.2
+  },
+  "J058": {
+    "id": "C5",
+    "condition": "kompress_zh_aggressive",
+    "run": 0,
+    "anchor_hit_rate": 0.0
+  },
+  "J059": {
+    "id": "C5",
+    "condition": "kompress_zh_aggressive",
+    "run": 1,
+    "anchor_hit_rate": 0.0
+  },
+  "J060": {
+    "id": "A1",
+    "condition": "kompress_zh_normal",
+    "run": 0,
+    "anchor_hit_rate": 0.8
+  },
+  "J061": {
+    "id": "A1",
+    "condition": "kompress_zh_normal",
+    "run": 1,
+    "anchor_hit_rate": 0.8
+  },
+  "J062": {
+    "id": "A2",
+    "condition": "kompress_zh_normal",
+    "run": 0,
+    "anchor_hit_rate": 1.0
+  },
+  "J063": {
+    "id": "A2",
+    "condition": "kompress_zh_normal",
+    "run": 1,
+    "anchor_hit_rate": 1.0
+  },
+  "J064": {
+    "id": "A3",
+    "condition": "kompress_zh_normal",
+    "run": 0,
+    "anchor_hit_rate": 0.6
+  },
+  "J065": {
+    "id": "A3",
+    "condition": "kompress_zh_normal",
+    "run": 1,
+    "anchor_hit_rate": 0.6
+  },
+  "J066": {
+    "id": "A4",
+    "condition": "kompress_zh_normal",
+    "run": 0,
+    "anchor_hit_rate": 1.0
+  },
+  "J067": {
+    "id": "A4",
+    "condition": "kompress_zh_normal",
+    "run": 1,
+    "anchor_hit_rate": 1.0
+  },
+  "J068": {
+    "id": "A5",
+    "condition": "kompress_zh_normal",
+    "run": 0,
+    "anchor_hit_rate": 0.8
+  },
+  "J069": {
+    "id": "A5",
+    "condition": "kompress_zh_normal",
+    "run": 1,
+    "anchor_hit_rate": 0.8
+  },
+  "J070": {
+    "id": "B1",
+    "condition": "kompress_zh_normal",
+    "run": 0,
+    "anchor_hit_rate": 0.333
+  },
+  "J071": {
+    "id": "B1",
+    "condition": "kompress_zh_normal",
+    "run": 1,
+    "anchor_hit_rate": 0.333
+  },
+  "J072": {
+    "id": "B2",
+    "condition": "kompress_zh_normal",
+    "run": 0,
+    "anchor_hit_rate": 0.5
+  },
+  "J073": {
+    "id": "B2",
+    "condition": "kompress_zh_normal",
+    "run": 1,
+    "anchor_hit_rate": 1.0
+  },
+  "J074": {
+    "id": "B3",
+    "condition": "kompress_zh_normal",
+    "run": 0,
+    "anchor_hit_rate": 1.0
+  },
+  "J075": {
+    "id": "B3",
+    "condition": "kompress_zh_normal",
+    "run": 1,
+    "anchor_hit_rate": 1.0
+  },
+  "J076": {
+    "id": "B4",
+    "condition": "kompress_zh_normal",
+    "run": 0,
+    "anchor_hit_rate": 0.5
+  },
+  "J077": {
+    "id": "B4",
+    "condition": "kompress_zh_normal",
+    "run": 1,
+    "anchor_hit_rate": 0.5
+  },
+  "J078": {
+    "id": "B5",
+    "condition": "kompress_zh_normal",
+    "run": 0,
+    "anchor_hit_rate": 0.6
+  },
+  "J079": {
+    "id": "B5",
+    "condition": "kompress_zh_normal",
+    "run": 1,
+    "anchor_hit_rate": 0.6
+  },
+  "J080": {
+    "id": "C1",
+    "condition": "kompress_zh_normal",
+    "run": 0,
+    "anchor_hit_rate": 0.8
+  },
+  "J081": {
+    "id": "C1",
+    "condition": "kompress_zh_normal",
+    "run": 1,
+    "anchor_hit_rate": 0.8
+  },
+  "J082": {
+    "id": "C2",
+    "condition": "kompress_zh_normal",
+    "run": 0,
+    "anchor_hit_rate": 1.0
+  },
+  "J083": {
+    "id": "C2",
+    "condition": "kompress_zh_normal",
+    "run": 1,
+    "anchor_hit_rate": 1.0
+  },
+  "J084": {
+    "id": "C3",
+    "condition": "kompress_zh_normal",
+    "run": 0,
+    "anchor_hit_rate": 0.8
+  },
+  "J085": {
+    "id": "C3",
+    "condition": "kompress_zh_normal",
+    "run": 1,
+    "anchor_hit_rate": 0.8
+  },
+  "J086": {
+    "id": "C4",
+    "condition": "kompress_zh_normal",
+    "run": 0,
+    "anchor_hit_rate": 1.0
+  },
+  "J087": {
+    "id": "C4",
+    "condition": "kompress_zh_normal",
+    "run": 1,
+    "anchor_hit_rate": 1.0
+  },
+  "J088": {
+    "id": "C5",
+    "condition": "kompress_zh_normal",
+    "run": 0,
+    "anchor_hit_rate": 0.4
+  },
+  "J089": {
+    "id": "C5",
+    "condition": "kompress_zh_normal",
+    "run": 1,
+    "anchor_hit_rate": 0.4
+  },
+  "J090": {
+    "id": "D1",
+    "condition": "kompress_zh_normal",
+    "run": 0,
+    "anchor_hit_rate": 0.667
+  },
+  "J091": {
+    "id": "D1",
+    "condition": "kompress_zh_normal",
+    "run": 1,
+    "anchor_hit_rate": 0.667
+  },
+  "J092": {
+    "id": "D2",
+    "condition": "kompress_zh_normal",
+    "run": 0,
+    "anchor_hit_rate": 0.8
+  },
+  "J093": {
+    "id": "D2",
+    "condition": "kompress_zh_normal",
+    "run": 1,
+    "anchor_hit_rate": 0.8
+  },
+  "J094": {
+    "id": "D3",
+    "condition": "kompress_zh_normal",
+    "run": 0,
+    "anchor_hit_rate": 0.6
+  },
+  "J095": {
+    "id": "D3",
+    "condition": "kompress_zh_normal",
+    "run": 1,
+    "anchor_hit_rate": 0.2
+  },
+  "J096": {
+    "id": "D4",
+    "condition": "kompress_zh_normal",
+    "run": 0,
+    "anchor_hit_rate": 1.0
+  },
+  "J097": {
+    "id": "D4",
+    "condition": "kompress_zh_normal",
+    "run": 1,
+    "anchor_hit_rate": 1.0
+  },
+  "J098": {
+    "id": "D5",
+    "condition": "kompress_zh_normal",
+    "run": 0,
+    "anchor_hit_rate": 0.5
+  },
+  "J099": {
+    "id": "D5",
+    "condition": "kompress_zh_normal",
+    "run": 1,
+    "anchor_hit_rate": 0.5
+  }
+}

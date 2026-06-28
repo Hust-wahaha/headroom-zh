@@ -253,3 +253,10 @@ uv.lock
 # package shadows the maturin overlay on sys.path.
 /headroom/_core.*.so
 /headroom/_core.so
+
+# Chinese-eval local artifacts (not distributed)
+eval_docs/_wire_debug/
+command.txt
+# but DO track the eval answer transcripts (evidence behind the v1 results),
+# overriding the global *.jsonl ignore above
+!eval/harness/results/*.jsonl
