@@ -236,6 +236,8 @@ class TestContentRouterConfig:
             "SMART_CRUSHER",
             "SEARCH",
             "LOG",
+            "KOMPRESS",
+            "KOMPRESS_ZH",
             "TEXT",
             "MIXED",
             "PASSTHROUGH",
@@ -367,6 +369,48 @@ class TestStrategyDetection:
         text = "This is just plain text without any special formatting."
         strategy = router._determine_strategy(text)
         assert strategy in CompressionStrategy
+
+    def test_detect_chinese_plain_text_routes_to_kompress_zh(self, router, monkeypatch):
+        """Chinese-dominant prose uses the additive kompress_zh lane."""
+        monkeypatch.setenv("HEADROOM_DETECT_BACKEND", "python")
+        text = (
+            "这是一个面向中文技术文档的压缩测试。"
+            "内容包含项目背景、实现细节、风险判断和后续维护计划。"
+        ) * 8
+
+        strategy = router._determine_strategy(text)
+
+        assert strategy == CompressionStrategy.KOMPRESS_ZH
+
+    def test_english_plain_text_does_not_route_to_kompress_zh(self, router, monkeypatch):
+        """The Chinese adapter must not replace upstream Kompress for English text."""
+        monkeypatch.setenv("HEADROOM_DETECT_BACKEND", "python")
+        text = "This is a long English technical document with implementation details. " * 20
+
+        strategy = router._determine_strategy(text)
+
+        assert strategy != CompressionStrategy.KOMPRESS_ZH
+
+    def test_kompress_zh_model_runtime_option_is_captured(self, router):
+        """compress(..., kompress_zh_model=...) reaches the router runtime options."""
+        class SimpleTokenizer:
+            def count_text(self, text: str) -> int:
+                return max(1, len(str(text).split()))
+
+        chinese = (
+            "这是一个中文工具输出，需要优先走 kompress_zh，并且模型 ID 应该被传入运行时。"
+        ) * 40
+        messages = [{"role": "tool", "tool_call_id": "call_1", "content": chinese}]
+
+        router.apply(
+            messages,
+            SimpleTokenizer(),
+            kompress_zh_model="local/kompress-zh-test",
+            compress_user_messages=True,
+            min_chars_for_block_compression=10,
+        )
+
+        assert router._runtime_kompress_zh_model == "local/kompress-zh-test"
 
 
 # =============================================================================

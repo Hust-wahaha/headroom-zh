@@ -34,6 +34,13 @@
 </sub></p>
 
 ---
+
+> **headroom-zh maintenance branch:** this fork tracks upstream Headroom and
+> adds an additive `kompress_zh` lane for Chinese-dominant plain text. Upstream
+> Kompress, SmartCrusher, code/log/search/diff routing, CCR, proxy, MCP, and
+> agent wrapping remain intact. See
+> [`docs/kompress_zh_integration_notes.md`](docs/kompress_zh_integration_notes.md).
+
 <p align="center"><a href="https://trendshift.io/repositories/20881" target="_blank"><img src="https://trendshift.io/api/badge/repositories/20881" alt="chopratejas%2Fheadroom | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a></p>
 
 Headroom compresses everything your AI agent reads — tool outputs, logs, RAG chunks, files, and conversation history — before it reaches the LLM. Same answers, fraction of the tokens.

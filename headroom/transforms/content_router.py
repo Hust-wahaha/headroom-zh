@@ -63,6 +63,10 @@ from .error_detection import content_has_strong_error_indicators
 
 logger = logging.getLogger(__name__)
 
+_CJK_CHAR_PATTERN = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
+_LATIN_WORD_PATTERN = re.compile(r"[A-Za-z]{2,}")
+_PATHLIKE_PATTERN = re.compile(r"(https?://|[A-Za-z]:\\|/|\\\\|\.py\b|\.md\b|\.json\b|\.yaml\b|\.yml\b)")
+_WHITESPACE_PATTERN = re.compile(r"\s+")
 
 _detect_backend_warned = False
 _detect_panic_warned = False
@@ -105,6 +109,33 @@ def _mixed_indicators(content: str) -> dict[str, bool]:
     }
 
 
+def _is_chinese_dominant_text(content: str, *, min_cjk_chars: int = 10, ratio: float = 0.30) -> bool:
+    """Return True when a plain-text block is Chinese-dominant.
+
+    File paths, URLs, and suffixes commonly appear inside Chinese technical
+    prose; discount them so they do not incorrectly route the block back to
+    the English Kompress lane.
+    """
+    if not content:
+        return False
+    cjk_chars = len(_CJK_CHAR_PATTERN.findall(content))
+    if cjk_chars < min_cjk_chars:
+        return False
+    latin_words = len(_LATIN_WORD_PATTERN.findall(content))
+    pathlike_hits = len(_PATHLIKE_PATTERN.findall(content))
+    adjusted_latin = max(0, latin_words - pathlike_hits)
+    score = cjk_chars / max(1, cjk_chars + adjusted_latin * 1.5)
+    return score >= ratio
+
+
+def _estimate_text_tokens(content: str) -> int:
+    if not content:
+        return 0
+    if _is_chinese_dominant_text(content, min_cjk_chars=1, ratio=0.15):
+        return len(_WHITESPACE_PATTERN.sub("", content))
+    return len(content.split())
+
+
 def _section_debug(section: ContentSection, index: int) -> dict[str, Any]:
     return {
         "index": index,
@@ -115,7 +146,7 @@ def _section_debug(section: ContentSection, index: int) -> dict[str, Any]:
         "is_code_fence": getattr(section, "is_code_fence", False),
         "chars": len(section.content),
         "bytes": len(section.content.encode("utf-8", errors="replace")),
-        "tokens_estimate": len(section.content.split()),
+        "tokens_estimate": _estimate_text_tokens(section.content),
         "json_shape": _json_shape(section.content),
         "content": section.content,
     }
@@ -484,6 +515,7 @@ class CompressionStrategy(Enum):
     SEARCH = "search"
     LOG = "log"
     KOMPRESS = "kompress"
+    KOMPRESS_ZH = "kompress_zh"
     TEXT = "text"
     DIFF = "diff"
     HTML = "html"
@@ -986,6 +1018,7 @@ class ContentRouter(Transform):
         self._html_extractor: Any = None
         self._tabular_compressor: Any = None
         self._kompress: Any = None
+        self._kompress_zh: Any = None
 
         # Phase 0 (#1171): cap the input size handed to kompress (ModernBERT
         # ONNX). Its inference scales O(tokens) and runs synchronously on the
@@ -1288,7 +1321,10 @@ class ContentRouter(Transform):
 
         # 2. Detect content type from content itself
         detection = _detect_content(content)
-        return self._strategy_from_detection(detection)
+        strategy = self._strategy_from_detection(detection)
+        if strategy == CompressionStrategy.TEXT and _is_chinese_dominant_text(content):
+            return CompressionStrategy.KOMPRESS_ZH
+        return strategy
 
     def _strategy_from_detection(self, detection: Any) -> CompressionStrategy:
         """Get strategy from content detection result.
@@ -1361,9 +1397,14 @@ class ContentRouter(Transform):
         for i, section in enumerate(sections):
             # Get strategy for this section
             strategy = self._strategy_from_detection_type(section.content_type)
+            if (
+                strategy == CompressionStrategy.TEXT
+                and _is_chinese_dominant_text(section.content)
+            ):
+                strategy = CompressionStrategy.KOMPRESS_ZH
 
             # Compress section
-            original_tokens = len(section.content.split())
+            original_tokens = _estimate_text_tokens(section.content)
             compressed_content, compressed_tokens, _section_chain = self._apply_strategy_to_content(
                 section.content,
                 strategy,
@@ -1580,12 +1621,41 @@ class ContentRouter(Transform):
                 compressor_name = "KompressCompressor"
                 decision_reason = "kompress"
 
+            elif strategy == CompressionStrategy.KOMPRESS_ZH:
+                compressed, compressed_tokens = self._try_kompress_zh(content, context, question)
+                compressor_name = "KompressZhCompressor"
+                decision_reason = "kompress_zh"
+                if compressed == content or compressed_tokens >= original_tokens:
+                    strategy_chain.append(CompressionStrategy.KOMPRESS.value)
+                    compressed, compressed_tokens = self._try_ml_compressor(
+                        content, context, question
+                    )
+                    actual_strategy = CompressionStrategy.KOMPRESS
+                    compressor_name = "KompressCompressor"
+                    decision_reason = "kompress_zh_fallback_kompress"
+
             elif strategy == CompressionStrategy.TEXT:
                 # Prefer Kompress ML compressor for text
                 # Passes through unchanged if Kompress not available
-                compressed, compressed_tokens = self._try_ml_compressor(content, context, question)
-                compressor_name = "KompressCompressor"
-                decision_reason = "text_uses_kompress"
+                if _is_chinese_dominant_text(content):
+                    strategy_chain.append(CompressionStrategy.KOMPRESS_ZH.value)
+                    compressed, compressed_tokens = self._try_kompress_zh(
+                        content, context, question
+                    )
+                    compressor_name = "KompressZhCompressor"
+                    decision_reason = "text_uses_kompress_zh"
+                    if compressed == content or compressed_tokens >= original_tokens:
+                        compressed, compressed_tokens = self._try_ml_compressor(
+                            content, context, question
+                        )
+                        compressor_name = "KompressCompressor"
+                        decision_reason = "text_kompress_zh_fallback_kompress"
+                else:
+                    compressed, compressed_tokens = self._try_ml_compressor(
+                        content, context, question
+                    )
+                    compressor_name = "KompressCompressor"
+                    decision_reason = "text_uses_kompress"
 
             elif strategy == CompressionStrategy.PASSTHROUGH:
                 compressed = content
@@ -1824,6 +1894,30 @@ class ContentRouter(Transform):
 
         return compressed, compressed_tokens or len(compressed.split())
 
+    def _try_kompress_zh(
+        self, content: str, context: str, question: str | None = None
+    ) -> tuple[str, int]:
+        """Chinese-dominant prose compression using the headroom-zh adapter."""
+        if not self.config.enable_kompress:
+            return content, _estimate_text_tokens(content)
+
+        compressor = self._get_kompress_zh()
+        if compressor is None:
+            return content, _estimate_text_tokens(content)
+
+        try:
+            result = compressor.compress(
+                content,
+                context=context,
+                question=question,
+                target_ratio=getattr(self, "_runtime_target_ratio", None),
+                allow_download=False,
+            )
+            return result.compressed, result.compressed_tokens
+        except Exception as e:  # noqa: BLE001
+            logger.warning("kompress_zh failed: %s", e)
+            return content, _estimate_text_tokens(content)
+
     def _strategy_from_detection_type(self, content_type: ContentType) -> CompressionStrategy:
         """Get strategy from ContentType enum."""
         mapping = {
@@ -1850,6 +1944,7 @@ class ContentRouter(Transform):
             CompressionStrategy.TABULAR: ContentType.TABULAR,
             CompressionStrategy.TEXT: ContentType.PLAIN_TEXT,
             CompressionStrategy.KOMPRESS: ContentType.PLAIN_TEXT,
+            CompressionStrategy.KOMPRESS_ZH: ContentType.PLAIN_TEXT,
             CompressionStrategy.PASSTHROUGH: ContentType.PLAIN_TEXT,
         }
         return mapping.get(strategy, ContentType.PLAIN_TEXT)
@@ -2149,6 +2244,32 @@ class ContentRouter(Transform):
             except ImportError:
                 logger.debug("Kompress dependencies not available")
         return self._kompress
+
+    def _get_kompress_zh(self) -> Any:
+        """Get the Chinese Kompress adapter without touching upstream Kompress cache."""
+        model_id = getattr(self, "_runtime_kompress_zh_model", None)
+        if model_id == "disabled":
+            return None
+
+        try:
+            from .kompress_zh_compressor import (
+                KompressZhCompressor,
+                KompressZhConfig,
+                is_kompress_zh_available,
+            )
+        except ImportError:
+            logger.debug("kompress_zh adapter not available")
+            return None
+
+        if not is_kompress_zh_available():
+            return None
+
+        if model_id:
+            return KompressZhCompressor(config=KompressZhConfig(model_id=model_id))
+
+        if self._kompress_zh is None:
+            self._kompress_zh = KompressZhCompressor()
+        return self._kompress_zh
 
     def _get_image_optimizer(self) -> Any:
         """Create an ImageCompressor for one optimization pass.
@@ -2470,6 +2591,7 @@ class ContentRouter(Transform):
         self._runtime_target_ratio: float | None = kwargs.get("target_ratio")
         self._runtime_force_kompress: bool = bool(kwargs.get("force_kompress", False))
         self._runtime_kompress_model: str | None = kwargs.get("kompress_model")
+        self._runtime_kompress_zh_model: str | None = kwargs.get("kompress_zh_model")
         # F2.2: capture the per-request CompressionPolicy so
         # ``_record_to_toin`` can gate TOIN writes on
         # ``policy.toin_read_only``. ``None`` when the caller didn't

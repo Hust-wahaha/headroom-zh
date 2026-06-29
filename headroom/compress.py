@@ -134,6 +134,11 @@ class CompressConfig:
     Set to 'disabled' to skip ML compression entirely
     (only SmartCrusher + CacheAligner will run)."""
 
+    kompress_zh_model: str | None = None
+    """Chinese text compressor model ID.
+    None = default (Deserveall/kompress_zh-baseline-v1-lora).
+    Used only when the router detects Chinese-dominant plain text."""
+
     savings_profile: str | None = None
     """Named high-savings profile, e.g. 'agent-90' for Codex/Claude/Cursor."""
 
@@ -253,6 +258,7 @@ def compress(
             protect_analysis_context=cfg.protect_analysis_context,
             min_tokens_to_compress=cfg.min_tokens_to_compress,
             kompress_model=cfg.kompress_model,
+            kompress_zh_model=cfg.kompress_zh_model,
         )
 
         tokens_before = result.tokens_before
