@@ -412,6 +412,158 @@ class TestStrategyDetection:
 
         assert router._runtime_kompress_zh_model == "local/kompress-zh-test"
 
+    def test_kompress_zh_adds_retrievable_ccr_marker(self, router, monkeypatch):
+        """Chinese lossy compression stores the original and exposes a retrieve hash."""
+        from headroom.cache.compression_store import (
+            CompressionStore,
+            clear_request_compression_store,
+            set_request_compression_store,
+        )
+
+        original = (
+            "这是需要保留原文读取能力的中文文档。"
+            "里面有路径 E:/project/docs/design.md、数字 12345 和关键结论。"
+        ) * 12
+        compressed = "中文文档摘要：保留路径、数字和关键结论。"
+
+        class FakeKompressZh:
+            def compress(self, content, **kwargs):
+                return SimpleNamespace(compressed=compressed, compressed_tokens=20)
+
+        store = CompressionStore()
+        set_request_compression_store(store)
+        monkeypatch.setattr(router, "_get_kompress_zh", lambda: FakeKompressZh())
+        try:
+            result = router.compress(original)
+        finally:
+            clear_request_compression_store()
+
+        assert result.strategy_used == CompressionStrategy.KOMPRESS_ZH
+        assert "Retrieve more: hash=" in result.compressed
+        hash_key = result.compressed.split("Retrieve more: hash=", 1)[1].split("]", 1)[0]
+        entry = store.retrieve(hash_key)
+        assert entry is not None
+        assert entry.original_content == original
+        assert entry.compression_strategy == "kompress_zh"
+
+        from headroom.ccr.tool_injection import CCRToolInjector
+
+        injector = CCRToolInjector(provider="anthropic")
+        injector.scan_for_markers([{"role": "user", "content": result.compressed}])
+        assert injector.has_compressed_content
+
+    def test_kompress_zh_passthrough_when_ccr_store_unavailable(self, router, monkeypatch):
+        """Unrecoverable Chinese summaries must not replace the source text."""
+        original = "这是没有 CCR 存储时必须保持原文的中文内容。" * 20
+
+        class FakeKompressZh:
+            def compress(self, content, **kwargs):
+                return SimpleNamespace(compressed="不可恢复摘要", compressed_tokens=5)
+
+        monkeypatch.setattr(router, "_get_kompress_zh", lambda: FakeKompressZh())
+        monkeypatch.setattr(
+            "headroom.cache.compression_store.get_compression_store",
+            lambda: (_ for _ in ()).throw(RuntimeError("store unavailable")),
+        )
+
+        result = router.compress(original)
+
+        assert result.compressed == original
+
+    def test_kompress_zh_fallback_kompress_without_marker_is_retrievable(
+        self, router, monkeypatch
+    ):
+        """Chinese fallback compression remains recoverable even without native markers."""
+        from headroom.cache.compression_store import (
+            CompressionStore,
+            clear_request_compression_store,
+            set_request_compression_store,
+        )
+
+        original = "这是会先进入中文压缩、再回退到通用压缩器的中文长文档。" * 20
+
+        class FakeKompressZh:
+            def compress(self, content, **kwargs):
+                return SimpleNamespace(compressed=content, compressed_tokens=10_000)
+
+        store = CompressionStore()
+        set_request_compression_store(store)
+        monkeypatch.setattr(router, "_get_kompress_zh", lambda: FakeKompressZh())
+        monkeypatch.setattr(
+            router,
+            "_try_ml_compressor",
+            lambda content, context, question=None: ("通用压缩摘要，无原生 CCR marker。", 12),
+        )
+        try:
+            result = router.compress(original)
+        finally:
+            clear_request_compression_store()
+
+        assert CompressionStrategy.KOMPRESS.value in result.strategy_chain
+        assert "Retrieve more: hash=" in result.compressed
+        hash_key = result.compressed.split("Retrieve more: hash=", 1)[1].split("]", 1)[0]
+        entry = store.retrieve(hash_key)
+        assert entry is not None
+        assert entry.original_content == original
+
+    def test_kompress_zh_anthropic_tool_result_marker_is_retrievable(self, router, monkeypatch):
+        """Anthropic tool_result blocks keep the same CCR recoverability."""
+        from headroom.cache.compression_store import (
+            CompressionStore,
+            clear_request_compression_store,
+            set_request_compression_store,
+        )
+
+        class SimpleTokenizer:
+            def count_text(self, text: str) -> int:
+                return max(1, len(str(text)))
+
+        original = "这是一段来自 tool_result 的中文长文档，必须能按 hash 读回完整原文。" * 16
+        compressed = "tool_result 中文摘要。"
+
+        class FakeKompressZh:
+            def compress(self, content, **kwargs):
+                return SimpleNamespace(compressed=compressed, compressed_tokens=10)
+
+        store = CompressionStore()
+        set_request_compression_store(store)
+        monkeypatch.setattr(router, "_get_kompress_zh", lambda: FakeKompressZh())
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "toolu_1",
+                        "content": original,
+                    }
+                ],
+            }
+        ]
+        try:
+            result = router.apply(
+                messages,
+                SimpleTokenizer(),
+                compress_user_messages=True,
+                min_chars_for_block_compression=10,
+                protect_recent=0,
+            )
+        finally:
+            clear_request_compression_store()
+
+        block = result.messages[0]["content"][0]
+        assert "Retrieve more: hash=" in block["content"]
+        hash_key = block["content"].split("Retrieve more: hash=", 1)[1].split("]", 1)[0]
+        entry = store.retrieve(hash_key)
+        assert entry is not None
+        assert entry.original_content == original
+
+        from headroom.ccr.tool_injection import CCRToolInjector
+
+        injector = CCRToolInjector(provider="anthropic")
+        injector.scan_for_markers(result.messages)
+        assert injector.has_compressed_content
+
 
 # =============================================================================
 # TestContentRouter

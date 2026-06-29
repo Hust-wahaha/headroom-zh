@@ -983,6 +983,7 @@ class ContentRouter(Transform):
     LOSSY_UNMARKED_STRATEGIES = frozenset(
         {
             CompressionStrategy.KOMPRESS,
+            CompressionStrategy.KOMPRESS_ZH,
             CompressionStrategy.TEXT,
             CompressionStrategy.CODE_AWARE,
         }
@@ -1457,7 +1458,7 @@ class ContentRouter(Transform):
         Returns:
             RouterCompressionResult.
         """
-        original_tokens = len(content.split())
+        original_tokens = _estimate_text_tokens(content)
 
         compressed, compressed_tokens, strategy_chain = self._apply_strategy_to_content(
             content, strategy, context, question=question, bias=bias
@@ -1507,7 +1508,7 @@ class ContentRouter(Transform):
             final compressor without parsing decision_reason strings.
         """
         # Track original tokens for TOIN recording
-        original_tokens = len(content.split())
+        original_tokens = _estimate_text_tokens(content)
         compressed: str | None = None
         compressed_tokens: int | None = None
         requested_strategy = strategy
@@ -1633,6 +1634,33 @@ class ContentRouter(Transform):
                     actual_strategy = CompressionStrategy.KOMPRESS
                     compressor_name = "KompressCompressor"
                     decision_reason = "kompress_zh_fallback_kompress"
+                    marked = self._attach_retrieval_marker(
+                        original=content,
+                        compressed=compressed,
+                        original_tokens=original_tokens,
+                        compressed_tokens=compressed_tokens,
+                        strategy=CompressionStrategy.KOMPRESS.value,
+                    )
+                    if marked is None:
+                        compressed = content
+                        compressed_tokens = original_tokens
+                        decision_reason = "kompress_zh_fallback_ccr_unavailable_passthrough"
+                    else:
+                        compressed, compressed_tokens = marked
+                else:
+                    marked = self._attach_retrieval_marker(
+                        original=content,
+                        compressed=compressed,
+                        original_tokens=original_tokens,
+                        compressed_tokens=compressed_tokens,
+                        strategy=CompressionStrategy.KOMPRESS_ZH.value,
+                    )
+                    if marked is None:
+                        compressed = content
+                        compressed_tokens = original_tokens
+                        decision_reason = "kompress_zh_ccr_unavailable_passthrough"
+                    else:
+                        compressed, compressed_tokens = marked
 
             elif strategy == CompressionStrategy.TEXT:
                 # Prefer Kompress ML compressor for text
@@ -1648,8 +1676,39 @@ class ContentRouter(Transform):
                         compressed, compressed_tokens = self._try_ml_compressor(
                             content, context, question
                         )
+                        actual_strategy = CompressionStrategy.KOMPRESS
                         compressor_name = "KompressCompressor"
                         decision_reason = "text_kompress_zh_fallback_kompress"
+                        marked = self._attach_retrieval_marker(
+                            original=content,
+                            compressed=compressed,
+                            original_tokens=original_tokens,
+                            compressed_tokens=compressed_tokens,
+                            strategy=CompressionStrategy.KOMPRESS.value,
+                        )
+                        if marked is None:
+                            compressed = content
+                            compressed_tokens = original_tokens
+                            decision_reason = (
+                                "text_kompress_zh_fallback_ccr_unavailable_passthrough"
+                            )
+                        else:
+                            compressed, compressed_tokens = marked
+                    else:
+                        marked = self._attach_retrieval_marker(
+                            original=content,
+                            compressed=compressed,
+                            original_tokens=original_tokens,
+                            compressed_tokens=compressed_tokens,
+                            strategy=CompressionStrategy.KOMPRESS_ZH.value,
+                        )
+                        if marked is None:
+                            compressed = content
+                            compressed_tokens = original_tokens
+                            decision_reason = "text_kompress_zh_ccr_unavailable_passthrough"
+                        else:
+                            compressed, compressed_tokens = marked
+                            actual_strategy = CompressionStrategy.KOMPRESS_ZH
                 else:
                     compressed, compressed_tokens = self._try_ml_compressor(
                         content, context, question
@@ -1893,6 +1952,45 @@ class ContentRouter(Transform):
             compressed_tokens = len(compressed.split())
 
         return compressed, compressed_tokens or len(compressed.split())
+
+    def _attach_retrieval_marker(
+        self,
+        *,
+        original: str,
+        compressed: str,
+        original_tokens: int,
+        compressed_tokens: int,
+        strategy: str,
+    ) -> tuple[str, int] | None:
+        """Store original text in CCR and append an LLM-visible retrieve marker."""
+        if not original or not compressed or compressed == original:
+            return compressed, compressed_tokens
+        if CCR_RETRIEVAL_MARKER_RE.search(compressed):
+            return compressed, compressed_tokens
+
+        try:
+            from ..cache.compression_store import get_compression_store
+
+            store = get_compression_store()
+            hash_key = store.store(
+                original,
+                compressed,
+                original_tokens=original_tokens,
+                compressed_tokens=compressed_tokens,
+                original_item_count=1,
+                compressed_item_count=1,
+                compression_strategy=strategy,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("CCR store unavailable for %s: %s", strategy, exc)
+            return None
+
+        marker = (
+            f"[{original_tokens} chars compressed to {compressed_tokens}. "
+            f"Retrieve more: hash={hash_key}]"
+        )
+        marked = f"{compressed}\n\n{marker}"
+        return marked, _estimate_text_tokens(marked)
 
     def _try_kompress_zh(
         self, content: str, context: str, question: str | None = None
