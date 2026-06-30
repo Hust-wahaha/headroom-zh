@@ -22,7 +22,8 @@ logger = logging.getLogger(__name__)
 
 BASE_MODEL_ID = "Qwen/Qwen3.5-0.8B"
 ADAPTER_MODEL_ID = "Deserveall/kompress_zh-baseline-v1-lora"
-KOMPRESS_ZH_MAX_NEW_TOKENS_ENV = "HEADROOM_KOMPRESS_ZH_MAX_NEW_TOKENS"
+KOMPRESS_ZH_MAX_NEW_TOKENS_ENV = "HEADROOM_KOMPRESS_ZH_MAX_NEW_TOKENS"  # now the CAP for the dynamic budget
+KOMPRESS_ZH_RATIO_ENV = "HEADROOM_KOMPRESS_ZH_RATIO"  # input-units -> max_new_tokens ratio
 KOMPRESS_ZH_SYSTEM_PROMPT_ENV = "HEADROOM_KOMPRESS_ZH_SYSTEM_PROMPT"
 KOMPRESS_ZH_USER_PROMPT_ENV = "HEADROOM_KOMPRESS_ZH_USER_PROMPT"
 _CJK_CHAR_PATTERN = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
@@ -53,6 +54,18 @@ def _env_int(name: str, default: int) -> int:
         logger.warning("%s must be an integer, got %r; using default=%d", name, raw, default)
         return default
     return max(1, value)
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        logger.warning("%s must be a float, got %r; using default=%s", name, raw, default)
+        return default
+    return value if value > 0 else default
 
 
 def _system_prompt() -> str:
@@ -215,11 +228,24 @@ class KompressZhCompressor(Transform):
             from swift.infer_engine import InferRequest, RequestConfig
 
             engine = _get_engine(self.config)
+            # Dynamic generation budget: scale max_new_tokens by input size so
+            # short docs finish naturally (finish_reason=stop) and long docs are
+            # not truncated to a tiny fixed length (which silently drops anchors
+            # — measured: a fixed 192 cut C3 1716->194 and demo_bundle 5884->207,
+            # both finish_reason=length). Capped to bound latency on weak GPUs.
+            # HEADROOM_KOMPRESS_ZH_MAX_NEW_TOKENS is the CAP (default 1024);
+            # HEADROOM_KOMPRESS_ZH_RATIO is the units->budget ratio (default 0.4,
+            # set slightly above the model's natural retention so it reaches stop).
+            ratio = _env_float(KOMPRESS_ZH_RATIO_ENV, 0.4)
+            cap = _env_int(KOMPRESS_ZH_MAX_NEW_TOKENS_ENV, 1024)
+            max_new = min(max(int(units * ratio), 64), cap)
+            logger.debug(
+                "kompress_zh dynamic max_new_tokens=%d (units=%d ratio=%.2f cap=%d)",
+                max_new, units, ratio, cap,
+            )
             request = InferRequest(messages=_build_request_messages(content))
             request_config = RequestConfig(
-                max_tokens=_env_int(
-                    KOMPRESS_ZH_MAX_NEW_TOKENS_ENV, self.config.max_new_tokens
-                ),
+                max_tokens=max_new,
                 temperature=0.0,
                 top_p=1.0,
                 top_k=20,
