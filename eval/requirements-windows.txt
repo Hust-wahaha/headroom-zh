@@ -1,0 +1,104 @@
+# headroom-zh Windows 本地开发依赖清单（[all] 范围，kompress_zh 可用 + 代理评测）
+#
+# 用途：Windows 本地把 headroom-zh 的 kompress_zh 中文压缩通道真正跑起来。
+# 不替代上游 pyproject.toml；AutoDL 上仍走 `uv pip install -e ".[all]"`（Linux 有 cargo，
+# 可正常 maturin 构建 Rust core）。
+#
+# 关键修复（对应本机踩过的坑，详见 eval_docs/Windows部署修复记录.md）：
+#   1. 必须用【非 Anaconda】的干净 Python 建 venv，否则 torch c10.dll 初始化失败(WinError 1114)。
+#      根因：Anaconda 注入的 MKL / Intel-OpenMP 与 torch 自带 libiomp5md.dll 冲突。
+#      正确做法：uv venv --python cpython-3.12.13-windows-x86_64-none （与已验证的
+#      lora-finetune-qwen 环境同款干净解释器）。
+#   2. torch 用 cu128 的 Windows wheel（本机有 NVIDIA GPU）；cpu wheel 在非 ASCII(中文)路径下
+#      也会 c10.dll 初始化失败。
+#   3. ms-swift 4.1.3 的 Qwen 加载器隐式需要 torchvision / qwen-vl-utils / av —— AutoDL 上靠
+#      传递依赖顺带装，Windows 必须显式加。
+#   4. headroom 是 maturin/Rust 工程；本机无 cargo，无法重编译。靠源码内【预编译】的
+#      headroom/_core.pyd + site-packages 里的 headroom_ai.pth 完成 editable 挂载（脚本完成），
+#      不触发 maturin 构建。
+#
+# 安装方式（PowerShell；先退出可能默认激活的 base conda）：
+#   conda deactivate
+#   uv python install 3.12
+#   uv venv --python cpython-3.12.13-windows-x86_64-none `
+#     "F:\模式识别课设\my_code\headroom_zh_eval\headroom-zh\.venv"
+#   uv pip install --python ...\.venv\Scripts\python.exe `
+#     --index-strategy unsafe-best-match -r eval\requirements-windows.txt
+#   # 然后把一行源码根路径写入 ...\.venv\Lib\site-packages\headroom_ai.pth
+
+# torch / torchvision 的 Windows cu128 wheel 在这个独立索引上
+--extra-index-url https://download.pytorch.org/whl/cu128
+
+# ===== kompress_zh 推理栈（cu128，版本对齐已验证的 lora-finetune-qwen 环境）=====
+torch==2.11.0+cu128
+torchvision==0.26.0+cu128
+ms-swift==4.1.3
+peft==0.19.1
+transformers==5.6.2
+accelerate==1.13.0
+tokenizers==0.22.2
+safetensors==0.7.0
+sentencepiece==0.2.1
+numpy==2.4.4
+huggingface-hub>=1.5.0,<2.0
+# ms-swift Qwen 加载器隐式依赖（Windows 必须显式）
+qwen-vl-utils==0.0.14
+av==17.0.1
+
+# ===== headroom 核心（pyproject [project].dependencies）=====
+tiktoken>=0.5.0
+pydantic>=2.0.0
+litellm>=1.86.2,<2.0
+click>=8.1.0
+rich>=13.0.0
+opentelemetry-api>=1.24.0
+ast-grep-cli>=0.30.0
+
+# ===== [proxy]：代理评测必需 =====
+fastapi>=0.100.0
+uvicorn>=0.23.0,<1.0
+httpx[http2]>=0.24.0
+openai>=2.14.0
+mcp>=1.0.0
+magika>=0.6.0
+zstandard>=0.20.0
+websockets>=13.0
+onnxruntime>=1.16.0
+watchdog>=4.0.0
+sqlite-vec>=0.1.6
+
+# ===== [code]：AST 压缩（Code-Aware；默认关，需 --code-aware / HEADROOM_CODE_AWARE_ENABLED=1 开启）=====
+# 必须 pin <1.0：tree-sitter-language-pack 1.x 是破坏性重写，get_parser 返回自有类型而非
+# 标准 tree_sitter.Parser，会让 code_compressor._get_parser 静默失效（见 pyproject [code] 注释）。
+# 并显式带上 tree-sitter 基包并 pin，避免被传递依赖拉到不兼容版本。
+tree-sitter-language-pack>=0.10.0,<1.0
+tree-sitter>=0.25.2,<0.26
+
+# ===== [memory] =====
+hnswlib>=0.8.0
+sentence-transformers>=2.2.0,<6.0
+
+# ===== [relevance] =====
+fastembed>=0.4.0
+
+# ===== [image] =====
+pillow>=10.0.0
+rapidocr-onnxruntime>=1.4.0,<2
+
+# ===== [reports] =====
+jinja2>=3.0.0
+
+# ===== [otel] =====
+opentelemetry-sdk>=1.24.0
+opentelemetry-exporter-otlp-proto-http>=1.24.0
+
+# ===== [evals] =====
+datasets>=2.14.0
+scikit-learn>=1.3.0
+anthropic>=0.18.0
+
+# ===== [html] =====
+trafilatura>=1.6.0
+
+# ===== [benchmark] =====
+lm-eval[api]>=0.4.0
