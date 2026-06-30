@@ -2224,6 +2224,35 @@ class ContentRouter(Transform):
             else:
                 status["kompress"] = "unavailable"
 
+        # 1b. ML Chinese text compressor: kompress_zh
+        # Mirror the English Kompress preload: build + cache the Swift/Qwen
+        # engine at startup. Without this the engine cache stays empty, so
+        # _try_kompress_zh (which calls compress with allow_download=False)
+        # hits the cold-start gate in KompressZhCompressor.compress ->
+        # passthrough -> fallback to the English Kompress model, meaning
+        # Chinese text never actually uses the kompress_zh model at all.
+        # Preloading here keeps the first Chinese block off a ~20-25s cold
+        # load inside the executor thread (which would blow the timeout).
+        try:
+            from .kompress_zh_compressor import (
+                _get_engine,
+                is_kompress_zh_available,
+            )
+
+            if is_kompress_zh_available():
+                zh = self._get_kompress_zh()
+                if zh is not None:
+                    _get_engine(zh.config)  # build + cache the engine now (load only, no inference)
+                    logger.info("kompress_zh pre-loaded at startup")
+                    status["kompress_zh"] = "enabled"
+                else:
+                    status["kompress_zh"] = "unavailable"
+            else:
+                status["kompress_zh"] = "not installed"
+        except Exception as e:
+            logger.warning("kompress_zh pre-load skipped: %s", e)
+            status["kompress_zh"] = "skipped"
+
         # 2. Magika content detector (avoids 100-200ms on first content detection)
         try:
             from ..compression.detector import _get_magika, _magika_available
