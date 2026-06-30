@@ -46,6 +46,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -412,7 +413,28 @@ class SmartCrusher(Transform):
             return cached
         kwargs = dict(self._rust_cfg_kwargs)
         kwargs["lossless_only"] = lossless_only
-        rust_cfg = self._RustSmartCrusherConfig(**kwargs)
+        # Graceful degradation for a stale prebuilt `_core.pyd`: an older
+        # Rust SmartCrusherConfig may not know newer Python-side fields
+        # (e.g. `lossless_only`). Instead of crashing the whole compressor,
+        # drop any kwarg the binary rejects and retry; the dropped field
+        # falls back to the Rust default. Fix properly by rebuilding /
+        # updating `_core` to match this branch.
+        while True:
+            try:
+                rust_cfg = self._RustSmartCrusherConfig(**kwargs)
+                break
+            except TypeError as exc:
+                m = re.search(r"unexpected keyword argument '([^']+)'", str(exc))
+                if not m or m.group(1) not in kwargs:
+                    raise
+                dropped = m.group(1)
+                kwargs.pop(dropped, None)
+                logger.warning(
+                    "SmartCrusher: prebuilt _core.pyd rejected config field %r; "
+                    "dropping it and using the Rust default (stale _core out of sync "
+                    "with this branch — rebuild/update _core to fully enable).",
+                    dropped,
+                )
         if not self._with_compaction:
             rust = self._RustSmartCrusher.without_compaction(rust_cfg)
         elif self._resolved_compaction_format == "csv-schema":
