@@ -1,32 +1,41 @@
 <div align="center"><pre>
-  ██╗  ██╗███████╗ █████╗ ██████╗ ██████╗  ██████╗  ██████╗ ███╗   ███╗
-  ██║  ██║██╔════╝██╔══██╗██╔══██╗██╔══██╗██╔═══██╗██╔═══██╗████╗ ████║
-  ███████║█████╗  ███████║██║  ██║██████╔╝██║   ██║██║   ██║██╔████╔██║
-  ██╔══██║██╔══╝  ██╔══██║██║  ██║██╔══██╗██║   ██║██║   ██║██║╚██╔╝██║
-  ██║  ██║███████╗██║  ██║██████╔╝██║  ██║╚██████╔╝╚██████╔╝██║ ╚═╝ ██║
-  ╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝╚═════╝ ╚═╝  ╚═╝ ╚═════╝  ╚═════╝ ╚═╝     ╚═╝
-                  The context compression layer for AI agents
+    ██╗  ██╗███████╗ █████╗ ██████╗ ██████╗  ██████╗  ██████╗ ███╗   ███╗      ███████╗██╗  ██╗
+    ██║  ██║██╔════╝██╔══██╗██╔══██╗██╔══██╗██╔═══██╗██╔═══██╗████╗ ████║      ╚══███╔╝██║  ██║
+    ███████║█████╗  ███████║██║  ██║██████╔╝██║   ██║██║   ██║██╔████╔██║█████╗  ███╔╝ ███████║
+    ██╔══██║██╔══╝  ██╔══██║██║  ██║██╔══██╗██║   ██║██║   ██║██║╚██╔╝██║╚════╝ ███╔╝  ██╔══██║
+    ██║  ██║███████╗██║  ██║██████╔╝██║  ██║╚██████╔╝╚██████╔╝██║ ╚═╝ ██║      ███████╗██║  ██║
+    ╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝╚═════╝ ╚═╝  ╚═╝ ╚═════╝  ╚═════╝ ╚═╝     ╚═╝      ╚══════╝╚═╝  ╚═╝
+                    Chinese-first context compression layer for AI agents
 </pre></div>
 
-<p align="center"><strong>60–95% fewer tokens · library · proxy · MCP · content-aware compressors · local-first · reversible</strong></p>
+<p align="center"><strong>Chinese-aware · library · proxy · MCP · local-first · reversible retrieval · upstream-compatible</strong></p>
+
+<p align="center"><em>Built on Headroom, with a dedicated kompress_zh lane for Chinese-dominant agent context.</em></p>
+
+<p align="center"><strong>Bring Headroom to real Chinese coding workflows with a dedicated Chinese compression lane.</strong></p>
+
+<p align="center"><strong>Verified on a real docs-review agent workload: one recorded Chinese payload shrank from 14,342 bytes to 4,200 bytes while preserving the anchors the agent still needed.</strong></p>
 
 <p align="center">
-  <a href="https://github.com/chopratejas/headroom/actions/workflows/ci.yml"><img src="https://github.com/chopratejas/headroom/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="https://app.codecov.io/gh/chopratejas/headroom"><img src="https://codecov.io/gh/chopratejas/headroom/graph/badge.svg" alt="codecov"></a>
-  <a href="https://pypi.org/project/headroom-ai/"><img src="https://img.shields.io/pypi/v/headroom-ai.svg" alt="PyPI"></a>
-  <a href="https://www.npmjs.com/package/headroom-ai"><img src="https://img.shields.io/npm/v/headroom-ai.svg" alt="npm"></a>
+  <a href="https://github.com/Hust-wahaha/headroom-zh"><img src="https://img.shields.io/badge/repo-headroom--zh-black.svg?logo=github" alt="Repo: headroom-zh"></a>
+  <a href="docs/kompress_zh_integration_notes.md"><img src="https://img.shields.io/badge/status-upstream--clean%20integration-success.svg" alt="Status: upstream-clean integration"></a>
   <a href="https://huggingface.co/chopratejas/kompress-v2-base"><img src="https://img.shields.io/badge/model-Kompress--v2--base-yellow.svg" alt="Model: Kompress-v2-base"></a>
+  <a href="https://huggingface.co/Deserveall/kompress_zh-baseline-v1-lora"><img src="https://img.shields.io/badge/model-kompress__zh--baseline--v1--lora-lightgrey.svg" alt="Model: kompress_zh-baseline-v1-lora"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License: Apache 2.0"></a>
-  <a href="https://headroom-docs.vercel.app/docs"><img src="https://img.shields.io/badge/docs-online-blue.svg" alt="Docs"></a>
+  <a href="https://headroom-docs.vercel.app/docs"><img src="https://img.shields.io/badge/docs-upstream-blue.svg" alt="Docs: upstream"></a>
 </p>
 
 <p align="center">
-  <a href="https://headroom-docs.vercel.app/docs">Docs</a> ·
+  <a href="#why-headroom-zh-exists">Why</a> ·
+  <a href="#what-makes-headroom-zh-different">What is unique</a> ·
+  <a href="#where-it-is-meant-to-win">Use Cases</a> ·
+  <a href="#headroom-zh-demo-status">Demo Status</a> ·
+  <a href="#output-token-reduction-cut-what-the-model-writes-back">Output Savings</a> ·
   <a href="#get-started-60-seconds">Install</a> ·
-  <a href="#proof">Proof</a> ·
+  <a href="#upstream-foundation">Foundation</a> ·
   <a href="#agent-compatibility-matrix">Agents</a> ·
-  <a href="https://discord.gg/yRmaUNpsPJ">Discord</a> ·
-  <a href="llms.txt">llms.txt</a>
+  <a href="https://huggingface.co/Deserveall/kompress_zh-baseline-v1-lora">Model</a> ·
+  <a href="https://headroom-docs.vercel.app/docs">Upstream Docs</a>
 </p>
 
 <p align="center"><sub>
@@ -35,30 +44,152 @@
 
 ---
 
-> **headroom-zh maintenance branch:** this fork tracks upstream Headroom and
-> adds an additive `kompress_zh` lane for Chinese-dominant plain text. Upstream
-> Kompress, SmartCrusher, code/log/search/diff routing, CCR, proxy, MCP, and
-> agent wrapping remain intact. See
-> [`docs/kompress_zh_integration_notes.md`](docs/kompress_zh_integration_notes.md).
+| What it changes | Why it matters |
+|---|---|
+| **Adds `kompress_zh` without removing upstream `Kompress`** | English/plain-text traffic keeps the original lane; Chinese-heavy traffic finally gets a lane built for it. |
+| **Optimized for code-agent context, not pretty summaries** | Compresses docs, logs, handoff notes, tool outputs, and source bundles into forms that Claude/Codex/GPT can still act on. |
+| **Anchor-aware by design** | Paths, URLs, commands, identifiers, risks, and next steps are treated as first-class signals instead of disposable wording. |
+| **Tracks current upstream Headroom while staying additive** | Proxy, MCP, CCR retrieval, SmartCrusher, code/log/search/diff routing, and agent wrapping remain upstream-compatible. |
 
-<p align="center"><a href="https://trendshift.io/repositories/20881" target="_blank"><img src="https://trendshift.io/api/badge/repositories/20881" alt="chopratejas%2Fheadroom | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a></p>
+## Why headroom-zh exists
 
-Headroom compresses everything your AI agent reads — tool outputs, logs, RAG chunks, files, and conversation history — before it reaches the LLM. Same answers, fraction of the tokens.
+Upstream `headroom` is already a powerful context-compression system. But for
+Chinese-heavy projects, one missing piece matters a lot: without a strong
+Chinese plain-text compressor, a large part of real Chinese tool outputs,
+handoff docs, logs, and repo context still cannot enjoy the full Headroom
+effect.
+
+`headroom-zh` exists to close exactly that gap.
+
+It keeps the upstream `Kompress` path for English and general plain-text
+workloads, and adds `kompress_zh` for Chinese-dominant prose. That turns
+Headroom from "great in principle" into something Chinese coders can actually
+use on real projects. The result is simple and important: many more Chinese
+developers can finally experience Headroom's token savings in their own daily
+coding workflows, without giving up anchors, structure, or agent usefulness.
+
+In short: `headroom-zh` is the layer that makes Headroom genuinely usable for
+Chinese project contexts.
+
+## What makes headroom-zh different
+
+- **Dual-lane prose compression**: keep upstream `Kompress` for English and
+  general plain text, but route Chinese-dominant prose to `kompress_zh`.
+- **Chinese-agent-oriented output style**: compressed text is tuned for LLM
+  readers, often using light structure and concise Chinese shorthand rather
+  than human-facing polished prose.
+- **Anchor-aware by design**: the data and review flow intentionally mix paths,
+  URLs, identifiers, commands, risks, next steps, and other "do not drop"
+  spans that code-agent workflows depend on.
+
+## Where it is meant to win
+
+- **Chinese repo handoff and project-state reading**: long `CURRENT_STATE`,
+  `AGENT_HANDOFF`, planning, and execution docs that an agent must read before
+  acting.
+- **Logs and failure triage**: mixed Chinese explanations with stack traces,
+  commands, paths, and environment details.
+- **Codebase exploration bundles**: source summaries, file digests, repo notes,
+  and RAG chunks prepared for Codex, Claude Code, or similar agents.
+- **Mixed-language reality**: Chinese prose can coexist with English symbols,
+  paths, URLs, JSON fragments, and code identifiers without forcing the whole
+  request onto an English-only compression path.
+
+## Representative case
+
+The clearest homepage case is `case_01_docs_review`: a long Chinese project
+handoff bundle that mixes prose with model IDs, file paths, ports, scripts, and
+execution constraints.
+
+**Task shape**
+
+The agent is asked to read the bundle first, then report:
+
+1. current project goal
+2. completed work
+3. next three priority steps
+4. risks and dependencies
+
+**Before: raw handoff fragment**
+
+```md
+目前最大的展示短板不是代理或模型本身，而是缺少高质量中文 demo 工作负载。
+如果从零给 agent 扔一个很短的空任务，它几乎不需要读任何东西，Headroom 的优势就看不出来。
+
+推荐执行顺序：
+1. 在 AutoDL 上启动 `scripts/smoke_autodl_headroom.py --keep-running`
+2. 保持代理运行在 `8790`
+3. 把 CodeX 或 Claude Code 指向代理
+4. 让 agent 先读取大体量中文材料，再回答问题或执行探索
+5. 截图 `/dashboard`
+6. 导出或截图 `/stats-history`
+
+风险与依赖：
+- 依赖远端 AutoDL 网络与模型缓存
+- 演示时如果任务太短，节省数字会弱
+- 纯英文任务可能更多落到原生 `kompress`
+```
+
+**After: representative compressed form**
+
+This is an illustrative agent-facing compressed form for the same bundle style.
+It is shown to make the retention target obvious, not to claim a byte-exact
+verbatim model output.
+
+```md
+问题: 若任务过短, agent 无需读长中文材料, Headroom 优势不显。
+
+执行顺序:
+1. AutoDL 起 `scripts/smoke_autodl_headroom.py --keep-running`
+2. 代理端口固定 `8790`
+3. CodeX / Claude Code 指向代理
+4. 先读长中文材料, 后回答/探索
+5. 展示 `/dashboard` 与 `/stats-history`
+
+风险:
+- 依赖 AutoDL 网络与模型缓存
+- 短任务节省数字弱
+- 纯英文任务可能走原生 `kompress`
+```
+
+**What remains actionable after compression**
+
+- the core decision logic is still explicit
+- the execution order is still explicit
+- the key command, port, and dashboard endpoints are still explicit
+- the agent can still answer what to do next and what could go wrong
+
+**Why this is a good `headroom-zh` case**
+
+- It is long enough that compression actually matters.
+- It contains anchors the agent cannot afford to lose.
+- It looks like a real Chinese code-agent reading task, not a benchmark toy.
+
+**Recorded result**
+
+- recorded payload envelope: `14,342 bytes → 4,200 bytes`
+- the same recorded call also reported router-side `saved=3442` on the
+  attempted compressed unit
+- the same bundle family produced visible `/dashboard` and `/stats-history`
+  growth during the verified AutoDL Codex demo
+
+This is the kind of workload `headroom-zh` is built for: not generic chat, but
+long Chinese context that still has to remain actionable after compression.
 
 <p align="center">
   <img src="HeadroomDemo-Fast.gif" alt="Headroom in action" width="820">
-  <br/><sub>Live: 10,144 → 1,260 tokens — same FATAL found.</sub>
+  <br/><sub>Recorded docs-review run: compression visible in the dashboard, with paths, ports, scripts, execution order, and risk signals still preserved for the agent.</sub>
 </p>
 
 ## What it does
 
 - **Library** — `compress(messages)` in Python or TypeScript, inline in any app
 - **Proxy** — `headroom proxy --port 8787`, zero code changes, any language
-- **Agent wrap** — `headroom wrap claude|codex|copilot|cursor|aider|opencode|cline|continue|goose|openhands|openclaw|vibe` in one command; undo with `headroom unwrap <tool>`
+- **Agent wrap** — `headroom wrap claude|codex|copilot|cursor|aider|opencode|cline|continue|goose|openhands|openclaw|vibe` in one command; undo durable wrapping with `headroom unwrap <tool>`
 - **MCP server** — `headroom_compress`, `headroom_retrieve`, `headroom_stats` for any MCP client
 - **Cross-agent memory** — shared store across Claude, Codex, Gemini, auto-dedup
-- **`headroom learn`** — mines failed sessions, writes corrections to `CLAUDE.local.md` (default, gitignored) or `CLAUDE.md` / `AGENTS.md` / `GEMINI.md`
-- **Output token reduction** — trims what the model *writes back* (not just what you send): drops ceremony/restated code and skips deep "thinking" on routine steps. See [Output token reduction](#output-token-reduction-cut-what-the-model-writes-back).
+- **`headroom learn`** — mines failed sessions, writes corrections to `CLAUDE.local.md` by default, or to `CLAUDE.md` / `AGENTS.md` / `GEMINI.md` when requested
+- **Output token reduction** — trims what the model writes back, not just what you send: less ceremony, less repeated code, and lower effort on routine tool-followup turns
 - **Reversible (CCR)** — originals are cached for retrieval on demand
 
 ## How it works (30 seconds)
@@ -74,7 +205,7 @@ Headroom compresses everything your AI agent reads — tool outputs, logs, RAG c
     │  CacheAligner  →  ContentRouter  →  CCR            │
     │                    ├─ SmartCrusher   (JSON)        │
     │                    ├─ CodeCompressor (AST)         │
-    │                    └─ Kompress-v2-base (text, HF)  │
+    │                    └─ Kompress-v2 / kompress_zh    │
     │                                                    │
     │  Cross-agent memory  ·  headroom learn  ·  MCP     │
     └────────────────────────────────────────────────────┘
@@ -84,37 +215,47 @@ Headroom compresses everything your AI agent reads — tool outputs, logs, RAG c
 ```
 
 - **ContentRouter** — detects content type, selects the right compressor
-- **SmartCrusher / CodeCompressor / Kompress-v2-base** — compress JSON, AST, or prose
+- **SmartCrusher / CodeCompressor / Kompress-v2-base / kompress_zh** — compress JSON, AST, or prose
 - **CacheAligner** — stabilizes prefixes so provider KV caches actually hit
 - **CCR** — stores originals locally; LLM calls `headroom_retrieve` if it needs them
 
-→ [Architecture](https://headroom-docs.vercel.app/docs/architecture) · [CCR reversible compression](https://headroom-docs.vercel.app/docs/ccr) · [Kompress-v2-base model card](https://huggingface.co/chopratejas/kompress-v2-base)
+→ [Architecture](https://headroom-docs.vercel.app/docs/architecture) · [CCR reversible compression](https://headroom-docs.vercel.app/docs/ccr) · [Kompress-v2-base](https://huggingface.co/chopratejas/kompress-v2-base) · [kompress_zh baseline model card](https://huggingface.co/Deserveall/kompress_zh-baseline-v1-lora)
 
 ## Get started (60 seconds)
 
+`headroom-zh` is currently a source-first fork: use upstream `headroom` package
+artifacts for the baseline runtime, or install this repository from source to
+reproduce the verified Chinese-first demo path.
+
 ```bash
-# 1 — Install
+# 1 — Install a baseline runtime
 pip install "headroom-ai[all]"          # Python — ships the `headroom` CLI
 npm install headroom-ai                 # TypeScript SDK only — no `headroom` CLI
 
-# 2 — Pick your mode  (the `headroom` commands below come from the pip install)
+# 2 — Or run the verified fork directly
+git clone https://github.com/Hust-wahaha/headroom-zh.git
+cd headroom-zh
+pip install -e ".[dev]"
+
+# 3 — Pick your mode
 headroom wrap claude                    # wrap a coding agent
 headroom proxy --port 8787              # drop-in proxy, zero code changes
 # or: from headroom import compress      # inline library
 
-# 3 — Verify setup and see the savings
-headroom doctor                         # health check — confirms routing is working
+# 4 — See the savings
 headroom perf
-headroom dashboard                      # live savings dashboard (proxy must be running)
 ```
 
 The `headroom` CLI ships **only** via the PyPI package. The npm `headroom-ai` is the TypeScript SDK — a library you import (`import { compress } from 'headroom-ai'`), not a CLI, so it provides no `headroom` command.
 
 Granular extras: `[proxy]`, `[mcp]`, `[ml]`, `[code]`, `[memory]`, `[vector]` (optional HNSW backend — needs a C++ toolchain, not in `[all]`), `[relevance]`, `[image]`, `[agno]`, `[langchain]`, `[evals]`, `[pytorch-mps]` (Apple-GPU memory-embedder offload — set `HEADROOM_EMBEDDER_RUNTIME=pytorch_mps`). Requires **Python 3.10+**.
 
-## Proof
+## Upstream foundation
 
-**Savings on real agent workloads:**
+The original `headroom` project already established the broader context
+compression foundation that `headroom-zh` builds on.
+
+Representative upstream results:
 
 | Workload                      | Before | After  | Savings |
 |-------------------------------|-------:|-------:|--------:|
@@ -132,70 +273,68 @@ Granular extras: `[proxy]`, `[mcp]`, `[ml]`, `[code]`, `[memory]`, `[vector]` (o
 | SQuAD v2   | QA       | 100 |        — |  **97%** | 19% compression |
 | BFCL       | Tools    | 100 |        — |  **97%** | 32% compression |
 
-Reproduce: `python -m headroom.evals suite --tier 1` · [Full benchmarks & methodology](https://headroom-docs.vercel.app/docs/benchmarks)
+See the upstream methodology here:
+`python -m headroom.evals suite --tier 1` · [Full benchmarks & methodology](https://headroom-docs.vercel.app/docs/benchmarks)
+
+## Headroom ZH demo status
+
+This fork also carries a Chinese-first `kompress_zh` demo stack for long
+document, log, and codebase-reading workloads.
+
+Current verified path:
+
+- `Codex CLI`
+- local Headroom proxy
+- OpenAI-compatible `/v1/responses` path
+- browser-open `/dashboard` + `/stats-history`
+- Chinese heavy context flowing through `/v1/responses`
+
+Current branch notes:
+
+- [`docs/kompress_zh_integration_notes.md`](docs/kompress_zh_integration_notes.md)
+- [`agent-evals/README.md`](agent-evals/README.md)
+- [`eval/README.md`](eval/README.md)
+- [`eval_docs/`](eval_docs/)
 
 ## Output token reduction (cut what the model writes back)
 
-Everything above shrinks the prompt you **send**. But you also pay for every
-token the model **writes back** — and on Opus-class models output costs 5× input.
-A lot of that output is waste: "Great, let me…" preambles, re-printing code you
-just showed it, and deep "thinking" on routine steps like reading a file.
+Everything above shrinks the prompt you **send**. Headroom can also reduce the
+tokens the model **writes back** from the proxy path, without changing your app
+code.
 
-Headroom can trim that too, from the proxy, without you changing any code:
-
-- **Verbosity steering** — appends a short "be terse, don't restate context"
-  note to the end of the system prompt (so your prompt cache still hits).
-- **Effort routing** — when a turn is just the model resuming after a tool result
-  (a file read, a passing test), it dials the model's thinking effort down. New
-  questions and errors keep full effort.
+- **Verbosity steering** appends a short "be terse, don't restate context" note
+  at the end of the system prompt so provider prompt caches can still hit.
+- **Effort routing** lowers thinking effort when a turn is just routine
+  tool-followup, while new questions and errors keep full effort.
 
 Turn it on:
 
 ```bash
-export HEADROOM_OUTPUT_SHAPER=1     # off by default
+export HEADROOM_OUTPUT_SHAPER=1
 headroom proxy --port 8787
 ```
 
-> **Already running a proxy?** These switches are read *live* on every request,
-> so a proxy that `headroom wrap` **reused** (rather than started) would not see
-> a value you export afterwards — its environment was snapshotted at launch.
-> `headroom wrap` now hot-syncs your current settings to the running proxy via a
-> loopback `POST /admin/runtime-env`, so they take effect immediately with **no
-> restart** (no cold start, no dropped requests, no lost caches). Set them before
-> you `wrap`. On a shared proxy these overrides are global — the last explicit
-> setting wins.
+If a proxy is already running, `headroom wrap` can hot-sync the current runtime
+settings to the local proxy through `POST /admin/runtime-env`, so reused proxy
+sessions pick up output-shaping settings without a restart.
 
-**Learn the right terseness for you.** People don't *say* how terse they want
-answers — they *show* it (they interrupt long replies, or move on before they
-could have read them). `headroom learn --verbosity` reads your past sessions and
-picks the level automatically:
+Learn the right terseness level from prior sessions:
 
 ```bash
-headroom learn --verbosity            # preview what it found (dry run)
-headroom learn --verbosity --apply    # save it; the proxy uses it from now on
+headroom learn --verbosity            # preview what it found
+headroom learn --verbosity --apply    # save it for future proxy runs
 ```
 
-**See how many output tokens you saved.** Output savings are *counterfactual* —
-we never see what the model *would* have written — so Headroom reports an honest
-**estimate with a confidence range**, never a made-up number:
+Check estimated output savings:
 
 ```bash
 headroom output-savings
-# Reduction: 31.7%  (95% CI 27.7% … 35.7%)   [estimated]
+# Reduction: 31.7%  (95% CI 27.7% ... 35.7%)   [estimated]
 ```
 
-Want a *measured* number instead of an estimate? Leave 10% of conversations
-unshaped as a control group: `export HEADROOM_OUTPUT_HOLDOUT=0.1`. The dashboard
-shows an **Output Tokens Saved** card next to input compression, labelled
-`measured` or `estimated` with the confidence band.
-
-→ Full write-up incl. the measurement methodology: [Output token reduction](https://headroom-docs.vercel.app/docs/savings)
-
-<a href="https://www.star-history.com/?repos=chopratejas%2Fheadroom&type=date&legend=top-left">
- <picture>
-   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=chopratejas/headroom&type=date&legend=top-left" />
- </picture>
-</a>
+For a measured control group, set `HEADROOM_OUTPUT_HOLDOUT=0.1`. The dashboard
+then shows output tokens saved next to input compression, labelled as measured
+or estimated with a confidence band.
 
 ## Agent compatibility matrix
 
@@ -215,8 +354,9 @@ shows an **Output Tokens Saved** card next to input compression, labelled
 | Mistral Vibe | ✅              | starts proxy + launches          |
 | Cortex Code  | Library only    | 60–65% savings (library mode; no `wrap`) |
 
-Any OpenAI-compatible client works via `headroom proxy`. MCP-native: `headroom mcp install`.
-Undo durable wrapping with `headroom unwrap <tool>` (supports: `claude`, `copilot`, `codex`, `opencode`, `openclaw`).
+Any OpenAI-compatible client works via `headroom proxy`. MCP-native:
+`headroom mcp install`. Undo durable wrapping with `headroom unwrap <tool>`
+for supported tools.
 
 ### GitHub Copilot CLI subscription mode
 
@@ -227,7 +367,11 @@ headroom copilot-auth login
 headroom wrap copilot --subscription -- --model gpt-4o
 ```
 
-This lets Headroom intercept OpenAI-compatible Copilot CLI requests and apply the same proxy compression pipeline before forwarding to GitHub Copilot's hosted API. The wrapper exchanges Headroom's reusable GitHub OAuth token for Copilot's short-lived API token and prints the upstream endpoint as `COPILOT_PROVIDER_API_URL=...` during launch.
+This lets Headroom intercept OpenAI-compatible Copilot CLI requests and apply
+the same proxy compression pipeline before forwarding to GitHub Copilot's
+hosted API. The wrapper exchanges Headroom's reusable GitHub OAuth token for a
+short-lived Copilot API token and prints the upstream endpoint as
+`COPILOT_PROVIDER_API_URL=...` during launch.
 
 `headroom copilot-auth login` stores a Headroom-specific Copilot OAuth token.
 This avoids relying on generic GitHub or Copilot CLI tokens that can read
@@ -284,6 +428,7 @@ Platform support note: macOS auth reuse via Copilot CLI Keychain storage has bee
 - **SmartCrusher** — universal JSON: arrays of dicts, nested objects, mixed types.
 - **CodeCompressor** — AST-aware for Python, JS/TS, Go, Rust, Java, C/C++, Perl.
 - **Kompress-v2-base** — our HuggingFace model, trained on agentic traces.
+- **kompress_zh** — an additional Chinese plain-text compressor, routed only for Chinese-dominant prose.
 - **Image compression** — 40–90% reduction via trained ML router.
 - **CacheAligner** — stabilizes prefixes so Anthropic/OpenAI KV caches actually hit.
 - **CCR** — reversible compression; LLM retrieves originals on demand.
@@ -300,7 +445,7 @@ Headroom exposes one stable request lifecycle across `compress()`, the SDK, and 
 
 `Setup` → `Pre-Start` → `Post-Start` → `Input Received` → `Input Cached` → `Input Routed` → `Input Compressed` → `Input Remembered` → `Pre-Send` → `Post-Send` → `Response Received`
 
-- **Transforms** do the work: CacheAligner, ContentRouter, SmartCrusher, CodeCompressor, Kompress-v2-base.
+- **Transforms** do the work: CacheAligner, ContentRouter, SmartCrusher, CodeCompressor, Kompress-v2-base, kompress_zh.
 - **Pipeline extensions** observe or customize lifecycle stages via `on_pipeline_event(...)`.
 - **Compression hooks** sit alongside the canonical lifecycle as an additional extension seam.
 - **Proxy extensions** remain the server/app integration seam for ASGI middleware, routes, and startup policy.
@@ -315,15 +460,14 @@ Provider and tool-specific behavior lives under `headroom/providers/` so core or
 
 ## Headroom for teams
 
-Headroom OSS is built for **individual developers**: run `headroom proxy` or `headroom wrap` on your laptop and start cutting tokens in minutes — free, local-first, your data never leaves your machine.
+This repository stays open source and local-first. For individual developers,
+run `headroom proxy` or `headroom wrap` on your own machine and keep data local.
 
-Running it across a **whole engineering org** is a different job: a shared, always-on deployment; centralized config and version rollout; org-wide savings dashboards; SSO and access controls; air-gapped / VPC installs; and someone to call when it matters. That's what we help companies with — self-hosted with support, or fully managed.
-
-**If your team is spending real money on LLM tokens** — Claude Code, Codex, Cursor, or agents running in CI — **and you want those savings across everyone, not just one laptop:**
-
-→ Email **[hello@headroomlabs.ai](mailto:hello@headroomlabs.ai)** with your stack and rough monthly LLM spend, and we'll help you roll Headroom out across your organization.
-
-Everything in this repo stays open source (Apache 2.0). The managed offering is simply for teams that would rather have it deployed, supported, and scaled for them.
+Org-wide rollout is a separate deployment problem: shared always-on proxy,
+centralized config, version rollout, savings dashboards, SSO, VPC or air-gapped
+installs, and support. For that path, contact upstream Headroom Labs at
+[hello@headroomlabs.ai](mailto:hello@headroomlabs.ai) with your stack and rough
+monthly LLM spend.
 
 ## Install
 
@@ -333,9 +477,18 @@ npm install headroom-ai                 # TypeScript SDK (library only — no `h
 docker pull ghcr.io/chopratejas/headroom:latest
 ```
 
-Granular extras: `[proxy]`, `[mcp]`, `[ml]` (Kompress-v2-base), `[code]`, `[memory]`, `[vector]` (optional HNSW backend — needs a C++ toolchain, not in `[all]`), `[relevance]`, `[image]`, `[agno]`, `[langchain]`, `[evals]`, `[pytorch-mps]` (Apple-GPU memory-embedder offload — set `HEADROOM_EMBEDDER_RUNTIME=pytorch_mps`). Requires **Python 3.10+**.
+Granular extras: `[proxy]`, `[mcp]`, `[ml]` (Kompress + kompress_zh), `[code]`,
+`[memory]`, `[vector]` (optional HNSW backend; needs a C++ toolchain, not in
+`[all]`), `[relevance]`, `[image]`, `[agno]`, `[langchain]`, `[evals]`,
+`[pytorch-mps]` (Apple-GPU memory-embedder offload; set
+`HEADROOM_EMBEDDER_RUNTIME=pytorch_mps`). Requires **Python 3.10+**.
 
-> **Note**: `[all]` covers the core stack but excludes framework adapters. Install them separately: `pip install "headroom-ai[langchain]"` (also `[agno]`, `[strands]`, `[anyllm]`, `[bedrock]`).
+> **Note:** `[all]` covers the core stack but excludes framework adapters.
+> Install them separately when needed: `pip install "headroom-ai[langchain]"`
+> (also `[agno]`, `[strands]`, `[anyllm]`, `[bedrock]`).
+
+For the verified `headroom-zh` route shown in this repository, prefer source
+install from `Hust-wahaha/headroom-zh`.
 
 Using `pipx`? Choose a supported interpreter explicitly:
 
@@ -343,7 +496,11 @@ Using `pipx`? Choose a supported interpreter explicitly:
 pipx install --python python3.13 "headroom-ai[all]"
 ```
 
-> **Pick 3.13 if you want dollar savings.** The dashboard's *Proxy $ Saved* tile prices compression with [LiteLLM](https://github.com/BerriAI/litellm), and LiteLLM can't be installed on Python 3.14+. On 3.14 token savings still track, but the dollar figure stays `$0.00`. If you already installed on 3.14, switch with `pipx reinstall headroom-ai --python python3.13` and restart the proxy.
+> **Pick 3.13 if you want dollar savings.** The dashboard's *Proxy $ Saved*
+> tile prices compression with LiteLLM, and LiteLLM cannot be installed on
+> Python 3.14+. On 3.14 token savings still track, but the dollar figure stays
+> `$0.00`. If already installed on 3.14, switch with
+> `pipx reinstall headroom-ai --python python3.13` and restart the proxy.
 
 → [Installation guide](https://headroom-docs.vercel.app/docs/installation) — Docker tags, persistent service, PowerShell, devcontainers.
 
@@ -355,21 +512,20 @@ headroom update --check  # report the latest release without upgrading
 headroom update --pre    # include pre-releases
 ```
 
-`headroom update` figures out how Headroom was installed (pip/venv, `pip --user`,
-pipx, uv tool) and runs the matching upgrade across macOS, Linux, and Windows.
-For git checkouts, editable installs, Docker images, and externally-managed
-system Pythons (PEP 668) it prints the correct manual step instead of guessing.
+`headroom update` figures out how Headroom was installed and runs the matching
+upgrade across macOS, Linux, and Windows. For git checkouts, editable installs,
+Docker images, and externally managed system Pythons, it prints the correct
+manual step instead of guessing.
 
-The proxy also shows a one-line "update available" notice on startup. It checks
-PyPI at most once a day, in the background, and never blocks. Opt out with
+The proxy also shows a one-line update notice on startup. It checks PyPI at most
+once a day, in the background, and never blocks. Opt out with
 `HEADROOM_UPDATE_CHECK=off` (also skipped in `--stateless` mode and CI).
 
 ### Corporate / SSL-inspection environments
 
-If `pip install "headroom-ai[all]"` fails with `CERTIFICATE_VERIFY_FAILED`
-(`unable to get local issuer certificate`), your network uses **SSL inspection** — a MITM
-proxy presenting a company-issued CA. The build backend (`maturin`) downloads `rustup` over a
-connection your TLS stack doesn't trust. **Install Rust first** so the build doesn't fetch it:
+If `pip install "headroom-ai[all]"` fails with `CERTIFICATE_VERIFY_FAILED`, your
+network may be using SSL inspection. Install Rust first so the build backend
+does not need to fetch it during the Python package build:
 
 ```bash
 # macOS / Linux
@@ -378,50 +534,36 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh && rustup default
 winget install Rustlang.Rustup && rustup default stable
 ```
 
-Restart your shell, then `pip install "headroom-ai[all]"`. A prebuilt wheel avoids the Rust
-build entirely where available: `pip install --only-binary headroom-ai headroom-ai`. Prebuilt
-wheels are published for Windows (`win_amd64`), Linux (`x86_64` / `aarch64`), and macOS
-(Apple Silicon), so installs on those platforms never need a local Rust toolchain — the
-Rust-first dance above is only for the platform-independent sdist fallback (e.g. Intel macOS).
+Then restart your shell and run `pip install "headroom-ai[all]"` again. Where
+prebuilt wheels are available, `pip install --only-binary headroom-ai headroom-ai`
+avoids the Rust build entirely.
 
-Two runtime assets are fetched over TLS; if they are blocked, trust your corporate CA via
-`REQUESTS_CA_BUNDLE` / `SSL_CERT_FILE` / `CURL_CA_BUNDLE`:
+Two runtime assets may also need corporate CA trust via `REQUESTS_CA_BUNDLE`,
+`SSL_CERT_FILE`, or `CURL_CA_BUNDLE`:
 
-- **`cdn.pyke.io`** — the ONNX Runtime for the Rust core. Alternatively pre-provide it with
+- **`cdn.pyke.io`** — ONNX Runtime for the Rust core; alternatively use
   `ORT_STRATEGY=system` and `ORT_LIB_LOCATION=/path/to/onnxruntime`.
-- **`huggingface.co`** — the `kompress-base` compression model. Pre-download it and run with
-  `HF_HUB_OFFLINE=1`, or set `HF_ENDPOINT` to a trusted mirror.
+- **`huggingface.co`** — the `kompress-base` / `kompress_zh` model path;
+  pre-download and run with `HF_HUB_OFFLINE=1`, or set `HF_ENDPOINT` to a
+  trusted mirror.
 
-Running with compression disabled (pure gateway) requires neither asset.
+Running with compression disabled as a pure gateway requires neither asset.
 
 #### "Basic Constraints of CA cert not marked critical" (Python 3.13+ strict mode)
 
-A **different** failure from the one above. If TLS fails with:
-
-```
-[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed:
-Basic Constraints of CA cert not marked critical
-```
-
-then the corporate CA *is* found and trusted — adding it to a CA bundle changes nothing.
-Python 3.13 + OpenSSL 3.x enable `VERIFY_X509_STRICT` by default, which enforces RFC 5280
-§4.2.1.9: a CA cert's `basicConstraints` must be marked *critical*. Inspection roots like
-Zscaler set `CA:TRUE` without the critical bit, so the chain is rejected.
-
-Set **`HEADROOM_TLS_STRICT=0`** to clear *only* the strict flag from every TLS context
-Headroom controls — the proxy's httpx upstream client **and** the urllib3/`huggingface_hub`
-path used for model downloads. Chain validation, signature, expiry, and hostname checks all
-stay on; this is strictly narrower than disabling verification.
+This is a different TLS failure. If Python 3.13+ rejects a corporate CA with
+`Basic Constraints of CA cert not marked critical`, the CA is present but fails
+OpenSSL strict validation. Set `HEADROOM_TLS_STRICT=0` to clear only the strict
+flag from TLS contexts Headroom controls; chain validation, signature, expiry,
+and hostname checks stay enabled.
 
 ```bash
 HEADROOM_TLS_STRICT=0 headroom proxy --port 8787
 ```
 
-The Rust core's ONNX download (`cdn.pyke.io`) uses a separate TLS stack (rustls / OS trust
-store), unaffected by `HEADROOM_TLS_STRICT`. On Windows the corporate root must be in the
-**machine** certificate store (browsers already trust it there); or pre-provision ONNX
-Runtime with `ORT_STRATEGY=system` + `ORT_LIB_LOCATION=/path/to/onnxruntime` to skip the
-download entirely.
+The Rust core's ONNX download uses a separate TLS stack. On Windows, put the
+corporate root in the machine certificate store, or pre-provision ONNX Runtime
+with `ORT_STRATEGY=system` and `ORT_LIB_LOCATION=/path/to/onnxruntime`.
 
 ## headroom learn
 
@@ -429,7 +571,9 @@ download entirely.
   <img src="headroom_learn.gif" alt="headroom learn in action" width="720">
 </p>
 
-`headroom learn` — mines failed sessions, writes corrections to `CLAUDE.local.md` (default, gitignored; use `--target CLAUDE.md` for the shared team file) / `AGENTS.md` / `GEMINI.md`.
+`headroom learn` — mines failed sessions, writes corrections to
+`CLAUDE.local.md` by default (gitignored; use `--target CLAUDE.md` for a shared
+team file), or to `AGENTS.md` / `GEMINI.md`.
 
 ## Documentation
 
@@ -442,6 +586,24 @@ download entirely.
 | [Failure learning](https://headroom-docs.vercel.app/docs/failure-learning)    | [Benchmarks](https://headroom-docs.vercel.app/docs/benchmarks)                    |
 | [Configuration](https://headroom-docs.vercel.app/docs/configuration)          | [Limitations](https://headroom-docs.vercel.app/docs/limitations)                  |
 | [Persistent installs](https://headroom-docs.vercel.app/docs/persistent-installs) (`headroom init` / `headroom install apply`) | [Savings analytics](https://headroom-docs.vercel.app/docs/savings) (`headroom savings` / `headroom perf` / `headroom doctor`) |
+
+### Chinese compression accuracy evaluation (`eval/`)
+
+Direct evidence that `kompress_zh` keeps task accuracy while cutting tokens: a
+Chinese benchmark compresses tool-output context with the real `kompress_zh`
+and compares answers from the same upstream LLM on original vs. compressed
+context.
+
+- How to run, materials, and metrics: [`eval/README.md`](eval/README.md)
+- Windows deployment and real-time troubleshooting records: [`eval_docs/`](eval_docs/)
+
+### `kompress_zh` integration notes
+
+The target branch keeps the Chinese compression lane additive. Implementation
+details, routing boundaries, and CCR retrieval notes live in
+[`docs/kompress_zh_integration_notes.md`](docs/kompress_zh_integration_notes.md).
+For broader agent-workload evaluation infrastructure, see
+[`agent-evals/README.md`](agent-evals/README.md).
 
 ## Compared to
 
@@ -460,16 +622,18 @@ Headroom runs **locally**, covers **every** content type, works with every major
 ## Contributing
 
 ```bash
-git clone https://github.com/chopratejas/headroom.git && cd headroom
-uv sync --extra dev && uv run pytest
+git clone https://github.com/Hust-wahaha/headroom-zh.git && cd headroom-zh
+pip install -e ".[dev]" && pytest
 ```
 
 Devcontainers in `.devcontainer/` (default + `memory-stack` with Qdrant & Neo4j). See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Community
 
-- **[Discord](https://discord.gg/yRmaUNpsPJ)** — questions, feedback, war stories.
-- **[Kompress-v2-base on HuggingFace](https://huggingface.co/chopratejas/kompress-v2-base)** — the model behind our text compression.
+- **[headroom-zh repository](https://github.com/Hust-wahaha/headroom-zh)** — the fork that adds the Chinese-first compressor lane and demo path.
+- **[Upstream Headroom docs](https://headroom-docs.vercel.app/docs)** — core architecture, proxy, MCP, and benchmark documentation.
+- **[Kompress-v2-base on HuggingFace](https://huggingface.co/chopratejas/kompress-v2-base)** — the default English/plain-text compression model.
+- **[kompress_zh-baseline-v1-lora on HuggingFace](https://huggingface.co/Deserveall/kompress_zh-baseline-v1-lora)** — the Chinese plain-text compression branch.
 
 ## License
 
