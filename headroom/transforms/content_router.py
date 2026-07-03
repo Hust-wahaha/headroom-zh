@@ -45,7 +45,7 @@ import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Any
 
@@ -58,7 +58,7 @@ from ..config import (
 from ..parser import CCR_RETRIEVAL_MARKER_RE
 from ..tokenizer import Tokenizer
 from .base import Transform
-from .content_detector import ContentType, DetectionResult
+from .content_detector import ContentType, DetectionResult, _try_detect_log, _try_detect_search
 from .content_detector import detect_content_type as _regex_detect_content_type
 from .error_detection import content_has_strong_error_indicators
 
@@ -216,6 +216,40 @@ def _rust_detect_watchdogged(rust_detect: Any, content: str, timeout: float) -> 
     return box["result"]
 
 
+# Coding agents commonly wrap each tool result in an envelope such as
+# ``<returncode>0</returncode>\n<output>...</output>`` (or <stdout>/<stderr>/
+# <tool_result>). Those wrapper tags make the native detector read the whole
+# payload as markup (HTML/XML) even though the inner content is source code, a
+# grep result, or a log. That misroutes to the HTML article-extractor, which
+# blanks or corrupts code (dropping identifiers and route converters). Detect on
+# the inner payload so the real content type wins; compression still runs on the
+# original content.
+_DETECTION_ENVELOPE_RE = re.compile(
+    r"\A\s*(?:<returncode>\s*-?\d+\s*</returncode>\s*)?"
+    r"<(?P<tag>output|stdout|stderr|tool_result|result)>\n?"
+    r"(?P<body>.*?)"
+    r"\n?</(?P=tag)>\s*\Z",
+    re.DOTALL,
+)
+
+
+def _strip_detection_envelope(content: str) -> str:
+    """Return the inner payload of a tool-output envelope, for detection only.
+
+    Only strips when the ENTIRE string is a single wrapper envelope, so content
+    that merely mentions these tags is left untouched. Never returns an empty
+    probe (falls back to the original when the body is blank).
+    """
+    if "<" not in content:
+        return content
+    match = _DETECTION_ENVELOPE_RE.match(content)
+    if match:
+        body = match.group("body")
+        if body.strip():
+            return body
+    return content
+
+
 def _detect_content(content: str) -> DetectionResult:
     """Detect content type via the native chain, with a safe Windows default.
 
@@ -232,6 +266,10 @@ def _detect_content(content: str) -> DetectionResult:
     `_strategy_from_detection` keys off that field alone.
     """
     global _detect_backend_warned, _detect_panic_warned, _detect_native_unhealthy
+
+    # Detect on the unwrapped payload so a tool-output envelope's tags don't get
+    # the whole result misclassified as HTML/XML (#route-converter corruption).
+    content = _strip_detection_envelope(content)
 
     backend = _resolve_detect_backend()
     if backend == "python":
@@ -294,6 +332,18 @@ def _detect_content(content: str) -> DetectionResult:
                 type(exc).__name__,
             )
         return _regex_detect_content_type(content)
+
+    # HTML misroute guard (native/magika path): dense punctuation in grep
+    # output and build logs (file paths, </>, brackets) can read as markup, so
+    # the native detector tags real search results / logs as HTML. Routing those
+    # to the HTML article-extractor is lossy — it strips code and identifiers.
+    # When the structural log/search detectors positively claim the payload,
+    # trust them over the HTML verdict: tracebacks/build output win as LOG
+    # (checked first), path:line grep output routes to SEARCH.
+    if content_type is ContentType.HTML:
+        override = _try_detect_log(content) or _try_detect_search(content)
+        if override is not None:
+            return override
 
     if content_type is ContentType.PLAIN_TEXT:
         regex_result = _regex_detect_content_type(content)
@@ -744,6 +794,13 @@ class ContentRouterConfig:
     # Route ALL compressible content to Kompress, skipping per-type selection.
     # Tool exclusion (Read/Glob/...) and reversibility gates still apply.
     force_kompress_all: bool = False
+
+    # No-CCR lossless mode. When True the router compresses LOG/SEARCH/DIFF
+    # content with format-native lossless compaction (headroom.transforms.
+    # lossless_compaction) instead of the lossy Rust drop path, and never
+    # emits a `<<ccr:…>>` / `Retrieve …` retrieval marker. SmartCrusher is
+    # additionally forced marker-free via smart_crusher_lossless_only.
+    lossless: bool = False
     mixed_content_threshold: int = 2  # Min types to consider mixed
     min_section_tokens: int = 20  # Min tokens to compress a section
 
@@ -831,6 +888,15 @@ class ContentRouterConfig:
     # dispatch threshold and compaction heuristics without constructing
     # the crusher themselves.
     smart_crusher: Any | None = None
+
+    # Structural compressor configuration overrides. None preserves each
+    # compressor's dataclass defaults. The proxy wires environment-backed
+    # overrides into these objects, while ccr_inject_marker/search grouping are
+    # still enforced by ContentRouter so global safety flags win consistently.
+    search_compressor: Any | None = None
+    log_compressor: Any | None = None
+    diff_compressor: Any | None = None
+    text_crusher: Any | None = None
 
     # Group search-compressor output by file (`rg --heading` style).
     # Default False; the proxy enables it in token mode.
@@ -1089,6 +1155,13 @@ class ContentRouter(Transform):
                 rule in the audit doc.
         """
         self.config = config or ContentRouterConfig()
+        # No-CCR lossless mode is self-consistent regardless of how the config
+        # was built: force marker-free output and marker-free SmartCrusher so
+        # the invariant (no `<<ccr:…>>` / `Retrieve …`) holds even when a caller
+        # constructs ContentRouterConfig(lossless=True) directly.
+        if self.config.lossless:
+            self.config.ccr_inject_marker = False
+            self.config.smart_crusher_lossless_only = True
         self._observer = observer
 
         # Lazy-loaded compressors
@@ -1598,6 +1671,31 @@ class ContentRouter(Transform):
         decision_reason = "strategy_not_enabled_or_unavailable"
         strategy_chain: list[str] = [strategy.value]
         error: str | None = None
+
+        # No-CCR lossless mode: LOG/SEARCH/DIFF get format-native lossless
+        # compaction instead of the lossy Rust drop path, so the output stays
+        # marker-free (no `<<ccr:…>>` / `Retrieve …`) and fully recoverable.
+        # SMART_CRUSHER relies on smart_crusher_lossless_only (wired elsewhere);
+        # KOMPRESS/TEXT/CODE_AWARE/PASSTHROUGH pass through unchanged here in
+        # Stage A. The reversibility + size gate lives in compact_lossless,
+        # which returns the original when it can't safely shrink it.
+        if self.config.lossless and strategy in (
+            CompressionStrategy.LOG,
+            CompressionStrategy.SEARCH,
+            CompressionStrategy.DIFF,
+        ):
+            from headroom.transforms.lossless_compaction import compact_lossless
+
+            kind = {
+                CompressionStrategy.LOG: "log",
+                CompressionStrategy.SEARCH: "search",
+                CompressionStrategy.DIFF: "diff",
+            }[strategy]
+            try:
+                compacted = compact_lossless(content, kind)
+            except Exception:
+                compacted = content
+            return compacted, len(compacted.split()), [f"lossless_{kind}"]
 
         try:
             if strategy == CompressionStrategy.CODE_AWARE:
@@ -2188,12 +2286,13 @@ class ContentRouter(Transform):
             try:
                 from .search_compressor import SearchCompressor, SearchCompressorConfig
 
-                self._search_compressor = SearchCompressor(
-                    SearchCompressorConfig(
-                        group_by_file=self.config.search_group_by_file,
-                        enable_ccr=self.config.ccr_inject_marker,
-                    )
+                cfg = self.config.search_compressor or SearchCompressorConfig()
+                cfg = replace(
+                    cfg,
+                    group_by_file=self.config.search_group_by_file,
+                    enable_ccr=self.config.ccr_inject_marker,
                 )
+                self._search_compressor = SearchCompressor(cfg)
             except ImportError:
                 logger.debug("SearchCompressor not available")
         return self._search_compressor
@@ -2204,9 +2303,9 @@ class ContentRouter(Transform):
             try:
                 from .log_compressor import LogCompressor, LogCompressorConfig
 
-                self._log_compressor = LogCompressor(
-                    LogCompressorConfig(enable_ccr=self.config.ccr_inject_marker)
-                )
+                cfg = self.config.log_compressor or LogCompressorConfig()
+                cfg = replace(cfg, enable_ccr=self.config.ccr_inject_marker)
+                self._log_compressor = LogCompressor(cfg)
             except ImportError:
                 logger.debug("LogCompressor not available")
         return self._log_compressor
@@ -2219,9 +2318,10 @@ class ContentRouter(Transform):
             return None
         if self._text_crusher is None:
             try:
-                from .text_crusher import TextCrusher
+                from .text_crusher import TextCrusher, TextCrusherConfig
 
-                self._text_crusher = TextCrusher()
+                cfg = self.config.text_crusher or TextCrusherConfig()
+                self._text_crusher = TextCrusher(cfg)
             except ImportError:
                 logger.debug("TextCrusher (headroom._core) unavailable; disabling gate route")
                 self._text_crusher_enabled = False
@@ -2245,9 +2345,9 @@ class ContentRouter(Transform):
         if self._diff_compressor is None:
             from .diff_compressor import DiffCompressor, DiffCompressorConfig
 
-            self._diff_compressor = DiffCompressor(
-                DiffCompressorConfig(enable_ccr=self.config.ccr_inject_marker)
-            )
+            cfg = self.config.diff_compressor or DiffCompressorConfig()
+            cfg = replace(cfg, enable_ccr=self.config.ccr_inject_marker)
+            self._diff_compressor = DiffCompressor(cfg)
         return self._diff_compressor
 
     def _get_html_extractor(self) -> Any:
@@ -2437,7 +2537,11 @@ class ContentRouter(Transform):
                 )
 
                 if is_kompress_available():
-                    return KompressCompressor(config=KompressConfig(model_id=model_id))
+                    return KompressCompressor(
+                        config=KompressConfig(
+                            model_id=model_id, enable_ccr=self.config.ccr_inject_marker
+                        )
+                    )
             except ImportError:
                 pass
             return None
@@ -2445,10 +2549,21 @@ class ContentRouter(Transform):
         # Default path — exactly as before, cached on self
         if self._kompress is None:
             try:
-                from .kompress_compressor import KompressCompressor, is_kompress_available
+                from .kompress_compressor import (
+                    KompressCompressor,
+                    KompressConfig,
+                    is_kompress_available,
+                )
 
                 if is_kompress_available():
-                    self._kompress = KompressCompressor()
+                    # Honor the router's marker policy. In no-CCR / lossless mode
+                    # (ccr_inject_marker=False) Kompress still compresses (lossy),
+                    # but must NOT append a `Retrieve more: hash=` marker or write
+                    # to the CCR store — otherwise the no-MCP guarantee breaks.
+                    # Matches how search/log/diff/code receive enable_ccr.
+                    self._kompress = KompressCompressor(
+                        config=KompressConfig(enable_ccr=self.config.ccr_inject_marker)
+                    )
             except ImportError:
                 logger.debug("Kompress dependencies not available")
         return self._kompress

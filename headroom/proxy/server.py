@@ -674,7 +674,18 @@ class HeadroomProxy(
             ),
             ccr_inject_marker=config.ccr_inject_marker,
             force_kompress_all=config.force_kompress_all,
+            lossless=config.lossless,
         )
+        # No-CCR lossless mode: compress tool outputs with format-native
+        # lossless compaction and marker-free SmartCrusher, and suppress every
+        # retrieval marker + the retrieve-tool injection so no MCP round-trip is
+        # needed. Mirrors the force_kompress_all wiring precedent.
+        if config.lossless:
+            router_config.lossless = True
+            router_config.smart_crusher_lossless_only = True
+            router_config.ccr_inject_marker = False
+            if hasattr(config, "ccr_inject_tool"):
+                config.ccr_inject_tool = False
         if config.disable_kompress:
             router_config.enable_kompress = False
             # Opt-in restore of the legacy behaviour: send fall-through content
@@ -934,6 +945,7 @@ class HeadroomProxy(
             backend=config.backend,
             anyllm_provider=config.anyllm_provider,
             bedrock_region=config.bedrock_region,
+            bedrock_profile=config.bedrock_profile,
             logger=logger,
             openai_api_url=config.openai_api_url,
             anyllm_backend_cls=AnyLLMBackend,
@@ -4080,6 +4092,7 @@ def _proxy_config_from_env() -> ProxyConfig:
         disable_kompress_anthropic=_get_env_optional_bool("HEADROOM_DISABLE_KOMPRESS_ANTHROPIC"),
         disable_kompress_openai=_get_env_optional_bool("HEADROOM_DISABLE_KOMPRESS_OPENAI"),
         force_kompress_all=_get_env_bool("HEADROOM_FORCE_KOMPRESS_ALL", False),
+        lossless=_get_env_bool("HEADROOM_LOSSLESS", False),
         max_connections=_get_env_int("HEADROOM_MAX_CONNECTIONS", 500),
         max_keepalive_connections=_get_env_int("HEADROOM_MAX_KEEPALIVE", 100),
         keepalive_expiry=_get_env_float("HEADROOM_KEEPALIVE_EXPIRY", 90.0),
@@ -4575,6 +4588,16 @@ if __name__ == "__main__":
         ),
     )
     parser.add_argument(
+        "--lossless",
+        action="store_true",
+        help=(
+            "No-CCR lossless mode: compress LOG/SEARCH/DIFF tool outputs with "
+            "format-native lossless compaction (and marker-free SmartCrusher) "
+            "without emitting any CCR retrieval marker, so no MCP retrieve tool "
+            "is needed. Also settable via HEADROOM_LOSSLESS=1."
+        ),
+    )
+    parser.add_argument(
         "--exclude-tools",
         default=None,
         help="Comma-separated tool names whose output is never compressed, "
@@ -4655,6 +4678,7 @@ if __name__ == "__main__":
     force_kompress_all = args.force_kompress_all or _get_env_bool(
         "HEADROOM_FORCE_KOMPRESS_ALL", False
     )
+    lossless = getattr(args, "lossless", False) or _get_env_bool("HEADROOM_LOSSLESS", False)
 
     # Set OpenRouter API key from CLI if provided
     if hasattr(args, "openrouter_api_key") and args.openrouter_api_key:
@@ -4710,6 +4734,7 @@ if __name__ == "__main__":
         disable_kompress_anthropic=disable_kompress_anthropic,
         disable_kompress_openai=disable_kompress_openai,
         force_kompress_all=force_kompress_all,
+        lossless=lossless,
         # Connection pool settings
         max_connections=_get_env_int("HEADROOM_MAX_CONNECTIONS", args.max_connections),
         max_keepalive_connections=_get_env_int("HEADROOM_MAX_KEEPALIVE", args.max_keepalive),

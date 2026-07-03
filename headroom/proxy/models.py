@@ -180,6 +180,8 @@ class ProxyConfig:
     # CLI: --force-kompress-all; env: HEADROOM_FORCE_KOMPRESS_ALL=1.
     force_kompress_all: bool = False
 
+    lossless: bool = False  # CLI: --lossless; env: HEADROOM_LOSSLESS=1. No-CCR mode: compress without any retrieval marker.
+
     # Code graph live watcher (triggers incremental reindex on file changes)
     code_graph_watcher: bool = False
 

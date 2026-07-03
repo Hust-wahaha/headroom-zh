@@ -298,6 +298,16 @@ def dashboard(port: int, no_open: bool) -> None:
     help=("Don't add CCR retrieval markers to compressed content. Env: HEADROOM_NO_CCR_MARKER."),
 )
 @click.option(
+    "--lossless",
+    is_flag=True,
+    envvar="HEADROOM_LOSSLESS",
+    help=(
+        "No-CCR lossless mode: compress tool outputs with format-native lossless "
+        "compaction (and marker-free SmartCrusher) without emitting any CCR "
+        "retrieval marker, so no MCP retrieve tool is needed. Env: HEADROOM_LOSSLESS=1."
+    ),
+)
+@click.option(
     "--no-ccr-proactive-expansion",
     is_flag=True,
     envvar="HEADROOM_NO_CCR_PROACTIVE_EXPANSION",
@@ -844,6 +854,7 @@ def proxy(
     tpm: int | None,
     no_ccr_inject_tool: bool,
     no_ccr_marker: bool,
+    lossless: bool,
     no_ccr_proactive_expansion: bool,
     proxy_extension: tuple[str, ...],
     no_subscription_tracking: bool,
@@ -1086,6 +1097,7 @@ def proxy(
         # CCR fully on; each flag flips one dataclass default to False.
         ccr_inject_tool=not no_ccr_inject_tool,
         ccr_inject_marker=not no_ccr_marker,
+        lossless=lossless,
         ccr_proactive_expansion=not no_ccr_proactive_expansion,
         # Flatten repeat-flag tuple AND any comma-separated values inside it.
         # `--proxy-extension a,b --proxy-extension c` and `HEADROOM_PROXY_EXTENSIONS=a,b,c`
