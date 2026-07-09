@@ -1046,8 +1046,16 @@ def test_cache_mode_reuses_prior_forwarded_prefix_and_compresses_only_new_suffix
 
         def _fake_apply(**kwargs):
             captured["calls"].append(kwargs["messages"])
+            captured["frozen_message_count"] = kwargs.get("frozen_message_count")
+            # fix-6 contract: the compressor is handed the frozen forwarded prefix
+            # + the new delta and only compresses indices >= frozen_message_count
+            # (so a lone tool_result can resolve its tool_name from the prefix).
+            # Mirror the real router: pass the frozen prefix through verbatim and
+            # compress only the tail — the handler splices result.messages[prefix_n:].
+            fz = kwargs.get("frozen_message_count") or 0
+            msgs = kwargs["messages"]
             return SimpleNamespace(
-                messages=[{"role": "user", "content": "COMPRESSED_TURN3"}],
+                messages=list(msgs[:fz]) + [{"role": "user", "content": "COMPRESSED_TURN3"}],
                 transforms_applied=["fake:delta"],
                 timing={},
                 tokens_before=40,
@@ -1094,7 +1102,22 @@ def test_cache_mode_reuses_prior_forwarded_prefix_and_compresses_only_new_suffix
         )
 
         assert response.status_code == 200
-        assert captured["calls"] == [[{"role": "user", "content": "turn3"}]]
+        # fix-6 contract: the compressor receives the frozen FORWARDED prefix
+        # (with COMPRESSED_TURN2, the byte-stable cached form) + the raw new
+        # delta (turn3), so tool_name resolution / dedup stay consistent with
+        # what is actually cached. frozen_message_count = prefix length pins
+        # compression to the delta ONLY — the prefix is never re-compressed.
+        assert captured["calls"] == [
+            [
+                {"role": "user", "content": "turn1"},
+                {"role": "assistant", "content": "turn1-assistant"},
+                {"role": "user", "content": "COMPRESSED_TURN2"},
+                {"role": "assistant", "content": "turn2-assistant"},
+                {"role": "user", "content": "turn3"},
+            ]
+        ]
+        assert captured["frozen_message_count"] == 4  # only the delta (turn3) is compressed
+        # Forwarded body = byte-identical cached prefix + the compressed delta.
         assert captured["body"]["messages"] == [
             {"role": "user", "content": "turn1"},
             {"role": "assistant", "content": "turn1-assistant"},

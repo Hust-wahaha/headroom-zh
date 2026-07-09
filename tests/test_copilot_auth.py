@@ -270,6 +270,21 @@ def test_api_url_from_exchange_payload_rejects_non_copilot_host(
     assert resolved == "https://api.business.githubcopilot.com"
 
 
+def test_api_url_from_exchange_payload_normalizes_individual_public_host(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("GITHUB_COPILOT_API_URL", raising=False)
+    monkeypatch.delenv("GITHUB_COPILOT_ENTERPRISE_URL", raising=False)
+    monkeypatch.delenv("GITHUB_COPILOT_ENTERPRISE_DOMAIN", raising=False)
+
+    resolved = copilot_auth._api_url_from_exchange_payload(
+        {"endpoints": {"api": "https://api.individual.githubcopilot.com"}},
+        oauth_token="gho-oauth",
+    )
+
+    assert resolved == copilot_auth.DEFAULT_API_URL
+
+
 def test_api_url_from_exchange_payload_rejects_non_copilot_host_without_user_info(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

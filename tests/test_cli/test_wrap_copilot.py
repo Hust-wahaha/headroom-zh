@@ -956,6 +956,57 @@ def test_wrap_copilot_subscription_uses_resolved_subscription_endpoint(
     assert env["COPILOT_PROVIDER_BEARER_TOKEN"] == "copilot-api"
 
 
+def test_wrap_copilot_subscription_normalizes_individual_public_endpoint(
+    runner: CliRunner,
+    wrap_modules: tuple[types.ModuleType, click.Group],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _wrap_cli, main = wrap_modules
+    _clear_copilot_env(monkeypatch)
+    captured: dict[str, object] = {}
+
+    def fake_launch_tool(**kwargs):  # noqa: ANN003
+        captured.update(kwargs)
+
+    with (
+        patch("headroom.cli.wrap.shutil.which", return_value="copilot"),
+        patch("headroom.cli.wrap.has_oauth_auth", return_value=True),
+        patch(
+            "headroom.copilot_auth.iter_oauth_token_candidates",
+            return_value=[
+                types.SimpleNamespace(
+                    token="gho-oauth",
+                    source="headroom-copilot-auth:/tmp/copilot_auth.json",
+                    confidence="copilot-oauth",
+                    validate_for_subscription=True,
+                )
+            ],
+        ),
+        patch(
+            "headroom.copilot_auth.CopilotTokenProvider._exchange_token_sync",
+            staticmethod(
+                lambda _headers: {
+                    "token": "copilot-api",
+                    "expires_at": 9999999999,
+                    "endpoints": {"api": "https://api.individual.githubcopilot.com"},
+                }
+            ),
+        ),
+        patch("headroom.cli.wrap._launch_tool", side_effect=fake_launch_tool),
+    ):
+        result = runner.invoke(
+            main,
+            ["wrap", "copilot", "--subscription", "--no-rtk", "--", "--model", "gpt-5.4"],
+        )
+
+    assert result.exit_code == 0, result.output
+    env = captured["env"]
+    assert isinstance(env, dict)
+    assert captured["openai_api_url"] == DEFAULT_API_URL
+    assert env["OPENAI_TARGET_API_URL"] == DEFAULT_API_URL
+    assert env["GITHUB_COPILOT_API_URL"] == DEFAULT_API_URL
+
+
 def test_wrap_copilot_subscription_honors_api_url_override(
     runner: CliRunner,
     wrap_modules: tuple[types.ModuleType, click.Group],

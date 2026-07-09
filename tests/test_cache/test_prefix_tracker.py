@@ -370,6 +370,47 @@ class TestSessionTrackerStore:
         id3 = store.compute_session_id(MockRequest(), "gpt-4", messages)
         assert id3 != id1
 
+    def test_compute_session_id_uses_all_system_messages(self, store):
+        """Different dynamic system messages should not collide."""
+
+        class MockRequest:
+            headers = {}
+
+        static_prompt = "framework prompt " * 80
+        conv_a = [
+            {"role": "system", "content": [{"type": "text", "text": static_prompt}]},
+            {"role": "system", "content": [{"type": "text", "text": "context: session A"}]},
+            {"role": "user", "content": "hello"},
+        ]
+        conv_b = [
+            {"role": "system", "content": [{"type": "text", "text": static_prompt}]},
+            {"role": "system", "content": [{"type": "text", "text": "context: session B"}]},
+            {"role": "user", "content": "hello"},
+        ]
+
+        id_a = store.compute_session_id(MockRequest(), "claude-3", conv_a)
+        id_b = store.compute_session_id(MockRequest(), "claude-3", conv_b)
+
+        assert id_a != id_b
+
+    def test_compute_session_id_is_stable_when_only_non_system_turns_change(self, store):
+        """Appending non-system turns should keep the same fallback session id."""
+
+        class MockRequest:
+            headers = {}
+
+        base_messages = [
+            {"role": "system", "content": [{"type": "text", "text": "framework prompt"}]},
+            {"role": "system", "content": [{"type": "text", "text": "context: session A"}]},
+            {"role": "user", "content": "hello"},
+        ]
+        extended_messages = base_messages + [{"role": "assistant", "content": "hi there"}]
+
+        id1 = store.compute_session_id(MockRequest(), "claude-3", base_messages)
+        id2 = store.compute_session_id(MockRequest(), "claude-3", extended_messages)
+
+        assert id1 == id2
+
     def test_compute_session_id_no_system(self, store):
         """Should work without system messages."""
 

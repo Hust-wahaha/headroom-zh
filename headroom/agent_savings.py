@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+import logging
+import os
 from dataclasses import dataclass, replace
 from typing import Protocol
 
+logger = logging.getLogger(__name__)
+
 AGENT_90_PROFILE = "agent-90"
+FALLBACK_PROFILE = "balanced"
 
 
 class CompressConfigLike(Protocol):
@@ -23,7 +28,10 @@ class AgentSavingsProfile:
 
     name: str
     target_savings: float
-    target_ratio: float
+    # None = don't pin a keep-ratio; let Kompress decide adaptively (and any
+    # ambient HEADROOM_TARGET_RATIO / proxy default still applies). Workload
+    # personas leave this unset so savings emerge from lossless + relevance.
+    target_ratio: float | None
     compress_user_messages: bool
     compress_system_messages: bool
     protect_recent: int
@@ -42,11 +50,10 @@ class AgentSavingsProfile:
     def proxy_env(self) -> dict[str, str]:
         """Return env vars for Headroom proxy/wrapper entry points."""
 
-        return {
+        env = {
             "HEADROOM_MODE": self.proxy_mode,
             "HEADROOM_SAVINGS_PROFILE": self.name,
             "HEADROOM_SAVINGS_TARGET": f"{self.target_savings:.2f}",
-            "HEADROOM_TARGET_RATIO": f"{self.target_ratio:.2f}",
             "HEADROOM_COMPRESS_USER_MESSAGES": ("1" if self.compress_user_messages else "0"),
             "HEADROOM_COMPRESS_SYSTEM_MESSAGES": ("1" if self.compress_system_messages else "0"),
             "HEADROOM_PROTECT_RECENT": str(self.protect_recent),
@@ -59,6 +66,11 @@ class AgentSavingsProfile:
             "HEADROOM_FORCE_KOMPRESS": "1" if self.force_kompress else "0",
             "HEADROOM_ACCURACY_GUARD": self.accuracy_guard,
         }
+        # Only pin a keep-ratio when the profile sets one; workload personas
+        # leave it unset so Kompress decides and the ambient default applies.
+        if self.target_ratio is not None:
+            env["HEADROOM_TARGET_RATIO"] = f"{self.target_ratio:.2f}"
+        return env
 
     def apply_proxy_env_defaults(self, env: dict[str, str]) -> dict[str, str]:
         """Seed proxy env defaults without overriding explicit user settings."""
@@ -99,18 +111,73 @@ _PROFILES: dict[str, AgentSavingsProfile] = {
         proxy_mode="token",
         accuracy_guard="strict",
     ),
+    # Workload personas: compress aggressively while holding the three
+    # invariants — no accuracy loss, no extra turns, no prefix-cache bust.
+    # They rely on the defaults that already deliver this (relevance split on,
+    # user/system messages protected, read-maturation off, lossless structural
+    # compaction) and only set the workload-specific + visibility knobs. The
+    # MCP-vs-airgapped axis is the separate HEADROOM_LOSSLESS toggle: markers
+    # when a retrieve tool exists, marker-free lossless-first when air-gapped.
+    # target_ratio is unset — savings emerge from lossless + relevance, and
+    # Kompress decides its own keep. min_tokens is low so compression is
+    # actually exercised/visible on modest outputs.
+    "coding": AgentSavingsProfile(
+        name="coding",
+        target_savings=0.50,  # nominal (display only); savings are emergent
+        target_ratio=None,
+        compress_user_messages=False,  # no prompt mutation / cache bust
+        compress_system_messages=False,  # system prompt is the hottest cache
+        protect_recent=2,  # keep the active code working set verbatim
+        protect_analysis_context=True,
+        min_tokens_to_compress=25,  # low → compression is visible
+        max_items_after_crush=15,
+        smart_crusher_with_compaction=True,
+        force_kompress=False,  # don't override diff/log lossless with lossy ML
+        proxy_mode="token",
+        accuracy_guard="strict",
+    ),
+    "general": AgentSavingsProfile(
+        name="general",
+        target_savings=0.60,  # nominal (display only); savings are emergent
+        target_ratio=None,
+        compress_user_messages=False,
+        compress_system_messages=False,
+        protect_recent=0,  # little code; nothing positional to protect
+        protect_analysis_context=True,
+        min_tokens_to_compress=25,
+        max_items_after_crush=15,
+        smart_crusher_with_compaction=True,
+        force_kompress=False,
+        proxy_mode="token",
+        accuracy_guard="strict",
+    ),
 }
 
 
 def get_agent_savings_profile(name: str | None = None) -> AgentSavingsProfile:
-    """Return a named agent savings profile."""
+    """Return a named agent savings profile.
+
+    An unrecognized name falls back to the ``balanced`` profile with a warning
+    instead of raising. The savings profile is a soft config knob, but it is
+    resolved during proxy startup (``proxy_pipeline_kwargs`` -> ``create_app``),
+    so raising here takes the whole proxy down before it can open its port. That
+    happens on desktop/runtime version skew: a newer client requests a profile
+    (e.g. ``coding``) that an older pinned or fallback runtime predates. Degrade
+    to ``balanced`` rather than leaving the user with no proxy at all.
+    """
 
     key = (name or AGENT_90_PROFILE).strip().lower()
-    try:
-        return _PROFILES[key]
-    except KeyError as exc:
-        valid = ", ".join(sorted(_PROFILES))
-        raise ValueError(f"unknown savings profile {name!r}; expected one of: {valid}") from exc
+    profile = _PROFILES.get(key)
+    if profile is not None:
+        return profile
+    valid = ", ".join(sorted(_PROFILES))
+    logger.warning(
+        "unknown savings profile %r; falling back to %r (known: %s)",
+        name,
+        FALLBACK_PROFILE,
+        valid,
+    )
+    return _PROFILES[FALLBACK_PROFILE]
 
 
 def apply_agent_savings_env_defaults(
@@ -142,7 +209,8 @@ def apply_agent_savings_profile(
     config.compress_system_messages = resolved.compress_system_messages
     config.protect_recent = resolved.protect_recent
     config.protect_analysis_context = resolved.protect_analysis_context
-    config.target_ratio = resolved.target_ratio
+    if resolved.target_ratio is not None:
+        config.target_ratio = resolved.target_ratio
     config.min_tokens_to_compress = resolved.min_tokens_to_compress
     return config
 
@@ -164,7 +232,6 @@ def proxy_pipeline_kwargs(config: object) -> dict[str, object]:
                 "compress_system_messages": profile.compress_system_messages,
                 "protect_recent": profile.protect_recent,
                 "protect_analysis_context": profile.protect_analysis_context,
-                "target_ratio": profile.target_ratio,
                 "min_tokens_to_compress": profile.min_tokens_to_compress,
                 "max_items_after_crush": profile.max_items_after_crush,
                 "smart_crusher_with_compaction": profile.smart_crusher_with_compaction,
@@ -172,6 +239,10 @@ def proxy_pipeline_kwargs(config: object) -> dict[str, object]:
                 "read_protection_window": profile.protect_recent,
             }
         )
+        # Only pin a keep-ratio when the profile sets one (personas leave it
+        # unset → Kompress decides / ambient default applies).
+        if profile.target_ratio is not None:
+            kwargs["target_ratio"] = profile.target_ratio
 
     if getattr(config, "compress_user_messages", False):
         kwargs["compress_user_messages"] = True
@@ -207,6 +278,19 @@ def proxy_pipeline_kwargs(config: object) -> dict[str, object]:
     )
     if smart_crusher_with_compaction is not None:
         kwargs["smart_crusher_with_compaction"] = bool(smart_crusher_with_compaction)
+
+    # Lower the block-compression char floor (default 500) so modest tool outputs
+    # are eligible for the LOSSY path too. Matters in cache mode, where the only
+    # compressible content each turn is a single (often small) delta observation;
+    # a 500-char floor buckets most of them as "small" (skipped). Env-gated so it
+    # only changes behavior when explicitly set; lossless folding has no floor and
+    # is unaffected.
+    _min_chars_block = os.environ.get("HEADROOM_MIN_CHARS_FOR_BLOCK")
+    if _min_chars_block:
+        try:
+            kwargs["min_chars_for_block_compression"] = int(_min_chars_block)
+        except ValueError:
+            pass
 
     return kwargs
 

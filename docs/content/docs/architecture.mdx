@@ -47,15 +47,16 @@ Messages flow through a sequence of transforms. Each transform is independent, s
 
 ### Stage 1: Cache Aligner
 
-Extracts dynamic content (dates, UUIDs, session tokens) from your system prompt and moves it to the end. This stabilizes the prefix so provider caches (Anthropic `cache_control`, OpenAI prefix caching) can hit on repeated calls.
+Detects dynamic content (dates, UUIDs, session tokens) in your system prompt and reports prefix metrics. Keep the stable prefix and live context separated in the caller so provider caches (Anthropic `cache_control`, OpenAI prefix caching) can hit on repeated calls.
 
 ```
-Before: "You are helpful. Current Date: 2024-12-15"
-         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-         Changes daily = cache miss every day
+Observed: "You are helpful. Current Date: 2024-12-15"
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+          Changes daily = cache miss every day
 
-After:  "You are helpful."                          [stable prefix]
-        "[Context: Current Date: 2024-12-15]"       [dynamic tail]
+Caller layout:
+        "You are helpful."                          [stable prefix]
+        "[Context: Current Date: 2024-12-15]"       [live context]
 ```
 
 Overhead: sub-millisecond.
@@ -108,12 +109,12 @@ After the pipeline, Headroom applies provider-specific cache hints:
 
 ## CCR: Compress-Cache-Retrieve
 
-When SmartCrusher compresses a tool output or Intelligent Context drops messages, the original content is stored in a local compression cache. If the LLM needs the full data, it can request retrieval via a `ccr_retrieve` tool call. This makes compression reversible.
+When SmartCrusher compresses a tool output or Intelligent Context drops messages, the original content is stored in a local compression cache. If the LLM needs the full data, it can request retrieval via a `headroom_retrieve` tool call. This makes compression reversible.
 
 ```
 Compress:  1000 items  ->  15 items  (stored original in CCR)
 Cache:     Hash-indexed local store (SQLite)
-Retrieve:  LLM calls ccr_retrieve("abc123")  ->  original 1000 items
+Retrieve:  LLM calls headroom_retrieve("abc123")  ->  original 1000 items
 ```
 
 ## TOIN: Tool Output Intelligence Network
@@ -125,7 +126,7 @@ Cold start: For new tool types, TOIN falls back to statistical heuristics. Patte
 ## What Headroom Does NOT Touch
 
 - **User messages**: Never compressed (the user's intent must be preserved exactly)
-- **System prompts**: Content preserved; only dynamic parts are relocated for caching
+- **System prompts**: Content preserved; dynamic parts are reported so callers can keep them outside the stable prefix
 - **Code**: Passes through unchanged unless tree-sitter AST compression is explicitly enabled
 - **Model responses**: Returned unchanged from the provider
 - **Short content**: Tool outputs under 200 tokens pass through (overhead exceeds savings)

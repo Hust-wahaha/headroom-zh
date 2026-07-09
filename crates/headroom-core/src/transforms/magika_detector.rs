@@ -54,14 +54,11 @@ use crate::transforms::content_detector::ContentType;
 /// instead of crashing.
 ///
 /// On non-x86 targets, this x86-specific AVX2 gate is not applied.
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+///
+/// Delegates to the shared [`crate::onnx_cpu`] guard so magika and the
+/// embedding scorer agree on a single CPU-support source of truth.
 pub(crate) fn magika_onnx_runtime_supported_by_cpu() -> bool {
-    std::is_x86_feature_detected!("avx2")
-}
-
-#[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
-pub(crate) fn magika_onnx_runtime_supported_by_cpu() -> bool {
-    true
+    crate::onnx_cpu::onnx_runtime_supported_by_cpu()
 }
 
 /// Errors from the magika detector. Wraps the underlying `magika::Error`

@@ -55,14 +55,14 @@ def _make_proxy(compression_max_workers: int | None = None):
     return app.state.proxy
 
 
-def test_compression_executor_default_size_matches_asyncio_default() -> None:
+def test_compression_executor_default_size_matches_cpu_count() -> None:
     """When ``compression_max_workers`` is None, the resolved size should
-    match asyncio's default executor sizing (``min(32, (cpu+1)*4)`` style).
+    match the host CPU count.
     """
     import os
 
     proxy = _make_proxy(compression_max_workers=None)
-    expected = min(32, (os.cpu_count() or 1) * 4)
+    expected = max(1, os.cpu_count() or 1)
     assert proxy.compression_max_workers == expected
     assert proxy._compression_executor._max_workers == expected
 

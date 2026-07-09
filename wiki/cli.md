@@ -255,8 +255,7 @@ headroom proxy --mode cache
 | `--no-code-aware` | off | Disable AST-aware code compression |
 | `--code-aware` | off | Enable code-aware compression in the proxy (env: HEADROOM_CODE_AWARE_ENABLED) |
 | `--no-read-lifecycle` | off | Disable stale/superseded read compression |
-| `--no-ccr-inject-tool` | off | Disable injecting the `headroom_retrieve` tool |
-| `--no-ccr-marker` | off | Disable adding retrieval markers to compressed output |
+| `--no-ccr` | off | Disable CCR entirely — no retrieval markers in content and no injected `headroom_retrieve` tool (lossy, no recovery path) |
 | `--no-ccr-proactive-expansion` | off | Disable proactive CCR context expansion |
 | `--memory` | off | Enable persistent user memory |
 | `--memory-db-path` | `""` | Override memory DB path (help text: `{cwd}/.headroom/memory.db`) |

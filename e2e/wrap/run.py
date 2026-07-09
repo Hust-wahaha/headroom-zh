@@ -715,12 +715,24 @@ def verify_cursor_wrap(base_env: dict[str, str], project_dir: Path) -> None:
             "Cursor wrap should print the Anthropic base URL override",
         )
         wait_for_http(f"http://127.0.0.1:{port}/health", timeout=15)
+        # rtk registers a native Cursor hook (rtk init --agent cursor) when it
+        # can (~/.cursor exists); headroom only falls back to injecting
+        # .cursorrules text if that registration fails (GH #756). Accept
+        # either outcome rather than assuming the fallback path.
         cursorrules = project_dir / ".cursorrules"
-        assert_true(cursorrules.exists(), "Cursor wrap should create .cursorrules")
-        assert_true(
-            RTK_MARKER in cursorrules.read_text(encoding="utf-8"),
-            "Cursor wrap should inject RTK instructions",
+        cursor_hooks_json = Path(base_env["HOME"]) / ".cursor" / "hooks.json"
+        native_hook_registered = (
+            cursor_hooks_json.exists() and "rtk" in cursor_hooks_json.read_text(encoding="utf-8")
         )
+        if not native_hook_registered:
+            assert_true(
+                cursorrules.exists(),
+                "Cursor wrap should create .cursorrules when the native rtk hook is unavailable",
+            )
+            assert_true(
+                RTK_MARKER in cursorrules.read_text(encoding="utf-8"),
+                "Cursor wrap should inject RTK instructions",
+            )
     finally:
         stop_process(proc)
 

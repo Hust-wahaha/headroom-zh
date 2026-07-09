@@ -350,6 +350,19 @@ class StreamingMixin:
         # sequentially, but the index map is the source of truth.
         blocks_by_index: dict[int, dict[str, Any]] = {}
         current_block: dict[str, Any] | None = None
+        # Track which block indices have already been appended to
+        # `response["content"]`. Dedup used to be `target not in
+        # response["content"]` — plain dict-equality. Two distinct blocks
+        # that happen to accumulate identical values (most commonly two
+        # separate empty `thinking` blocks, e.g. from a retried HTTP/2
+        # stream reset redelivering a truncated segment) either got
+        # wrongly collapsed into one, or — when their partial content
+        # happened to differ (same index, unequal dict) — both slipped
+        # through as duplicates. Indexing by `index` (falling back to
+        # object identity for the legacy no-index path) makes dedup exact
+        # regardless of what the accumulated content looks like: one
+        # entry per block index, first `content_block_stop` wins.
+        appended_block_keys: set[int] = set()
 
         for line in sse_data.split("\n"):
             if not line.startswith("data: "):
@@ -371,6 +384,8 @@ class StreamingMixin:
                 response["model"] = msg.get("model")
                 response["role"] = msg.get("role", "assistant")
                 response["stop_reason"] = msg.get("stop_reason")
+                if "stop_details" in msg:
+                    response["stop_details"] = msg["stop_details"]
                 if msg.get("usage"):
                     response["usage"].update(msg["usage"])
 
@@ -456,18 +471,23 @@ class StreamingMixin:
                     # Anthropic API.
                     if target.get("type") == "thinking" and "thinking_buffer" in target:
                         target["thinking"] = target.pop("thinking_buffer")
-                    # Append the block exactly once. `current_block`
-                    # may not match the indexed target if the stream
-                    # interleaved multiple blocks; index-keyed map is
-                    # authoritative.
-                    if target not in response["content"]:
+                    # Append the block exactly once, keyed by its block
+                    # index (or object identity when no index was ever
+                    # assigned). `current_block` may not match the
+                    # indexed target if the stream interleaved multiple
+                    # blocks; index-keyed map is authoritative.
+                    block_key = idx if idx is not None else id(target)
+                    if block_key not in appended_block_keys:
                         response["content"].append(target)
+                        appended_block_keys.add(block_key)
                     current_block = None
 
             elif event_type == "message_delta":
                 delta = data.get("delta", {})
-                if delta.get("stop_reason"):
+                if "stop_reason" in delta:
                     response["stop_reason"] = delta["stop_reason"]
+                if "stop_details" in delta:
+                    response["stop_details"] = delta["stop_details"]
                 if data.get("usage"):
                     response["usage"].update(data["usage"])
 
@@ -544,10 +564,15 @@ class StreamingMixin:
                         "data": block.get("data", ""),
                     },
                 }
+            elif block.get("type") == "server_tool_use":
+                block_start = {
+                    "type": "content_block_start",
+                    "index": idx,
+                    "content_block": block,
+                }
             else:
                 raise ValueError(
-                    f"Unsupported Anthropic content block type for SSE conversion: "
-                    f"{block.get('type')!r}"
+                    f"Unsupported Anthropic content block type for SSE conversion: {block.get('type')!r}"
                 )
 
             events.append(
@@ -606,9 +631,14 @@ class StreamingMixin:
             events.append(f"event: content_block_stop\ndata: {json.dumps(block_stop)}\n\n".encode())
 
         # message_delta
+        msg_delta_payload: dict[str, Any] = {}
+        if "stop_reason" in response:
+            msg_delta_payload["stop_reason"] = response["stop_reason"]
+        if "stop_details" in response:
+            msg_delta_payload["stop_details"] = response["stop_details"]
         msg_delta = {
             "type": "message_delta",
-            "delta": {"stop_reason": response.get("stop_reason", "end_turn")},
+            "delta": msg_delta_payload,
             "usage": {"output_tokens": response.get("usage", {}).get("output_tokens", 0)},
         }
         events.append(f"event: message_delta\ndata: {json.dumps(msg_delta)}\n\n".encode())
@@ -940,10 +970,72 @@ class StreamingMixin:
         3. Makes continuation requests until no memory tools remain
         4. Streams the final response to the client
         """
-        from fastapi.responses import Response, StreamingResponse
-
         session_key = session_key or self._get_session_key(body)
         self._active_streams.add(session_key)
+
+        # Guard everything up to the generator's own try/finally (which owns
+        # cleanup once streaming starts): any exception here — including
+        # asyncio.CancelledError from a client disconnect mid-setup — must
+        # still release session_key, or it wedges in _active_streams forever
+        # and every later request on this session gets stuck 202-queued.
+        try:
+            return await self._stream_response_inner(
+                url=url,
+                headers=headers,
+                body=body,
+                provider=provider,
+                model=model,
+                request_id=request_id,
+                original_tokens=original_tokens,
+                optimized_tokens=optimized_tokens,
+                tokens_saved=tokens_saved,
+                transforms_applied=transforms_applied,
+                tags=tags,
+                optimization_latency=optimization_latency,
+                memory_user_id=memory_user_id,
+                pipeline_timing=pipeline_timing,
+                prefix_tracker=prefix_tracker,
+                original_messages=original_messages,
+                original_body_bytes=original_body_bytes,
+                body_mutated=body_mutated,
+                mutation_reasons=mutation_reasons,
+                memory_request_ctx=memory_request_ctx,
+                outcome_provider=outcome_provider,
+                waste_signals=waste_signals,
+                session_key=session_key,
+            )
+        except (Exception, asyncio.CancelledError):
+            self._cleanup_mid_turn_stream(session_key)
+            raise
+
+    async def _stream_response_inner(
+        self,
+        url: str,
+        headers: dict,
+        body: dict,
+        provider: str,
+        model: str,
+        request_id: str,
+        original_tokens: int,
+        optimized_tokens: int,
+        tokens_saved: int,
+        transforms_applied: list[str],
+        tags: dict[str, str],
+        optimization_latency: float,
+        memory_user_id: str | None,
+        pipeline_timing: dict[str, float] | None,
+        prefix_tracker: Any | None,
+        original_messages: list[dict] | None,
+        original_body_bytes: bytes | None,
+        body_mutated: bool,
+        mutation_reasons: list[str] | None,
+        memory_request_ctx: Any | None,
+        outcome_provider: str | None,
+        waste_signals: dict[str, int] | None,
+        session_key: str,
+    ) -> Response | StreamingResponse:
+        """Actual streaming implementation, guarded by _stream_response's cleanup wrapper."""
+        from fastapi.responses import Response, StreamingResponse
 
         from headroom.proxy.helpers import MAX_SSE_BUFFER_SIZE
 
@@ -1078,7 +1170,12 @@ class StreamingMixin:
                         await asyncio.sleep(delay_with_jitter / 1000)
                         continue
                     break
-                except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout) as e:
+                # Retry any transport-level failure while opening the upstream
+                # stream — including HTTP/2 protocol errors (Local/RemoteProtocol
+                # `StreamReset`) from a poisoned shared h2 connection. This runs
+                # before any body byte is forwarded to the client, so re-sending
+                # on a fresh connection is safe and avoids a 502. (#1639)
+                except httpx.TransportError as e:
                     last_connect_error = e
                     if attempt >= retry_attempts - 1:
                         raise
@@ -1097,7 +1194,10 @@ class StreamingMixin:
 
             if upstream_response is None:
                 raise last_connect_error or RuntimeError("upstream connection did not start")
-        except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout) as e:
+        # Retries exhausted (or a transport failure escaped the loop): emit a
+        # clean SSE error instead of letting an h2 StreamReset bubble up as a
+        # 502. Covers ConnectError/timeouts and Local/RemoteProtocolError. (#1639)
+        except httpx.TransportError as e:
             error_msg = str(e) or repr(e)
             logger.error(f"[{request_id}] Connection error to upstream API: {error_msg}")
 

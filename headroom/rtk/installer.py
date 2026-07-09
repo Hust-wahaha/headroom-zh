@@ -160,6 +160,15 @@ def download_rtk(version: str | None = None) -> Path:
     return target_path
 
 
+# Agents rtk registers a *native* hook for via `rtk init --agent <name>`.
+# For these, headroom must not also inject the RTK_INSTRUCTIONS_BLOCK text
+# into a rules/instructions file — that duplicates guidance rtk's own hook
+# already provides silently (GH #756).
+RTK_NATIVE_HOOK_AGENTS = frozenset(
+    {"claude", "cursor", "windsurf", "cline", "kilocode", "antigravity", "pi", "hermes"}
+)
+
+
 def register_claude_hooks(rtk_path: Path | None = None) -> bool:
     """Register rtk hooks in Claude Code settings.
 
@@ -168,7 +177,22 @@ def register_claude_hooks(rtk_path: Path | None = None) -> bool:
 
     Returns True if hooks were registered successfully.
     """
+    return register_agent_hooks(rtk_path, agent="claude")
+
+
+def register_agent_hooks(rtk_path: Path | None = None, *, agent: str = "claude") -> bool:
+    """Register rtk's native hook for ``agent`` via ``rtk init --agent``.
+
+    Only agents in ``RTK_NATIVE_HOOK_AGENTS`` support this; callers must not
+    invoke this for agents rtk has no native hook for (rtk itself will just
+    reject the ``--agent`` value).
+
+    Returns True if hooks were registered successfully.
+    """
     rtk_path = rtk_path or RTK_BIN_PATH
+    args = [str(rtk_path), "init", "--global", "--auto-patch"]
+    if agent != "claude":
+        args += ["--agent", agent]
 
     # Capture output to a temp file rather than pipes: `rtk init` may fork a
     # background process that inherits our stdout/stderr, and a piped
@@ -181,7 +205,7 @@ def register_claude_hooks(rtk_path: Path | None = None) -> bool:
         with tempfile.TemporaryFile(mode="w+", encoding="utf-8", errors="replace") as out:
             try:
                 result = subprocess.run(
-                    [str(rtk_path), "init", "--global", "--auto-patch"],
+                    args,
                     stdin=subprocess.DEVNULL,
                     stdout=out,
                     stderr=out,
@@ -195,7 +219,7 @@ def register_claude_hooks(rtk_path: Path | None = None) -> bool:
                 logger.warning("rtk init timed out: %s", out.read().strip())
                 return False
             if result.returncode == 0:
-                logger.info("rtk hooks registered in Claude Code")
+                logger.info("rtk hooks registered for %s", agent)
                 return True
             out.seek(0)
             logger.warning("rtk init failed: %s", out.read().strip())

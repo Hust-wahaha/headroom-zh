@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from importlib import import_module
 from types import SimpleNamespace
 
@@ -63,6 +64,53 @@ def test_agent_90_profile_exports_cross_agent_proxy_env() -> None:
     assert env["HEADROOM_ACCURACY_GUARD"] == "strict"
 
 
+def test_coding_persona_protects_working_set_and_stays_visible() -> None:
+    profile = get_agent_savings_profile("coding")
+
+    env = profile.proxy_env()
+
+    assert env["HEADROOM_SAVINGS_PROFILE"] == "coding"
+    assert env["HEADROOM_PROTECT_RECENT"] == "2"  # keep the active code working set verbatim
+    assert env["HEADROOM_MIN_TOKENS"] == "25"  # low → compression is actually visible
+    assert env["HEADROOM_COMPRESS_USER_MESSAGES"] == "0"  # no prompt mutation / cache bust
+    assert env["HEADROOM_COMPRESS_SYSTEM_MESSAGES"] == "0"
+    assert env["HEADROOM_ACCURACY_GUARD"] == "strict"
+    assert "HEADROOM_TARGET_RATIO" not in env  # unset → Kompress / ambient default decides
+
+
+def test_general_persona_has_no_positional_code_protection() -> None:
+    profile = get_agent_savings_profile("general")
+
+    env = profile.proxy_env()
+
+    assert env["HEADROOM_PROTECT_RECENT"] == "0"
+    assert env["HEADROOM_MIN_TOKENS"] == "25"
+    assert "HEADROOM_TARGET_RATIO" not in env
+
+
+def test_personas_omit_target_ratio_in_pipeline_kwargs() -> None:
+    for name, expected_protect in (("coding", 2), ("general", 0)):
+        kwargs = proxy_pipeline_kwargs(ProxyConfig(savings_profile=name))
+
+        assert kwargs["protect_recent"] == expected_protect
+        assert kwargs["read_protection_window"] == expected_protect
+        assert kwargs["min_tokens_to_compress"] == 25
+        assert kwargs["compress_user_messages"] is False
+        assert kwargs["compress_system_messages"] is False
+        assert kwargs["force_kompress"] is False
+        assert "target_ratio" not in kwargs  # persona never pins a keep-ratio
+
+
+def test_persona_apply_profile_leaves_target_ratio_untouched() -> None:
+    cfg = CompressConfig(target_ratio=0.42)
+
+    apply_agent_savings_profile(cfg, "coding")
+
+    assert cfg.protect_recent == 2
+    assert cfg.min_tokens_to_compress == 25
+    assert cfg.target_ratio == 0.42  # persona did not override an explicit ratio
+
+
 def test_agent_savings_env_defaults_preserve_user_overrides() -> None:
     env = {
         "HEADROOM_TARGET_RATIO": "0.25",
@@ -77,9 +125,17 @@ def test_agent_savings_env_defaults_preserve_user_overrides() -> None:
     assert env["HEADROOM_SMART_CRUSHER_COMPACTION"] == "0"
 
 
-def test_unknown_agent_savings_profile_lists_valid_profiles() -> None:
-    with pytest.raises(ValueError, match="agent-90"):
-        get_agent_savings_profile("missing")
+def test_unknown_agent_savings_profile_falls_back_to_balanced(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # An unknown profile must NOT raise: it's resolved during proxy startup, so
+    # raising takes the whole proxy down before it opens its port (desktop asked
+    # for a profile a fallback runtime predates). Degrade to "balanced" instead.
+    with caplog.at_level(logging.WARNING):
+        profile = get_agent_savings_profile("missing")
+    assert profile is get_agent_savings_profile("balanced")
+    assert "unknown savings profile" in caplog.text
+    assert "missing" in caplog.text
 
 
 def test_with_target_savings_recomputes_target_ratio() -> None:

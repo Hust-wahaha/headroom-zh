@@ -159,9 +159,8 @@ def build_prefix_cache_stats(
 
         # Calculate savings:
         # Cache reads save (1.0 - read_mult) per token vs uncached input price.
-        # Cache write premium is NOT deducted — it's baseline cost that the
-        # client (e.g. Claude Code) pays regardless of Headroom. We track it
-        # for observability but don't penalise our savings number.
+        # Cache write premium stays visible as its own gross field, and net
+        # savings subtract it so the dashboard reflects billed cache impact.
         read_tokens: int = pc["cache_read_tokens"]  # type: ignore[assignment]
         write_tokens: int = pc["cache_write_tokens"]  # type: ignore[assignment]
         write_5m_tokens: int = pc["cache_write_5m_tokens"]  # type: ignore[assignment]
@@ -174,7 +173,7 @@ def build_prefix_cache_stats(
         if input_price_per_token:
             # Savings from reads: tokens * price * (1.0 - read_multiplier)
             savings_usd = read_tokens * input_price_per_token * (1.0 - read_mult)
-            # Write premium (observability only — not subtracted from savings)
+            # Write premium is reported separately and subtracted from net savings.
             if write_mult > 1.0:
                 write_premium_usd = write_tokens * input_price_per_token * (write_mult - 1.0)
 
@@ -205,7 +204,7 @@ def build_prefix_cache_stats(
             "write_premium": f"{(write_mult - 1.0) * 100:.0f}%" if write_mult > 1.0 else "none",
             "savings_usd": round(savings_usd, 4),
             "write_premium_usd": round(write_premium_usd, 4),
-            "net_savings_usd": round(savings_usd, 4),
+            "net_savings_usd": round(savings_usd - write_premium_usd, 4),
             "label": str(econ["label"]),
             "observed_ttl_buckets": {
                 "5m": {
@@ -246,7 +245,7 @@ def build_prefix_cache_stats(
         totals["savings_usd"] += savings_usd
         totals["write_premium_usd"] += write_premium_usd
 
-    totals["net_savings_usd"] = round(totals["savings_usd"], 4)
+    totals["net_savings_usd"] = round(totals["savings_usd"] - totals["write_premium_usd"], 4)
     totals["savings_usd"] = round(totals["savings_usd"], 4)
     totals["write_premium_usd"] = round(totals["write_premium_usd"], 4)
     # Token-level hit rate across all providers
@@ -739,6 +738,21 @@ class CostTracker:
             uncached_tokens: Non-cached input tokens from API response usage.
             output_tokens: Output tokens from API response usage.
         """
+        # Post-guard invariant (all providers): Headroom never forwards a request
+        # larger than the original (handlers revert any inflation before sending),
+        # so compression savings are >= 0 by construction. A negative here is an
+        # intermediate/hook token-count artifact that never reached the model;
+        # clamp it so `total_tokens_removed` reflects actually-forwarded bytes
+        # instead of surfacing spurious negatives (verified clean on the wire).
+        if tokens_saved < 0:
+            import logging as _lg
+
+            _lg.getLogger(__name__).debug(
+                "record_tokens: clamping negative tokens_saved=%d to 0 for %s (artifact; wire not inflated)",
+                tokens_saved,
+                model,
+            )
+            tokens_saved = 0
         self._tokens_saved_by_model[model] = (
             self._tokens_saved_by_model.get(model, 0) + tokens_saved
         )

@@ -8,6 +8,8 @@ Comprehensive tests covering:
 - Transform interface: apply(), should_apply() methods
 """
 
+import json
+import logging
 from types import SimpleNamespace
 
 import pytest
@@ -20,6 +22,7 @@ from headroom.transforms.content_router import (
     RouterCompressionResult,
     RoutingDecision,
 )
+from headroom.transforms.lossless_compaction import search_unheading
 
 # =============================================================================
 # Test Fixtures
@@ -158,7 +161,11 @@ def test_force_kompress_routes_anthropic_tool_result_to_targeted_kompress(
 
         def compress(self, content, **kwargs):
             captured.update(kwargs)
-            compressed = " ".join(content.split()[:20])
+            # Real Kompress appends a CCR retrieval marker when CCR is enabled,
+            # keeping the lossy result recoverable. Include one so the router's
+            # reversibility gate (tool ground truth must stay recoverable, #1307)
+            # accepts the compression instead of reverting to verbatim.
+            compressed = " ".join(content.split()[:20]) + " Retrieve more: hash=deadbeef"
             return SimpleNamespace(
                 compressed=compressed,
                 compressed_tokens=len(compressed.split()),
@@ -195,6 +202,59 @@ def test_force_kompress_routes_anthropic_tool_result_to_targeted_kompress(
     assert result.messages[0]["content"][0]["content"] != tool_content
     assert result.transforms_applied == ["router:tool_result:kompress"]
     assert captured["target_ratio"] == 0.10
+
+
+def test_anthropic_tool_result_lossy_without_marker_stays_verbatim(router, tokenizer, monkeypatch):
+    """Reversibility gate (#1307): a lossy Kompress result on a tool_result block
+    with no CCR retrieval marker is unrecoverable, so the router must keep the
+    original verbatim rather than hand the agent a fabricated summary. This is
+    the block-path counterpart to the string/`role=="tool"` guard."""
+
+    class FakeKompress:
+        def is_ready(self) -> bool:
+            return True
+
+        def ensure_background_load(self) -> None:
+            pass
+
+        def compress(self, content, **kwargs):
+            # Lossy summary with NO retrieval marker → unrecoverable.
+            compressed = " ".join(content.split()[:20])
+            return SimpleNamespace(
+                compressed=compressed,
+                compressed_tokens=len(compressed.split()),
+            )
+
+    monkeypatch.setattr(router, "_get_kompress", lambda: FakeKompress())
+    tool_content = " ".join(
+        f'{{"file":"src/module_{i}.py","line":{i},"text":"repeated search payload"}}'
+        for i in range(160)
+    )
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "toolu_search_1",
+                    "content": tool_content,
+                }
+            ],
+        }
+    ]
+
+    result = router.apply(
+        messages,
+        tokenizer,
+        force_kompress=True,
+        target_ratio=0.10,
+        compress_user_messages=True,
+        min_tokens_to_compress=10,
+        read_protection_window=0,
+    )
+
+    # Unrecoverable lossy compression is rejected → original kept verbatim.
+    assert result.messages[0]["content"][0]["content"] == tool_content
 
 
 # =============================================================================
@@ -609,6 +669,23 @@ class TestContentRouter:
         assert result.original == content
         assert result.strategy_used is not None
 
+    def test_compress_diff_accepts_none_context_with_debug(self, router, caplog):
+        """None context is normalized before debug logging and compressor dispatch."""
+
+        class FakeDiffCompressor:
+            def compress(self, content, context):
+                assert context == ""
+                return SimpleNamespace(compressed="diff summary")
+
+        diff = "diff --git a/file.py b/file.py\n@@ -1 +1 @@\n-old\n+new\n"
+        router._diff_compressor = FakeDiffCompressor()
+
+        caplog.set_level(logging.DEBUG, logger="headroom.transforms.content_router")
+        result = router.compress(diff, context=None)
+
+        assert result.compressed == "diff summary"
+        assert result.strategy_used == CompressionStrategy.DIFF
+
     def test_name_property(self, router):
         """Router has correct name."""
         assert router.name == "content_router"
@@ -873,9 +950,10 @@ class TestExcludeTools:
 
         result = router.apply(messages, tokenizer)
 
-        # Content should be unchanged
-        assert result.messages[1]["content"] == messages[1]["content"]
-        assert "router:excluded:tool" in result.transforms_applied
+        # Excluded from *lossy* compression, but JSON still gets a data-lossless
+        # minify (same object, fewer tokens). Assert recovery, not byte-identity.
+        assert json.loads(result.messages[1]["content"]) == json.loads(messages[1]["content"])
+        assert "router:excluded:lossless_json" in result.transforms_applied
 
     def test_glob_exclude_tools(self, tokenizer):
         """Glob patterns in exclude_tools match by prefix (issue #870)."""
@@ -909,9 +987,90 @@ class TestExcludeTools:
 
         result = router.apply(messages, tokenizer)
 
-        # The MCP tool result matched the glob and was left unchanged.
-        assert result.messages[1]["content"] == messages[1]["content"]
-        assert "router:excluded:tool" in result.transforms_applied
+        # The MCP tool result matched the glob → excluded from lossy compression.
+        # Its JSON still gets a data-lossless minify; assert recovery.
+        assert json.loads(result.messages[1]["content"]) == json.loads(messages[1]["content"])
+        assert "router:excluded:lossless_json" in result.transforms_applied
+
+    def test_anthropic_mcp_alias_exclude_tools(self, tokenizer):
+        """Single-underscore MCP names from custom agents honor documented MCP globs."""
+        config = ContentRouterConfig(
+            min_section_tokens=10,
+            exclude_tools={"mcp__*"},
+        )
+        router = ContentRouter(config)
+
+        messages = [
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_mcp_1",
+                        "name": "mcp_CursorTaskRegistry_cursor_list_tasks",
+                        "input": {"project": "headroom"},
+                    }
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "toolu_mcp_1",
+                        "content": generate_json_data(50),
+                    }
+                ],
+            },
+        ]
+
+        result = router.apply(messages, tokenizer)
+
+        tool_result_block = result.messages[1]["content"][0]
+        assert json.loads(tool_result_block["content"]) == json.loads(
+            messages[1]["content"][0]["content"]
+        )
+        assert "router:excluded:lossless_json" in result.transforms_applied
+
+    def test_anthropic_mcp_bare_tool_alias_exclude_tools(self, tokenizer):
+        """Bare tool exclusions match custom-agent MCP wrappers (#1822)."""
+        config = ContentRouterConfig(
+            min_section_tokens=10,
+            exclude_tools={"headroom_retrieve"},
+        )
+        router = ContentRouter(config)
+
+        messages = [
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_retrieve_1",
+                        "name": "mcp_HeadroomZai_headroom_retrieve",
+                        "input": {"key": "abc123"},
+                    }
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "toolu_retrieve_1",
+                        "content": generate_json_data(50),
+                    }
+                ],
+            },
+        ]
+
+        result = router.apply(messages, tokenizer)
+
+        tool_result_block = result.messages[1]["content"][0]
+        assert json.loads(tool_result_block["content"]) == json.loads(
+            messages[1]["content"][0]["content"]
+        )
+        assert "router:excluded:lossless_json" in result.transforms_applied
 
     def test_is_tool_excluded_helper(self):
         """is_tool_excluded: exact (case-insensitive) and glob matching."""
@@ -919,10 +1078,14 @@ class TestExcludeTools:
 
         # Glob entry covers a whole MCP server; unrelated tools are untouched.
         assert is_tool_excluded("mcp__build123d__measure", {"mcp__*"})
+        assert is_tool_excluded("mcp_CursorTaskRegistry_cursor_list_tasks", {"mcp__*"})
         assert not is_tool_excluded("Bash", {"mcp__*"})
         # Plain entries keep exact, case-insensitive membership.
         assert is_tool_excluded("Read", {"read"})
         assert is_tool_excluded("MCP__X", {"mcp__*"})
+        # MCP wrapper aliases can still be excluded by their bare tool name.
+        assert is_tool_excluded("mcp_HeadroomZai_headroom_retrieve", {"headroom_retrieve"})
+        assert is_tool_excluded("mcp__Headroom__headroom_retrieve", {"headroom_retrieve"})
         # Empty set never excludes.
         assert not is_tool_excluded("Read", set())
 
@@ -1035,9 +1198,11 @@ class TestExcludeTools:
             (b for b in user_msg["content"] if b.get("type") == "tool_result"), None
         )
         assert tool_result_block is not None
-        assert tool_result_block["content"] == messages[1]["content"][0]["content"]
-        # Verify exclusion was tracked (consistent with OpenAI format)
-        assert "router:excluded:tool" in result.transforms_applied
+        # Excluded from lossy compression; search results get a byte-lossless
+        # heading fold. Verify byte-exact recovery (Anthropic block format).
+        original = messages[1]["content"][0]["content"]
+        assert search_unheading(tool_result_block["content"]) == original
+        assert "router:excluded:lossless_search" in result.transforms_applied
 
     def test_anthropic_tool_result_runtime_window_allows_old_excluded_tools(self, tokenizer):
         """Agent profiles can shrink the protected window for Claude tool results."""

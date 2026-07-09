@@ -128,6 +128,26 @@ def test_create_proxy_backend_handles_missing_litellm_backend(caplog) -> None:
     assert "LiteLLM backend not available" in caplog.text
 
 
+def test_create_proxy_backend_logs_structured_failure_details(caplog) -> None:
+    logger = logging.getLogger("test")
+
+    with caplog.at_level(logging.ERROR):
+        missing = create_proxy_backend(
+            backend="bedrock",
+            anyllm_provider="ignored",
+            bedrock_region="us-east-1",
+            logger=logger,
+            litellm_backend_cls=lambda provider, region, profile_name=None: (_ for _ in ()).throw(
+                RuntimeError("boom")
+            ),
+        )
+
+    assert missing is None
+    assert "backend initialization failed: backend=litellm-bedrock provider=bedrock error=boom" in (
+        caplog.text
+    )
+
+
 def test_proxy_provider_runtime_loaders_cache_backend_types(monkeypatch) -> None:
     import headroom.providers.registry as registry
 

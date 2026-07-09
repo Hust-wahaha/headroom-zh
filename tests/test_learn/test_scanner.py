@@ -391,6 +391,56 @@ class TestDecodeProjectPath:
         assert projects[0].name == "work"
         assert str(projects[0].project_path).startswith("C:")
 
+    def test_windows_double_dash_encoding_decodes(self) -> None:
+        """Real Claude Code encoding has no leading dash: C:\\Users\\x → C--Users-x (#1849).
+
+        The drive colon and first backslash each flatten to '-', producing a
+        double dash after the drive letter. The decoder must not emit doubled
+        path separators from the resulting empty split token.
+        """
+        result = _decode_project_path("C--Users-jane-proj")
+
+        assert result is not None
+        rendered = str(result)
+        assert rendered.startswith("C:")
+        assert "\\\\" not in rendered.removeprefix("C:")
+        assert rendered == "C:\\Users\\jane\\proj"
+
+    def test_windows_double_dash_dotted_username_via_greedy(self) -> None:
+        """C--...-first-last-... must rejoin 'first.last' when the dir exists (#1849)."""
+        import sys
+        import tempfile
+
+        if sys.platform != "win32":
+            pytest.skip("greedy Windows-path decode requires real Windows filesystem")
+
+        with tempfile.TemporaryDirectory() as td:
+            project = Path(td) / "john.doe" / "work"
+            project.mkdir(parents=True)
+
+            drive = Path(td).drive[0]
+            rest = str(project)[3:]  # strip 'C:\\'
+            encoded = f"{drive}--" + rest.replace("\\", "-").replace(".", "-").replace(" ", "-")
+
+            result = _decode_project_path(encoded)
+            assert result == project
+
+    def test_discover_double_dash_windows_project_fallback(self, tmp_path: Path) -> None:
+        """Nonexistent C--Users-... project must fall back to a valid path, not \\\\\\Users (#1849)."""
+        claude_dir = tmp_path / ".claude"
+        project_dir = claude_dir / "projects" / "C--Users-jane-proj"
+        project_dir.mkdir(parents=True)
+        (project_dir / "session.jsonl").write_text("{}\n")
+
+        projects = ClaudeCodeScanner(claude_dir=claude_dir).discover_projects()
+
+        assert len(projects) == 1
+        assert projects[0].name == "proj"
+        rendered = str(projects[0].project_path)
+        assert rendered.startswith("C:")
+        assert "\\\\" not in rendered.removeprefix("C:")
+        assert not rendered.startswith("\\")
+
     def test_home_dir_username_stays_single_component(self) -> None:
         """A home-directory name must survive decoding as one component.
 

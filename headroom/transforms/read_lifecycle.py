@@ -177,7 +177,7 @@ class ReadLifecycleManager:
                 continue
 
             # OpenAI format: tool_calls array
-            for tc in msg.get("tool_calls", []):
+            for tc in msg.get("tool_calls") or []:  # coalesce None (OpenAI tool_calls:null)
                 if not isinstance(tc, dict):
                     continue
                 tc_id = tc.get("id", "")
@@ -272,7 +272,7 @@ class ReadLifecycleManager:
                 continue
 
             # OpenAI format
-            for tc in msg.get("tool_calls", []):
+            for tc in msg.get("tool_calls") or []:  # coalesce None (OpenAI tool_calls:null)
                 if isinstance(tc, dict) and tc.get("id") == tool_call_id:
                     return i
 

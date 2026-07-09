@@ -203,6 +203,75 @@ def diff_strip_index(text: str) -> str:
     return _join(out, had_trailing)
 
 
+# A whole-line file path: optional ``./``/``../`` root, >=1 directory segment,
+# then a basename. No whitespace or ':' (so grep ``path:line:content`` rows —
+# handled by search_heading — are excluded). Directory-only lines (trailing '/')
+# don't match (empty basename), which keeps the fold unambiguous.
+_PATH_ROW_RE = re.compile(r"^(?P<dir>(?:\.{0,2}/)?(?:[^/\s:]+/)+)(?P<base>[^/\s:]+)$")
+
+
+def path_heading(text: str) -> str:
+    """Fold a *pure* file-path listing (``find`` / ``ls -1`` / ``rg -l`` output)
+    into ripgrep-heading form: each parent directory printed once on its own
+    line (ending in ``/``), then the bare basenames beneath it.
+
+    Reversibility is not assumed here — ``compact_lossless`` verifies the exact
+    round-trip via :func:`path_unheading` and discards the fold on any mismatch
+    (e.g. a stray no-slash line mistaken for a basename), so mixed content is
+    always safe. Requires >=2 path rows or there is nothing to group.
+    Complements ``search_heading``, which only handles the ``path:line:content``
+    grep shape, not plain path lists.
+    """
+    lines, had_trailing = _split_keep_trailing(text)
+    if sum(1 for ln in lines if _PATH_ROW_RE.match(ln)) < 2:
+        return text
+    out: list[str] = []
+    current: str | None = None
+    for line in lines:
+        m = _PATH_ROW_RE.match(line)
+        if m:
+            d = m.group("dir")
+            if d != current:
+                out.append(d)
+                current = d
+            out.append(m.group("base"))
+        else:  # blank line inside/around the listing
+            out.append(line)
+            current = None
+    return _join(out, had_trailing)
+
+
+def path_unheading(text: str) -> str:
+    """Exact inverse of :func:`path_heading`.
+
+    A *header* is a line ending in ``/`` immediately followed by a basename row
+    (a non-empty line with no ``/``); it is consumed and re-prefixed onto each
+    following basename row until a blank line or another header.
+    """
+    lines, had_trailing = _split_keep_trailing(text)
+    if not lines:
+        return text
+    out: list[str] = []
+    current: str | None = None
+    n = len(lines)
+    i = 0
+    while i < n:
+        line = lines[i]
+        is_base = line != "" and "/" not in line
+        if current is not None and is_base:
+            out.append(current + line)
+            i += 1
+            continue
+        if line.endswith("/") and i + 1 < n and lines[i + 1] != "" and "/" not in lines[i + 1]:
+            current = line
+            i += 1
+            continue
+        current = None
+        out.append(line)
+        i += 1
+    return _join(out, had_trailing)
+
+
 def _smaller(candidate: str, original: str) -> bool:
     return len(candidate) < len(original)
 
@@ -231,6 +300,13 @@ def compact_lossless(content: str, kind: str) -> str:
         if kind == "search":
             candidate = search_heading(content)
             if search_unheading(candidate) != content:
+                return content
+            return candidate if _smaller(candidate, content) else content
+
+        if kind == "paths":
+            # Pure path listings (find/ls -1/rg -l): fold repeated parent dirs.
+            candidate = path_heading(content)
+            if path_unheading(candidate) != content:
                 return content
             return candidate if _smaller(candidate, content) else content
 

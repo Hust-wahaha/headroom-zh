@@ -173,6 +173,14 @@ def test_provider_passthrough_routes_forward_expected_targets(monkeypatch) -> No
             "model": "claude-3-5-sonnet@20240620",
             "force_stream": False,
         }
+        assert client.post("/anthropic/v1/messages?beta=true").json() == {
+            "handler": "handle_anthropic_messages",
+            "path": "/v1/messages",
+            "upstream_base_url": "https://api.anthropic.test",
+            "provider": "anthropic",
+            "model": None,
+            "force_stream": False,
+        }
         non_anthropic_raw = client.post(
             "/projects/p/locations/us-central1/publishers/google/models/gemini-2.0-flash:rawPredict"
         ).json()
@@ -187,13 +195,55 @@ def test_provider_passthrough_routes_forward_expected_targets(monkeypatch) -> No
         assert client.delete("/v1beta/cachedContents/cache-1").json()["sub_path"] == (
             "cachedContents"
         )
-        assert (
-            client.get(
-                "/unhandled/path",
-                headers={"x-headroom-base-url": "https://custom.example/base/"},
-            ).json()["base_url"]
-            == "https://custom.example/base"
-        )
+        custom_passthrough = client.get(
+            "/unhandled/path",
+            headers={"x-headroom-base-url": "https://custom.example/base/"},
+        ).json()
+        assert custom_passthrough["base_url"] == "https://custom.example/base"
+        assert custom_passthrough["sub_path"] == ""
+        assert custom_passthrough["provider"] == ""
+
+        opencode_zen_passthrough = client.post(
+            "/zen/v1/chat/completions",
+            headers={"x-headroom-base-url": "https://opencode.ai/"},
+            json={"model": "zen"},
+        ).json()
+        assert opencode_zen_passthrough["base_url"] == "https://opencode.ai"
+        assert opencode_zen_passthrough["sub_path"] == "chat/completions"
+        assert opencode_zen_passthrough["provider"] == "zen"
+
+        unrelated_custom_passthrough = client.post(
+            "/mcp",
+            headers={"x-headroom-base-url": "https://opencode.ai/"},
+            json={},
+        ).json()
+        assert unrelated_custom_passthrough["sub_path"] == ""
+        assert unrelated_custom_passthrough["provider"] == ""
+        for unrelated_path in (
+            "/mcp/v1/chat/completions",
+            "/npm/v1/chat/completions",
+            "/context7/v1/chat/completions",
+        ):
+            unrelated_custom_passthrough = client.post(
+                unrelated_path,
+                headers={"x-headroom-base-url": "https://opencode.ai/"},
+                json={},
+            ).json()
+            assert unrelated_custom_passthrough["sub_path"] == ""
+            assert unrelated_custom_passthrough["provider"] == ""
+        get_custom_passthrough = client.get(
+            "/zen/v1/chat/completions",
+            headers={"x-headroom-base-url": "https://opencode.ai/"},
+        ).json()
+        assert get_custom_passthrough["sub_path"] == ""
+        assert get_custom_passthrough["provider"] == ""
+        other_host_custom_passthrough = client.post(
+            "/zen/v1/chat/completions",
+            headers={"x-headroom-base-url": "https://custom.example/"},
+            json={"model": "zen"},
+        ).json()
+        assert other_host_custom_passthrough["sub_path"] == ""
+        assert other_host_custom_passthrough["provider"] == ""
         assert client.get("/another/path", headers={"x-goog-api-key": "test"}).json()[
             "base_url"
         ] == ("https://api.gemini.test")
@@ -294,6 +344,11 @@ def test_provider_specific_routes_delegate_to_expected_proxy_handlers(monkeypatc
 
     with TestClient(_app()) as client:
         assert client.post("/v1/messages").json()["handler"] == "handle_anthropic_messages"
+        assert client.post("/anthropic/v1/messages").json() == {
+            "handler": "handle_anthropic_messages",
+            "path": "/v1/messages",
+            "args": ["https://api.anthropic.test"],
+        }
         assert (
             client.post("/v1/messages/batches").json()["handler"] == "handle_anthropic_batch_create"
         )

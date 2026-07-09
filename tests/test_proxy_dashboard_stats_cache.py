@@ -591,6 +591,12 @@ def test_dashboard_uses_cached_stats_and_lazy_history_feed_polling() -> None:
     html = get_dashboard_html()
 
     assert "fetch('/stats?cached=1')" in html
+    assert "version: 'loading'" in html
+    assert 'x-text="formatVersion(version)"' in html
+    assert "return /^\\d+\\.\\d+\\.\\d+$/.test(label)" in html
+    assert "return /^\\d/.test(value)" not in html
+    assert "this.version = health.version || 'unknown'" in html
+    assert "0.3.0" not in html
     assert "@click=\"setViewMode('history')\"" in html
     assert '@click="toggleFeed()"' in html
     assert "this.viewMode === 'history'" in html
@@ -603,6 +609,17 @@ def test_dashboard_uses_cached_stats_and_lazy_history_feed_polling() -> None:
     assert "Context Tool" in html
     assert "cliFilteringLabel + ' Filtered (this session)'" in html
     assert "cliFilteringLabel + ' Filtered (lifetime)'" in html
+
+
+def test_dashboard_session_metrics_do_not_repeat_proxy_tokens_without_new_context() -> None:
+    html = get_dashboard_html()
+
+    assert "proxy tokens removed" not in html
+    assert '<span class="text-sm text-gray-400">Headroom Overhead</span>' not in html
+    assert '<span class="text-sm text-gray-400">TTFB (upstream)</span>' not in html
+    assert "Overhead Range" in html
+    assert "TTFB Range" in html
+    assert "Proxy Removed" in html
 
 
 def test_proxy_throughput_in_stats_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:

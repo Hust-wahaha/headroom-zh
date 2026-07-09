@@ -72,3 +72,35 @@ def test_register_claude_hooks_survives_forked_daemon(tmp_path: Path) -> None:
     fake_rtk.chmod(fake_rtk.stat().st_mode | stat.S_IEXEC)
 
     assert installer.register_claude_hooks(fake_rtk) is True
+
+
+def test_register_agent_hooks_passes_agent_flag_for_non_claude(tmp_path: Path, monkeypatch) -> None:
+    calls: list[list[str]] = []
+
+    class FakeResult:
+        returncode = 0
+
+    def fake_run(args, **kwargs):
+        calls.append(args)
+        return FakeResult()
+
+    monkeypatch.setattr(installer.subprocess, "run", fake_run)
+
+    assert installer.register_agent_hooks(Path("rtk"), agent="cursor") is True
+    assert calls == [["rtk", "init", "--global", "--auto-patch", "--agent", "cursor"]]
+
+
+def test_register_agent_hooks_omits_agent_flag_for_claude(tmp_path: Path, monkeypatch) -> None:
+    calls: list[list[str]] = []
+
+    class FakeResult:
+        returncode = 0
+
+    def fake_run(args, **kwargs):
+        calls.append(args)
+        return FakeResult()
+
+    monkeypatch.setattr(installer.subprocess, "run", fake_run)
+
+    assert installer.register_agent_hooks(Path("rtk"), agent="claude") is True
+    assert calls == [["rtk", "init", "--global", "--auto-patch"]]

@@ -133,8 +133,8 @@ class ProxyConfig:
     ccr_inject_tool: bool = True
     ccr_inject_system_instructions: bool = False
     # Proxy-level mirror of ContentRouterConfig.ccr_inject_marker, so retrieval
-    # markers can be toggled from the CLI (--no-ccr-marker). Threaded into the
-    # router in server.py; default preserves current behavior.
+    # markers can be toggled from the CLI (--no-ccr, which also drops the retrieve
+    # tool). Threaded into the router in server.py; default preserves current behavior.
     ccr_inject_marker: bool = True
 
     # CCR Response Handling
@@ -287,6 +287,7 @@ class ProxyConfig:
     max_keepalive_connections: int = 100
     keepalive_expiry: float = 90.0
     http2: bool = True
+    http_proxy: str | None = None
 
     # Memory System
     memory_enabled: bool = False
@@ -395,9 +396,9 @@ class ProxyConfig:
     # Bound the dedicated compression threadpool. CPU-bound Rust work runs
     # here; the pool is separate from asyncio's default executor so other
     # ``asyncio.to_thread`` callers (file IO, etc.) are not contended by
-    # compression bursts. ``None`` resolves to ``min(32, (cpu_count or 1) * 4)``,
-    # matching asyncio's default executor sizing today. Lower the cap to
-    # tighten resource use on multi-tenant hosts; raise it to handle larger
+    # compression bursts. ``None`` resolves to ``cpu_count or 1`` so CPU-bound
+    # compression work does not oversubscribe hosts by default. Lower the cap
+    # to tighten resource use on multi-tenant hosts; raise it to handle larger
     # bursts. CLI: ``--compression-max-workers``. Env:
     # ``HEADROOM_COMPRESSION_MAX_WORKERS``.
     #

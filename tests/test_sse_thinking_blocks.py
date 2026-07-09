@@ -186,9 +186,39 @@ def test_redacted_thinking_data_preserved() -> None:
     assert block["data"] == redacted_blob
 
 
+def test_response_to_sse_preserves_server_tool_use_blocks() -> None:
+    parser = _Parser()
+    response = {
+        "id": "msg_1",
+        "model": "claude-opus-4",
+        "role": "assistant",
+        "content": [
+            {
+                "type": "server_tool_use",
+                "id": "srv_1",
+                "name": "web_search",
+                "input": {"query": "headroom"},
+            }
+        ],
+        "stop_reason": "end_turn",
+        "usage": {"output_tokens": 1},
+    }
+
+    sse_events = b"".join(parser._response_to_sse(response, "anthropic")).decode("utf-8")
+
+    assert '"type": "content_block_start"' in sse_events
+    assert '"type": "server_tool_use"' in sse_events
+    assert '"name": "web_search"' in sse_events
+
+    round_tripped = parser._parse_sse_to_response(sse_events, "anthropic")
+    assert round_tripped is not None
+    assert round_tripped["content"][0]["type"] == "server_tool_use"
+
+
 def test_response_to_sse_preserves_thinking_redacted_and_citations() -> None:
     parser = _Parser()
     redacted_blob = "ENC:" + ("y" * 200)
+    stop_details = {"type": "refusal", "message": "policy refusal"}
     response = {
         "id": "msg_2",
         "model": "claude-opus-4",
@@ -208,7 +238,8 @@ def test_response_to_sse_preserves_thinking_redacted_and_citations() -> None:
             },
             {"type": "redacted_thinking", "data": redacted_blob},
         ],
-        "stop_reason": "end_turn",
+        "stop_reason": "refusal",
+        "stop_details": stop_details,
         "usage": {"input_tokens": 10, "output_tokens": 3},
     }
 
@@ -226,6 +257,22 @@ def test_response_to_sse_preserves_thinking_redacted_and_citations() -> None:
     assert round_tripped["content"][0]["signature"] == "sig_123"
     assert round_tripped["content"][1]["citations"][0]["cited_text"] == "abc"
     assert round_tripped["content"][2]["data"] == redacted_blob
+    assert round_tripped["stop_reason"] == "refusal"
+    assert round_tripped["stop_details"] == stop_details
+
+
+def test_response_to_sse_does_not_default_missing_stop_reason() -> None:
+    parser = _Parser()
+    sse_text = b"".join(parser._response_to_sse({"content": []}, "anthropic")).decode("utf-8")
+    events = [
+        json.loads(line[len("data: ") :])
+        for line in sse_text.splitlines()
+        if line.startswith("data: ")
+    ]
+    message_delta = next(event for event in events if event["type"] == "message_delta")
+
+    assert message_delta["delta"] == {}
+    assert "end_turn" not in sse_text
 
 
 def test_response_to_sse_rejects_unknown_content_block() -> None:
@@ -236,3 +283,145 @@ def test_response_to_sse_rejects_unknown_content_block() -> None:
             {"content": [{"type": "future_block", "payload": "preserve me"}]},
             "anthropic",
         )
+
+
+# Issue #1876: CCR buffered-stream re-synthesis corrupted extended-thinking
+# responses — `content_block_stop` deduped appended blocks by whole-dict
+# equality (`target not in response["content"]`), so two distinct blocks
+# that happened to be value-identical could collapse into one, or two
+# stops for the *same* index with different accumulated content (a
+# retried HTTP/2 stream reset redelivering a truncated segment) could
+# both slip through as duplicates. Dedup is now keyed by block index.
+
+
+def test_distinct_empty_thinking_blocks_at_different_indices_both_survive() -> None:
+    """Two separate empty `thinking` blocks are two blocks, not one.
+
+    Regression guard: if dedup ever regresses to dict-equality, this
+    collapses to a single entry since both blocks are value-identical.
+    """
+    parser = _Parser()
+    events = [
+        {"type": "message_start", "message": {"id": "msg_1", "model": "claude-opus-4"}},
+        {
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": {"type": "thinking", "thinking": ""},
+        },
+        {"type": "content_block_stop", "index": 0},
+        {
+            "type": "content_block_start",
+            "index": 1,
+            "content_block": {"type": "thinking", "thinking": ""},
+        },
+        {"type": "content_block_stop", "index": 1},
+        {
+            "type": "content_block_start",
+            "index": 2,
+            "content_block": {"type": "text", "text": ""},
+        },
+        {
+            "type": "content_block_delta",
+            "index": 2,
+            "delta": {"type": "text_delta", "text": "Here is my answer."},
+        },
+        {"type": "content_block_stop", "index": 2},
+    ]
+    response = parser._parse_sse_to_response(_build_sse(events), "anthropic")
+    assert response is not None
+    assert len(response["content"]) == 3
+    assert response["content"][0]["type"] == "thinking"
+    assert response["content"][0]["thinking"] == ""
+    assert response["content"][1]["type"] == "thinking"
+    assert response["content"][1]["thinking"] == ""
+    # The text block that followed the two empty thinking blocks must not
+    # be dropped — this is the "text blocks are missing entirely" half of
+    # the reported corruption.
+    assert response["content"][2]["type"] == "text"
+    assert response["content"][2]["text"] == "Here is my answer."
+
+
+def test_redelivered_block_same_index_different_content_collapses_to_one_entry() -> None:
+    """A fully redelivered content_block lifecycle (start/delta/stop) for
+    an index that was already appended must not produce a second entry —
+    even though the redelivered content differs from the first, which is
+    exactly the case the old whole-dict-equality dedup missed. Reproduces
+    an HTTP/2 stream-reset retry (`_stream_response`'s retry path)
+    redelivering a fresh accumulation for the same block index: with the
+    old `target not in response["content"]` check, the two dicts have
+    unequal `thinking` text, so *both* slipped through as duplicate
+    entries for one logical block.
+    """
+    parser = _Parser()
+    events = [
+        {"type": "message_start", "message": {"id": "msg_1", "model": "claude-opus-4"}},
+        {
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": {"type": "thinking", "thinking": ""},
+        },
+        {
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {"type": "thinking_delta", "thinking": "partial"},
+        },
+        {"type": "content_block_stop", "index": 0},
+        # Full redelivery of the same index with different accumulated
+        # content — must be ignored, not appended as a second block.
+        {
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": {"type": "thinking", "thinking": ""},
+        },
+        {
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {"type": "thinking_delta", "thinking": "full retried text"},
+        },
+        {"type": "content_block_stop", "index": 0},
+    ]
+    response = parser._parse_sse_to_response(_build_sse(events), "anthropic")
+    assert response is not None
+    assert len(response["content"]) == 1
+    assert response["content"][0]["thinking"] == "partial"
+
+
+def test_buffered_ccr_extended_thinking_round_trip_preserves_all_blocks() -> None:
+    """End-to-end shape for issue #1876: a buffered CCR continuation
+    response with thinking -> text -> tool_use must reconstruct to SSE
+    (the re-synthesis path `anthropic.py` uses for the client-facing
+    stream) with the text preserved and the thinking block emitted
+    exactly once, unduplicated."""
+    parser = _Parser()
+    response = {
+        "id": "msg_final",
+        "model": "claude-opus-4",
+        "role": "assistant",
+        "content": [
+            {
+                "type": "thinking",
+                "thinking": "Now I have the context, let me answer.",
+                "signature": "sig_final",
+            },
+            {"type": "text", "text": "Based on the retrieved context, here is the answer."},
+            {"type": "tool_use", "id": "toolu_real_1", "name": "real_tool", "input": {"y": 2}},
+        ],
+        "stop_reason": "tool_use",
+        "usage": {"input_tokens": 8, "output_tokens": 12},
+    }
+
+    sse_text = b"".join(parser._response_to_sse(response, "anthropic")).decode("utf-8")
+    assert sse_text.count('"type": "thinking"') == 1
+    assert "Based on the retrieved context, here is the answer." in sse_text
+
+    round_tripped = parser._parse_sse_to_response(sse_text, "anthropic")
+    assert round_tripped is not None
+    assert len(round_tripped["content"]) == 3
+    assert round_tripped["content"][0]["type"] == "thinking"
+    assert round_tripped["content"][0]["thinking"] == "Now I have the context, let me answer."
+    assert round_tripped["content"][1]["type"] == "text"
+    assert (
+        round_tripped["content"][1]["text"] == "Based on the retrieved context, here is the answer."
+    )
+    assert round_tripped["content"][2]["type"] == "tool_use"
+    assert round_tripped["content"][2]["input"] == {"y": 2}

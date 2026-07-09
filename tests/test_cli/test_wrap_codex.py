@@ -459,6 +459,53 @@ class TestInjectAndRestoreRoundTrip:
         assert status == "restored"
         assert config_file.read_text(encoding="utf-8") == malformed
 
+    def test_unwrap_removes_rtk_block_from_global_agents(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """`wrap codex` injects the rtk block into the Codex global AGENTS.md;
+        `unwrap codex` must take it back out (regression for #1421)."""
+        _set_test_home(monkeypatch, tmp_path)
+        codex_home = tmp_path / ".codex"
+        codex_home.mkdir()
+        agents = codex_home / "AGENTS.md"
+        wrap_mod._inject_rtk_instructions(agents)
+        assert wrap_mod._RTK_MARKER in agents.read_text(encoding="utf-8")
+
+        wrap_mod.unwrap_codex.callback(port=8787, no_stop_proxy=True)
+
+        remaining = agents.read_text(encoding="utf-8") if agents.exists() else ""
+        assert wrap_mod._RTK_MARKER not in remaining
+
+    def test_unwrap_preserves_user_content_in_global_agents(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Only the marker-fenced rtk block is removed; the user's own AGENTS.md
+        prose survives the unwrap."""
+        _set_test_home(monkeypatch, tmp_path)
+        codex_home = tmp_path / ".codex"
+        codex_home.mkdir()
+        agents = codex_home / "AGENTS.md"
+        agents.write_text("# My project rules\n\nAlways write tests.\n", encoding="utf-8")
+        wrap_mod._inject_rtk_instructions(agents)
+        assert wrap_mod._RTK_MARKER in agents.read_text(encoding="utf-8")
+
+        wrap_mod.unwrap_codex.callback(port=8787, no_stop_proxy=True)
+
+        remaining = agents.read_text(encoding="utf-8")
+        assert wrap_mod._RTK_MARKER not in remaining
+        assert "# My project rules" in remaining
+        assert "Always write tests." in remaining
+
+    def test_unwrap_is_safe_when_no_global_agents(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """No Codex AGENTS.md → unwrap is a clean no-op, not a crash."""
+        _set_test_home(monkeypatch, tmp_path)
+
+        wrap_mod.unwrap_codex.callback(port=8787, no_stop_proxy=True)
+
+        assert not (tmp_path / ".codex" / "AGENTS.md").exists()
+
 
 # ---------------------------------------------------------------------------
 # Thread retag: wrap pulls native threads into the headroom menu, unwrap hands
@@ -1023,7 +1070,7 @@ def test_launch_tool_ignores_sigint_in_wrapper(
     class FakeCompleted:
         returncode = 0
 
-    monkeypatch.setattr(wrap_mod, "_ensure_proxy", lambda *args, **kwargs: None)
+    monkeypatch.setattr(wrap_mod, "_ensure_proxy", lambda *args, **kwargs: (None, 8787))
     monkeypatch.setattr(
         wrap_mod.signal, "signal", lambda sig, fn: signal_handlers.setdefault(sig, fn)
     )
@@ -1480,3 +1527,73 @@ class TestCodexProjectHeaderConfig:
         assert "X-Headroom-Project" not in cleaned
         assert "[model_providers.headroom]" not in cleaned
         assert 'model = "gpt-4o"' in cleaned
+
+
+# ---------------------------------------------------------------------------
+# Regression: codex delegates port resolution to _ensure_proxy
+# ---------------------------------------------------------------------------
+
+
+class TestCodexPortResolution:
+    """codex() uses _ensure_proxy() to resolve ports (not early _find_available_port).
+
+    Regression for headroom#1406 round 2 review: codex() must follow
+    the same selected-port contract as other wrappers (aider, copilot, etc.)
+    so that a healthy existing proxy on the requested port is reused instead
+    of skipped by a blind socket probe.
+    """
+
+    def test_delegates_to_ensure_proxy(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """codex() calls _ensure_proxy and uses the returned port."""
+        _set_test_home(monkeypatch, Path("/tmp/test_headroom_codex"))
+
+        captured_port: list[int] = []
+
+        # Mock _ensure_proxy to capture the requested port
+        def mock_ensure_proxy(port: int, no_proxy: bool, **kwargs: object) -> tuple[None, int]:
+            captured_port.append(port)
+            # Simulate port fallback: requested 8787, actual 8788
+            return None, 8788
+
+        monkeypatch.setattr(wrap_mod, "_ensure_proxy", mock_ensure_proxy)
+
+        # Mock all heavy dependencies
+        monkeypatch.setattr(
+            wrap_mod, "_codex_config_paths", lambda: (Path("/dev/null"), Path("/dev/null"))
+        )
+        monkeypatch.setattr(wrap_mod, "_snapshot_codex_config_if_unwrapped", lambda *a, **kw: None)
+        monkeypatch.setattr(wrap_mod, "_ensure_rtk_binary", lambda *a, **kw: None)
+        monkeypatch.setattr(wrap_mod, "_setup_lean_ctx_agent", lambda *a, **kw: None)
+        monkeypatch.setattr(wrap_mod, "_inject_rtk_instructions", lambda *a, **kw: None)
+        monkeypatch.setattr(wrap_mod, "_codex_home_dir", lambda: Path("/tmp"))
+        monkeypatch.setattr(wrap_mod, "_setup_headroom_mcp", lambda *a, **kw: None)
+        monkeypatch.setattr(wrap_mod, "_setup_serena_mcp", lambda *a, **kw: None)
+        monkeypatch.setattr(wrap_mod, "_disable_serena_mcp", lambda *a, **kw: None)
+        monkeypatch.setattr("shutil.which", lambda x: "/usr/bin/codex" if x == "codex" else None)
+        monkeypatch.setattr(wrap_mod, "_build_codex_launch_env", lambda port, env: ({}, []))
+        monkeypatch.setattr(wrap_mod, "_inject_codex_provider_config", lambda port: None)
+        monkeypatch.setattr(wrap_mod, "_project_name_from_cwd", lambda: None)
+        monkeypatch.setattr(wrap_mod, "_live_proxy_clients", lambda *a, **kw: [])
+
+        # Intercept _launch_tool to verify port propagation
+        launch_kw: dict = {}
+
+        def mock_launch_tool(**kwargs: object) -> None:
+            launch_kw.update(kwargs)
+
+        monkeypatch.setattr(wrap_mod, "_launch_tool", mock_launch_tool)
+
+        runner = CliRunner()
+        result = runner.invoke(
+            main,
+            ["wrap", "codex", "--port", "8787", "--no-rtk", "--no-mcp", "--no-serena"],
+        )
+
+        assert result.exit_code == 0, f"CLI failed: {result.output}"
+        assert captured_port == [8787], (
+            f"_ensure_proxy called with {captured_port}, expected [8787]"
+        )
+        assert launch_kw.get("port") == 8788, (
+            f"_launch_tool port={launch_kw.get('port')}, expected 8788 "
+            "(the actual_port from _ensure_proxy fallback)"
+        )

@@ -30,6 +30,19 @@ async def _async_iter(items: list[bytes]):
         yield item
 
 
+def _sse_json_events(chunks: list[bytes]) -> list[dict[str, Any]]:
+    events = []
+    for chunk in chunks:
+        for line in chunk.decode("utf-8").splitlines():
+            if not line.startswith("data: "):
+                continue
+            payload = line[len("data: ") :]
+            if payload == "[DONE]":
+                continue
+            events.append(json.loads(payload))
+    return events
+
+
 def test_extract_tool_calls_google_and_invalid_shapes() -> None:
     handler = CCRResponseHandler()
     google_response = {
@@ -202,23 +215,43 @@ def test_streaming_buffer_and_parse_sse_helpers() -> None:
     # Per SSE spec each event is terminated by `\n\n`. The byte-buffer
     # parser introduced in PR-A8 requires the spec terminator so partial
     # multi-byte UTF-8 reads don't corrupt event boundaries.
+    stop_details = {"type": "refusal", "message": "policy refusal"}
     anthropic_data = b"\n\n".join(
         [
+            b'data: {"type":"message_start","message":{"id":"msg_1","model":"claude-fable-5","role":"assistant","usage":{"input_tokens":7}}}',
+            b'data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}',
+            b'data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":""}}',
+            b'data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"sig_fable"}}',
+            b'data: {"type":"content_block_stop","index":0}',
+            b'data: {"type":"content_block_start","index":1,"content_block":{"type":"redacted_thinking","data":"ENC:abc"}}',
+            b'data: {"type":"content_block_stop","index":1}',
             b'data: {"type":"content_block_start","content_block":{"type":"text","text":"Hel"}}',
             b'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"lo"}}',
             b'data: {"type":"content_block_stop"}',
             b'data: {"type":"content_block_start","content_block":{"type":"tool_use","id":"tool_1","name":"headroom_retrieve"}}',
             b'data: {"type":"content_block_delta","delta":{"type":"input_json_delta","partial_json":"{\\"hash\\":\\"abc\\"}"}}',
             b'data: {"type":"content_block_stop"}',
-            b'data: {"type":"message_delta","delta":{"stop_reason":"tool_use"}}',
+            (
+                b'data: {"type":"message_delta","delta":{"stop_reason":"refusal",'
+                b'"stop_details":{"type":"refusal","message":"policy refusal"}},'
+                b'"usage":{"output_tokens":3}}'
+            ),
             b"data: [DONE]\n\n",
         ]
     )
     parsed = handler._parse_sse_stream(anthropic_data)
-    assert parsed["content"][0] == {"type": "text", "text": "Hello"}
-    assert parsed["content"][1]["name"] == "headroom_retrieve"
-    assert parsed["content"][1]["input"] == {"hash": "abc"}
-    assert parsed["stop_reason"] == "tool_use"
+    assert parsed["content"][0] == {
+        "type": "thinking",
+        "signature": "sig_fable",
+        "thinking": "",
+    }
+    assert parsed["content"][1] == {"type": "redacted_thinking", "data": "ENC:abc"}
+    assert parsed["content"][2] == {"type": "text", "text": "Hello"}
+    assert parsed["content"][3]["name"] == "headroom_retrieve"
+    assert parsed["content"][3]["input"] == {"hash": "abc"}
+    assert parsed["stop_reason"] == "refusal"
+    assert parsed["stop_details"] == stop_details
+    assert parsed["usage"]["output_tokens"] == 3
 
     openai_handler = StreamingCCRHandler(CCRResponseHandler(), provider="openai")
     parsed_openai = openai_handler._reconstruct_openai_response(
@@ -349,9 +382,46 @@ async def test_streaming_handler_falls_back_to_buffer_on_processing_error(
 async def test_response_to_sse_formats() -> None:
     anthropic = StreamingCCRHandler(CCRResponseHandler(), provider="anthropic")
     anthropic_chunks = [chunk async for chunk in anthropic._response_to_sse({"content": []})]
-    assert anthropic_chunks[0] == b"event: message_start\n"
-    assert anthropic_chunks[-1] == b'data: {"type": "message_stop"}\n\n'
+    assert anthropic_chunks[0].startswith(b"event: message_start\n")
+    assert anthropic_chunks[-1] == b'event: message_stop\ndata: {"type": "message_stop"}\n\n'
 
     openai = StreamingCCRHandler(CCRResponseHandler(), provider="openai")
     openai_chunks = [chunk async for chunk in openai._response_to_sse({"choices": []})]
     assert openai_chunks == [b'data: {"choices": []}\n\n', b"data: [DONE]\n\n"]
+
+
+@pytest.mark.asyncio
+async def test_response_to_sse_preserves_anthropic_shape() -> None:
+    handler = StreamingCCRHandler(CCRResponseHandler(), provider="anthropic")
+    stop_details = {"type": "refusal", "message": "policy refusal"}
+    response = {
+        "id": "msg_1",
+        "model": "claude-fable-5",
+        "role": "assistant",
+        "content": [
+            {"type": "thinking", "thinking": "", "signature": "sig_fable"},
+            {"type": "redacted_thinking", "data": "ENC:abc"},
+            {"type": "text", "text": "done"},
+        ],
+        "stop_reason": "refusal",
+        "stop_details": stop_details,
+        "usage": {"input_tokens": 7, "output_tokens": 3},
+    }
+
+    chunks = [chunk async for chunk in handler._response_to_sse(response)]
+    events = _sse_json_events(chunks)
+    message_delta = next(event for event in events if event["type"] == "message_delta")
+
+    assert message_delta["delta"]["stop_reason"] == "refusal"
+    assert message_delta["delta"]["stop_details"] == stop_details
+    assert any(event.get("delta", {}).get("type") == "signature_delta" for event in events)
+    assert any(
+        event.get("content_block", {}).get("type") == "redacted_thinking" for event in events
+    )
+
+    parsed = handler._parse_sse_stream(b"".join(chunks))
+    assert parsed["content"][0]["signature"] == "sig_fable"
+    assert parsed["content"][0]["thinking"] == ""
+    assert parsed["content"][1]["data"] == "ENC:abc"
+    assert parsed["stop_reason"] == "refusal"
+    assert parsed["stop_details"] == stop_details

@@ -199,6 +199,15 @@ def dashboard(port: int, no_open: bool) -> None:
     ),
 )
 @click.option(
+    "--http-proxy",
+    default=None,
+    envvar="HEADROOM_HTTP_PROXY",
+    help=(
+        "HTTP proxy URL for upstream provider requests only "
+        "(HTTPS uses CONNECT; env: HEADROOM_HTTP_PROXY)."
+    ),
+)
+@click.option(
     "--keepalive-expiry",
     "keepalive_expiry",
     default=90.0,
@@ -282,20 +291,15 @@ def dashboard(port: int, no_open: bool) -> None:
     help="Max tokens per minute. Env: HEADROOM_TPM. Default: 100000.",
 )
 @click.option(
-    "--no-ccr-inject-tool",
+    "--no-ccr",
     is_flag=True,
-    envvar="HEADROOM_NO_CCR_INJECT_TOOL",
+    envvar="HEADROOM_NO_CCR",
     help=(
-        "Don't inject the CCR headroom_retrieve tool. Run compression-only — "
-        "for streaming / non-MCP clients that can't resolve the retrieve tool "
-        "and would otherwise error on it. Env: HEADROOM_NO_CCR_INJECT_TOOL."
+        "Disable CCR entirely: no retrieval markers in compressed content AND no "
+        "headroom_retrieve tool injected. Lossy compression with no recovery path "
+        "(maximum savings; also right for streaming / non-MCP clients that can't "
+        "resolve an injected tool). Env: HEADROOM_NO_CCR."
     ),
-)
-@click.option(
-    "--no-ccr-marker",
-    is_flag=True,
-    envvar="HEADROOM_NO_CCR_MARKER",
-    help=("Don't add CCR retrieval markers to compressed content. Env: HEADROOM_NO_CCR_MARKER."),
 )
 @click.option(
     "--lossless",
@@ -434,7 +438,7 @@ def dashboard(port: int, no_open: bool) -> None:
     envvar="HEADROOM_COMPRESSION_MAX_WORKERS",
     help=(
         "Bound the dedicated compression threadpool (CPU-bound Kompress work). "
-        "Default (unset): min(32, (cpu_count or 1) * 4). Lower it to reduce CPU "
+        "Default (unset): cpu_count or 1. Lower it to reduce CPU "
         "oversubscription under concurrent sessions; a value < 1 is clamped to 1. "
         "Env: HEADROOM_COMPRESSION_MAX_WORKERS."
     ),
@@ -845,6 +849,7 @@ def proxy(
     max_keepalive_connections: int,
     keepalive_expiry: float,
     http2: bool,
+    http_proxy: str | None,
     intercept_tool_results: bool,
     no_optimize: bool,
     no_cache: bool,
@@ -852,8 +857,7 @@ def proxy(
     protect_tool_results: str | None,
     rpm: int | None,
     tpm: int | None,
-    no_ccr_inject_tool: bool,
-    no_ccr_marker: bool,
+    no_ccr: bool,
     lossless: bool,
     no_ccr_proactive_expansion: bool,
     proxy_extension: tuple[str, ...],
@@ -1092,11 +1096,12 @@ def proxy(
         protect_recent=_get_env_int_optional("HEADROOM_PROTECT_RECENT"),
         protect_analysis_context=_get_env_bool_optional("HEADROOM_PROTECT_ANALYSIS_CONTEXT"),
         accuracy_guard=os.environ.get("HEADROOM_ACCURACY_GUARD") or None,
-        # CCR opt-outs for compression-only deployments (streaming / non-MCP
-        # clients that can't resolve the injected retrieve tool). Defaults keep
-        # CCR fully on; each flag flips one dataclass default to False.
-        ccr_inject_tool=not no_ccr_inject_tool,
-        ccr_inject_marker=not no_ccr_marker,
+        # CCR opt-out: --no-ccr disables both halves at once (markers in content
+        # AND the injected retrieve tool). Markers without a tool — or a tool
+        # without markers — are useless, so it is a single switch. Default keeps
+        # CCR fully on.
+        ccr_inject_tool=not no_ccr,
+        ccr_inject_marker=not no_ccr,
         lossless=lossless,
         ccr_proactive_expansion=not no_ccr_proactive_expansion,
         # Flatten repeat-flag tuple AND any comma-separated values inside it.
@@ -1126,6 +1131,7 @@ def proxy(
         max_keepalive_connections=max_keepalive_connections,
         keepalive_expiry=keepalive_expiry,
         http2=http2,
+        http_proxy=http_proxy,
         log_file=None if is_stateless else log_file,
         log_full_messages=log_messages
         or os.environ.get("HEADROOM_LOG_MESSAGES", "").lower() in ("true", "1", "yes", "on"),

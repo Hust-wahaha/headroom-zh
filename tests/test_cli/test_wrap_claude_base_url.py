@@ -190,3 +190,94 @@ def test_write_restore_roundtrip(tmp_path: Path) -> None:
     assert "ANTHROPIC_BASE_URL" not in payload.get("env", {})
     assert payload["env"]["OTHER"] == "x"
     assert payload["model"] == "opus"
+
+
+# --- stale wrap marker (issue #1768) --------------------------------------
+
+
+def _marker(tmp_path: Path) -> Path:
+    return wrap_cli._wrap_marker_path(_settings(tmp_path))
+
+
+def test_write_with_port_creates_marker(tmp_path: Path) -> None:
+    path = _settings(tmp_path)
+    wrap_cli._write_claude_wrap_base_url("http://127.0.0.1:8787", settings_path=path, port=8787)
+    marker = json.loads(_marker(tmp_path).read_text(encoding="utf-8"))
+    assert marker["port"] == 8787
+    assert marker["key"] == "ANTHROPIC_BASE_URL"
+    assert marker["previous"] is None
+    assert marker["pid"] > 0
+
+
+def test_write_without_port_skips_marker(tmp_path: Path) -> None:
+    path = _settings(tmp_path)
+    wrap_cli._write_claude_wrap_base_url("http://127.0.0.1:8787", settings_path=path)
+    assert not _marker(tmp_path).exists()
+
+
+def test_restore_clears_marker_for_matching_key(tmp_path: Path) -> None:
+    path = _settings(tmp_path)
+    wrap_cli._write_claude_wrap_base_url("http://127.0.0.1:8787", settings_path=path, port=8787)
+    assert _marker(tmp_path).exists()
+    wrap_cli._restore_claude_wrap_base_url(None, settings_path=path)
+    assert not _marker(tmp_path).exists()
+
+
+def test_wrap_marker_is_stale_when_pid_missing() -> None:
+    assert wrap_cli._wrap_marker_is_stale({}) is True
+
+
+def test_wrap_marker_is_stale_when_pid_dead(tmp_path: Path) -> None:
+    path = _settings(tmp_path)
+    wrap_cli._write_claude_wrap_base_url("http://127.0.0.1:8787", settings_path=path, port=8787)
+    marker = json.loads(_marker(tmp_path).read_text(encoding="utf-8"))
+    marker["pid"] = 999_999_999  # astronomically unlikely to be a live pid
+    assert wrap_cli._wrap_marker_is_stale(marker) is True
+
+
+def test_wrap_marker_is_not_stale_for_live_pid(tmp_path: Path) -> None:
+    path = _settings(tmp_path)
+    wrap_cli._write_claude_wrap_base_url("http://127.0.0.1:8787", settings_path=path, port=8787)
+    marker = json.loads(_marker(tmp_path).read_text(encoding="utf-8"))
+    assert wrap_cli._wrap_marker_is_stale(marker) is False
+
+
+def test_wrap_marker_is_stale_when_pid_reused(tmp_path: Path) -> None:
+    path = _settings(tmp_path)
+    wrap_cli._write_claude_wrap_base_url("http://127.0.0.1:8787", settings_path=path, port=8787)
+    marker = json.loads(_marker(tmp_path).read_text(encoding="utf-8"))
+    marker["start_time"] = (marker["start_time"] or 0) - 10_000  # fabricate a mismatched identity
+    assert wrap_cli._wrap_marker_is_stale(marker) is True
+
+
+def test_check_and_clear_stale_wrap_marker_restores_previous(tmp_path: Path) -> None:
+    path = _settings(tmp_path)
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        json.dumps({"env": {"ANTHROPIC_BASE_URL": "http://old.proxy:9000"}}), encoding="utf-8"
+    )
+    wrap_cli._write_wrap_marker(
+        path, port=8787, key="ANTHROPIC_BASE_URL", previous="http://old.proxy:9000"
+    )
+    marker = json.loads(_marker(tmp_path).read_text(encoding="utf-8"))
+    marker["pid"] = 999_999_999
+    _marker(tmp_path).write_text(json.dumps(marker), encoding="utf-8")
+
+    restored = wrap_cli._check_and_clear_stale_wrap_marker(path, key="ANTHROPIC_BASE_URL")
+    assert restored == "http://old.proxy:9000"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert payload["env"]["ANTHROPIC_BASE_URL"] == "http://old.proxy:9000"
+    assert not _marker(tmp_path).exists()
+
+
+def test_check_and_clear_stale_wrap_marker_leaves_live_marker(tmp_path: Path) -> None:
+    path = _settings(tmp_path)
+    wrap_cli._write_claude_wrap_base_url("http://127.0.0.1:8787", settings_path=path, port=8787)
+    restored = wrap_cli._check_and_clear_stale_wrap_marker(path, key="ANTHROPIC_BASE_URL")
+    assert restored is None
+    assert _marker(tmp_path).exists()
+
+
+def test_check_and_clear_stale_wrap_marker_noop_when_no_marker(tmp_path: Path) -> None:
+    path = _settings(tmp_path)
+    assert wrap_cli._check_and_clear_stale_wrap_marker(path, key="ANTHROPIC_BASE_URL") is None

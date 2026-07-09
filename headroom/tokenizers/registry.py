@@ -53,6 +53,13 @@ MODEL_PATTERNS: list[tuple[str, str]] = [
     (r"^palm", "google"),
     # Cohere models -> estimation
     (r"^command", "cohere"),
+    # Moonshot Kimi (K2 / K2.7 code). No public BPE we can load offline, so use
+    # a calibrated estimator like Claude/Gemini. Matched with a leading ``.*`` so
+    # every serving form resolves: the Fireworks body model
+    # ``accounts/fireworks/models/kimi-...``, the litellm slug
+    # ``fireworks_ai/kimi-...``, and the native ``moonshotai/kimi-...``.
+    (r".*moonshot", "moonshot"),
+    (r".*kimi", "moonshot"),
     # Open models commonly served via OpenAI-compatible APIs
     (r"^phi-", "huggingface"),
     (r"^qwen", "huggingface"),
@@ -113,6 +120,7 @@ class TokenizerRegistry:
             "google": self._create_google,
             "cohere": self._create_cohere,
             "mistral": self._create_mistral,
+            "moonshot": self._create_moonshot,
             "estimation": self._create_estimation,
         }
 
@@ -350,6 +358,21 @@ class TokenizerRegistry:
         Cohere has its own tokenizer, we use estimation.
         """
         return EstimatingTokenCounter(chars_per_token=4.0)
+
+    def _create_moonshot(self, model: str) -> TokenCounter:
+        """Create Moonshot/Kimi tokenizer.
+
+        Kimi (K2 / K2.7-code) ships no BPE we can load in the offline proxy
+        image, so — like Claude/Gemini/Cohere — we use a calibrated fixed-ratio
+        estimator. 3.1 chars/token was measured against Fireworks'
+        provider-reported ``prompt_tokens`` on a SWE-bench Kimi-K2.7-code run
+        (172,906 content chars -> 55,863 reported tokens = 3.10 chars/tok). The
+        default adaptive estimator effectively uses ~3.63 on that (code-dense)
+        content and so under-counted Kimi by ~20%, which starved the compression
+        size-gates. Slightly over-counting (lower ratio) is the safe direction
+        here: it makes the router MORE likely to compress, never less.
+        """
+        return EstimatingTokenCounter(chars_per_token=3.1)
 
     def _create_estimation(self, model: str) -> TokenCounter:
         """Create estimation-based tokenizer."""

@@ -94,17 +94,17 @@ class TestAnthropicModelFallback:
         assert limit == 200000
 
         pricing = provider._get_pricing("claude-opus-5-20260101")
-        assert pricing["input"] == 15.00
-        assert pricing["output"] == 75.00
+        assert pricing["input"] == 5.00
+        assert pricing["output"] == 25.00
 
     def test_pattern_based_inference_sonnet(self):
         """Test pattern-based inference for sonnet models."""
         provider = AnthropicProvider()
 
-        limit = provider.get_context_limit("claude-sonnet-5-20260101")
+        limit = provider.get_context_limit("claude-sonnet-6-20260101")
         assert limit == 200000
 
-        pricing = provider._get_pricing("claude-sonnet-5-20260101")
+        pricing = provider._get_pricing("claude-sonnet-6-20260101")
         assert pricing["input"] == 3.00
         assert pricing["output"] == 15.00
 
@@ -159,9 +159,9 @@ class TestAnthropicModelFallback:
 
         # Claude Opus 4.5
         pricing = provider._get_pricing("claude-opus-4-5-20251101")
-        assert pricing["input"] == 15.00
-        assert pricing["output"] == 75.00
-        assert pricing["cached_input"] == 1.50
+        assert pricing["input"] == 5.00
+        assert pricing["output"] == 25.00
+        assert pricing["cached_input"] == 0.50
 
     def test_cost_estimation_for_new_models(self):
         """Test cost estimation works for new models."""
@@ -174,8 +174,8 @@ class TestAnthropicModelFallback:
             cached_tokens=0,
         )
 
-        # $15/1M input + $75/1M * 0.1M output = $15 + $7.5 = $22.5
-        assert cost == pytest.approx(22.5, rel=0.01)
+        # $5/1M input + $25/1M * 0.1M output = $5 + $2.5 = $7.5
+        assert cost == pytest.approx(7.5, rel=0.01)
 
 
 class TestAnthropicConfigLoading:

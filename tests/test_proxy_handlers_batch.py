@@ -113,6 +113,12 @@ class DummyBatchHandler(batch_module.BatchHandlerMixin):
     async def handle_passthrough(self, request, base_url):  # noqa: ANN001, ANN201
         return {"request": request, "base_url": base_url}
 
+    async def _run_compression_in_executor(self, fn, *, timeout):  # noqa: ANN001, ANN201
+        # Mirror of HeadroomProxy._run_compression_in_executor: batch handlers
+        # offload pipeline.apply() off the event loop (#1701). Inline is fine
+        # for tests — only the call contract matters here.
+        return fn()
+
     async def _retry_request(self, method, url, headers, body, **kwargs):  # noqa: ANN001, ANN201
         return self._retry_response
 

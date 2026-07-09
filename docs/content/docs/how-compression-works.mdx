@@ -13,13 +13,13 @@ Every request flows through three stages:
 ┌──────────────┐     ┌────────────────┐
 │ CacheAligner │────>│ ContentRouter  │
 │              │     │                │
-│ Stabilize    │     │ Detect type &  │
-│ prefix for   │     │ route to best  │
-│ cache hits   │     │ compressor     │
+│ Report       │     │ Detect type &  │
+│ prefix drift │     │ route to best  │
+│ for cache    │     │ compressor     │
 └──────────────┘     └────────────────┘
 ```
 
-1. **CacheAligner** extracts dynamic content (dates, user context) from your system prompt so the static prefix stays cacheable across requests.
+1. **CacheAligner** detects dynamic content (dates, user context) in your system prompt and reports prefix drift so the caller can keep the static prefix cacheable across requests.
 2. **ContentRouter** inspects each tool output and routes it to the optimal compressor -- SmartCrusher for JSON arrays, CodeAwareCompressor for source code, LogCompressor for build output, and so on.
 
 ## Content Type Detection

@@ -80,6 +80,110 @@ def test_prefix_cache_stats_include_observed_ttl_mix() -> None:
     assert stats["totals"]["observed_ttl_buckets"]["1h"]["tokens"] == 45
 
 
+def test_prefix_cache_stats_subtracts_write_premium_from_provider_net_savings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    metrics = PrometheusMetrics()
+    metrics.cache_by_provider["anthropic"].update(
+        {
+            "requests": 2,
+            "hit_requests": 1,
+            "cache_read_tokens": 40,
+            "cache_write_tokens": 60,
+            "cache_write_5m_tokens": 60,
+            "cache_write_1h_tokens": 0,
+            "cache_write_5m_requests": 1,
+            "cache_write_1h_requests": 0,
+        }
+    )
+
+    tracker = CostTracker()
+    tracker._tokens_sent_by_model.update({"claude-opus-4-6": 1})
+    monkeypatch.setattr(CostTracker, "_get_list_price", lambda _self, _model: 100.0)
+
+    stats = build_prefix_cache_stats(metrics, tracker)
+
+    anthropic = stats["by_provider"]["anthropic"]
+
+    assert anthropic["savings_usd"] == 0.0036
+    assert anthropic["write_premium_usd"] == 0.0015
+    assert anthropic["net_savings_usd"] == 0.0021
+
+
+def test_prefix_cache_stats_subtracts_write_premium_from_total_net_savings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    metrics = PrometheusMetrics()
+    metrics.cache_by_provider["anthropic"].update(
+        {
+            "requests": 2,
+            "hit_requests": 1,
+            "cache_read_tokens": 40,
+            "cache_write_tokens": 60,
+            "cache_write_5m_tokens": 60,
+            "cache_write_1h_tokens": 0,
+            "cache_write_5m_requests": 1,
+            "cache_write_1h_requests": 0,
+        }
+    )
+    metrics.cache_by_provider["openai"].update(
+        {
+            "requests": 1,
+            "hit_requests": 1,
+            "cache_read_tokens": 20,
+            "cache_write_tokens": 10,
+            "cache_write_5m_tokens": 0,
+            "cache_write_1h_tokens": 10,
+            "cache_write_5m_requests": 0,
+            "cache_write_1h_requests": 1,
+        }
+    )
+
+    tracker = CostTracker()
+    tracker._tokens_sent_by_model.update({"claude-opus-4-6": 1, "gpt-4o": 1})
+    monkeypatch.setattr(CostTracker, "_get_list_price", lambda _self, _model: 100.0)
+
+    stats = build_prefix_cache_stats(metrics, tracker)
+
+    openai = stats["by_provider"]["openai"]
+
+    assert openai["write_premium_usd"] == 0.0
+    assert openai["net_savings_usd"] == openai["savings_usd"]
+    assert stats["totals"]["savings_usd"] == 0.0046
+    assert stats["totals"]["write_premium_usd"] == 0.0015
+    assert stats["totals"]["net_savings_usd"] == 0.0031
+
+
+def test_prefix_cache_stats_keeps_net_equal_without_write_premium(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    metrics = PrometheusMetrics()
+    metrics.cache_by_provider["openai"].update(
+        {
+            "requests": 1,
+            "hit_requests": 1,
+            "cache_read_tokens": 20,
+            "cache_write_tokens": 0,
+            "cache_write_5m_tokens": 0,
+            "cache_write_1h_tokens": 0,
+            "cache_write_5m_requests": 0,
+            "cache_write_1h_requests": 0,
+        }
+    )
+
+    tracker = CostTracker()
+    tracker._tokens_sent_by_model.update({"gpt-4o": 1})
+    monkeypatch.setattr(CostTracker, "_get_list_price", lambda _self, _model: 100.0)
+
+    stats = build_prefix_cache_stats(metrics, tracker)
+
+    openai = stats["by_provider"]["openai"]
+
+    assert openai["savings_usd"] == 0.001
+    assert openai["write_premium_usd"] == 0.0
+    assert openai["net_savings_usd"] == openai["savings_usd"]
+
+
 def test_prometheus_metrics_export_includes_extended_fields(tmp_path) -> None:
     metrics = PrometheusMetrics(
         savings_tracker=SavingsTracker(path=str(tmp_path / "proxy_savings.json"))

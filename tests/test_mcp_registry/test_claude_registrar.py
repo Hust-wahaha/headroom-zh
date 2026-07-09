@@ -158,8 +158,9 @@ def test_register_via_cli_calls_claude_mcp_add(
     with patch("subprocess.run", return_value=fake_result) as run_mock:
         result = reg.register_server(_install_spec(monkeypatch))
     assert result.status == RegisterStatus.REGISTERED
-    cmds = [call.args[0] for call in run_mock.call_args_list]
-    add_cmd = next(c for c in cmds if "add" in c)
+    add_call = run_mock.call_args
+    assert add_call is not None
+    add_cmd = add_call.args[0]
     assert add_cmd[:6] == [
         "/usr/local/bin/claude",
         "mcp",
@@ -173,6 +174,7 @@ def test_register_via_cli_calls_claude_mcp_add(
         _RESOLVED_COMMAND[0],
         *_RESOLVED_ARGS,
     ]
+    assert add_call.kwargs["env"]["CLAUDE_CONFIG_DIR"] == str(tmp_path / ".claude")
 
 
 def test_register_via_cli_includes_env(tmp_path: Path) -> None:
@@ -186,10 +188,38 @@ def test_register_via_cli_includes_env(tmp_path: Path) -> None:
     fake_result = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
     with patch("subprocess.run", return_value=fake_result) as run_mock:
         reg.register_server(spec)
-    add_cmd = next(c for c in [call.args[0] for call in run_mock.call_args_list] if "add" in c)
+    add_call = run_mock.call_args
+    assert add_call is not None
+    add_cmd = add_call.args[0]
     assert "-e" in add_cmd
     e_idx = add_cmd.index("-e")
     assert add_cmd[e_idx + 1] == "HEADROOM_PROXY_URL=http://127.0.0.1:9000"
+    assert add_call.kwargs["env"]["CLAUDE_CONFIG_DIR"] == str(tmp_path / ".claude")
+
+
+def test_register_via_cli_without_overrides_keeps_ambient_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", "ambient")
+    reg = ClaudeRegistrar(claude_cli="/usr/local/bin/claude")
+    fake_result = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+    with patch("subprocess.run", return_value=fake_result) as run_mock:
+        reg.register_server(_spec())
+    assert run_mock.call_args is not None
+    assert run_mock.call_args.kwargs["env"] is None
+
+
+def test_register_via_cli_prefers_explicit_config_dir_over_ambient_env(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    config_dir = tmp_path / "explicit-config"
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", "ambient")
+    reg = ClaudeRegistrar(claude_cli="/usr/local/bin/claude", config_dir=config_dir)
+    fake_result = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+    with patch("subprocess.run", return_value=fake_result) as run_mock:
+        reg.register_server(_spec())
+    assert run_mock.call_args is not None
+    assert run_mock.call_args.kwargs["env"]["CLAUDE_CONFIG_DIR"] == str(config_dir)
 
 
 def test_register_writes_file_when_no_cli(tmp_path: Path) -> None:
@@ -333,9 +363,11 @@ def test_unregister_via_cli(tmp_path: Path) -> None:
     ok = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
     with patch("subprocess.run", return_value=ok) as run_mock:
         assert reg.unregister_server("headroom") is True
-    cmd = run_mock.call_args_list[0].args[0]
+    assert run_mock.call_args is not None
+    cmd = run_mock.call_args.args[0]
     assert cmd[:5] == ["/usr/local/bin/claude", "mcp", "remove", "headroom", "-s"]
     assert cmd[5] == "user"
+    assert run_mock.call_args.kwargs["env"]["CLAUDE_CONFIG_DIR"] == str(tmp_path / ".claude")
 
 
 def test_unregister_via_file_when_no_cli(tmp_path: Path) -> None:

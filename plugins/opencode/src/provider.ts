@@ -64,12 +64,9 @@ export function createHeadroomProvider(
     npm: "@ai-sdk/openai-compatible",
     name: "Headroom Proxy",
     options: { baseURL: `${baseUrl}/v1` },
-    models: Object.fromEntries(
-      Object.entries(models).map(([id, mapping]) => [
-        `headroom/${id}`,
-        mapping,
-      ]),
-    ),
+    // OpenCode namespaces model ids by provider key, so entries must be bare
+    // ids ("claude-sonnet-4-6"), referenced as "headroom/<id>".
+    models: { ...models },
   };
 }
 

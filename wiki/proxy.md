@@ -107,8 +107,7 @@ Key CCR-related proxy flags:
 
 | Option | Description |
 |--------|-------------|
-| `--no-ccr-inject-tool` | Do not inject the `headroom_retrieve` tool into the LLM's available tools |
-| `--no-ccr-marker` | Do not add retrieval markers to compressed output |
+| `--no-ccr` | Disable CCR entirely — no retrieval markers in compressed output and no injected `headroom_retrieve` tool (lossy, no recovery path) |
 | `--no-ccr-proactive-expansion` | Disable proactive context expansion before the LLM asks |
 
 ### ML Compression — RETIRED `--llmlingua` flag

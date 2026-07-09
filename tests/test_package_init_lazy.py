@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 import textwrap
+import types
 from importlib.metadata import PackageNotFoundError
 from pathlib import Path
 from unittest.mock import patch
@@ -62,6 +63,66 @@ def test_version_reports_unknown_when_distribution_metadata_is_missing() -> None
         patch.object(version_module, "version", side_effect=PackageNotFoundError),
     ):
         assert version_module.get_version() == version_module.UNKNOWN_VERSION
+
+
+def test_version_prefers_explicit_build_env(monkeypatch) -> None:
+    monkeypatch.setenv("HEADROOM_BUILD_VERSION", "source-build")
+
+    with patch.object(version_module, "version", return_value="9.8.7") as package_version:
+        assert version_module.get_version() == "source-build"
+
+    package_version.assert_not_called()
+
+
+def test_version_label_helpers_only_prefix_release_versions() -> None:
+    assert version_module.is_release_version("0.29.0") is True
+    assert version_module.is_release_version("v0.29.0") is True
+    assert version_module.normalize_release_version("v0.29.0") == "0.29.0"
+    assert version_module.is_release_version("source-build+g6266a1d774b5") is False
+    assert version_module.is_release_version("source-build+sha.abcdef123456") is False
+    assert version_module.is_release_version("6266a1d") is False
+    assert version_module.is_release_version("0.29.0+gabcdef0") is False
+
+    assert version_module.format_version_label("0.29.0") == "v0.29.0"
+    assert version_module.format_version_label("v0.29.0") == "v0.29.0"
+    assert (
+        version_module.format_version_label("source-build+sha.abcdef123456")
+        == "source-build+sha.abcdef123456"
+    )
+    assert (
+        version_module.format_version_label("source-build+g6266a1d774b5")
+        == "source-build+g6266a1d774b5"
+    )
+    assert version_module.format_version_label("6266a1d") == "6266a1d"
+    assert version_module.format_version_label(None) == version_module.UNKNOWN_VERSION
+
+
+def test_version_uses_packaged_build_metadata(
+    monkeypatch,
+) -> None:
+    build_info = types.ModuleType("headroom._build_info")
+    build_info.BUILD_VERSION = "0.29.0+gabcdef0"
+    monkeypatch.setitem(sys.modules, "headroom._build_info", build_info)
+
+    with (
+        patch.object(version_module, "_source_root", return_value=None),
+        patch.object(version_module, "version", return_value="0.29.0") as package_version,
+    ):
+        assert version_module.get_version() == "0.29.0+gabcdef0"
+
+    package_version.assert_not_called()
+
+
+def test_observability_version_uses_runtime_version(monkeypatch) -> None:
+    from headroom.observability import metrics as metrics_module
+
+    monkeypatch.setattr(
+        metrics_module,
+        "get_version",
+        lambda: "source-build+sha.abcdef123456",
+    )
+
+    assert metrics_module._headroom_version() == "source-build+sha.abcdef123456"
 
 
 def test_version_prefers_source_tree_release_history() -> None:

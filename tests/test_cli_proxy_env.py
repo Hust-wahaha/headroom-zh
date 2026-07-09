@@ -843,25 +843,25 @@ class TestCLICompressionOnlyFlags:
         assert cfg.ccr_inject_marker is True
         assert cfg.ccr_proactive_expansion is True
 
-    def test_no_ccr_inject_tool_flag(self, runner):
-        """--no-ccr-inject-tool disables retrieve-tool injection only."""
+    def test_no_ccr_flag(self, runner):
+        """--no-ccr disables BOTH the retrieve-tool injection and the markers."""
         captured_config = {}
 
         def mock_run_server(config, **kwargs):
             captured_config["config"] = config
 
         with patch("headroom.proxy.server.run_server", mock_run_server):
-            result = runner.invoke(main, ["proxy", "--no-ccr-inject-tool"], catch_exceptions=False)
+            result = runner.invoke(main, ["proxy", "--no-ccr"], catch_exceptions=False)
 
         assert result.exit_code == 0, result.output
         cfg = captured_config["config"]
         assert cfg.ccr_inject_tool is False
-        # Untouched flags remain on.
-        assert cfg.ccr_inject_marker is True
+        assert cfg.ccr_inject_marker is False
+        # Unrelated CCR knob stays on.
         assert cfg.ccr_proactive_expansion is True
 
     def test_compression_only_all_flags(self, runner):
-        """All three flags together yield a compression-only config."""
+        """--no-ccr + --no-ccr-proactive-expansion yields a compression-only config."""
         captured_config = {}
 
         def mock_run_server(config, **kwargs):
@@ -872,8 +872,7 @@ class TestCLICompressionOnlyFlags:
                 main,
                 [
                     "proxy",
-                    "--no-ccr-inject-tool",
-                    "--no-ccr-marker",
+                    "--no-ccr",
                     "--no-ccr-proactive-expansion",
                 ],
                 catch_exceptions=False,
@@ -885,8 +884,8 @@ class TestCLICompressionOnlyFlags:
         assert cfg.ccr_inject_marker is False
         assert cfg.ccr_proactive_expansion is False
 
-    def test_no_ccr_marker_from_env(self, runner):
-        """HEADROOM_NO_CCR_MARKER env var disables marker injection."""
+    def test_no_ccr_from_env(self, runner):
+        """HEADROOM_NO_CCR env var disables both markers and tool injection."""
         captured_config = {}
 
         def mock_run_server(config, **kwargs):
@@ -896,16 +895,18 @@ class TestCLICompressionOnlyFlags:
             result = runner.invoke(
                 main,
                 ["proxy"],
-                env={"HEADROOM_NO_CCR_MARKER": "1"},
+                env={"HEADROOM_NO_CCR": "1"},
                 catch_exceptions=False,
             )
 
         assert result.exit_code == 0, result.output
-        assert captured_config["config"].ccr_inject_marker is False
+        cfg = captured_config["config"]
+        assert cfg.ccr_inject_marker is False
+        assert cfg.ccr_inject_tool is False
 
 
 class TestNoCcrMarkerCompressors:
-    """Verify --no-ccr-marker actually suppresses <<ccr:...>> markers
+    """Verify --no-ccr actually suppresses <<ccr:...>> markers
     from every compressor, not just SmartCrusher (#1022)."""
 
     def test_content_router_propagates_ccr_inject_marker_false_to_compressors(self):

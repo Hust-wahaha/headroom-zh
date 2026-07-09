@@ -279,6 +279,42 @@ def test_router_lossless_never_emits_marker_various_inputs() -> None:
         _assert_no_marker(router.compress(s, context="").compressed)
 
 
+def test_router_apply_accepts_lossless_search_token_measured() -> None:
+    """Regression: the acceptance gate in router.apply() measured WORD count, so
+    a lossless search fold — which cuts TOKENS by collapsing a repeated path
+    prefix while word count stays flat or *rises* (the heading adds a word) — was
+    wrongly discarded as ratio_too_high. The gate now measures lossless results
+    by real token count, so the free, recoverable win is applied. (compress()/
+    _apply_strategy_to_content bypass this gate, which is why unit tests above
+    never caught it — the bug only appears through the full apply() path.)
+    """
+    from headroom.providers import OpenAIProvider
+    from headroom.tokenizer import Tokenizer
+    from headroom.transforms.lossless_compaction import search_heading
+
+    tok = Tokenizer(OpenAIProvider().get_token_counter("gpt-4o"), "gpt-4o")
+    router = ContentRouter(ContentRouterConfig(lossless=True))
+    grep = "".join(
+        f"headroom/transforms/content_router.py:{i}:    identifier_{i} = compute(value)\n"
+        for i in range(1, 60)
+    )
+    # The fold does NOT reduce word count (the heading even adds one) — this is
+    # exactly what made the old word-count gate reject it.
+    assert len(search_heading(grep).split()) >= len(grep.split())
+
+    messages = [
+        {
+            "role": "assistant",
+            "tool_calls": [{"id": "c1", "function": {"name": "find_refs", "arguments": "{}"}}],
+        },
+        {"role": "tool", "tool_call_id": "c1", "content": grep},
+    ]
+    out = router.apply(messages, tok).messages[1]["content"]
+    assert tok.count_text(out) < tok.count_text(grep)  # accepted: fewer TOKENS
+    assert search_unheading(out) == grep  # byte-exact recovery
+    _assert_no_marker(out)
+
+
 # --------------------------------------------------------------------------
 # Token-delta measurement (informational)
 # --------------------------------------------------------------------------

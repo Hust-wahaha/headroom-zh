@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import random
+import re
 import threading
 import time
 from collections import OrderedDict
@@ -960,6 +961,50 @@ def retry_after_ms(response: httpx.Response, max_ms: int) -> float | None:
 RETRYABLE_OVERLOAD_STATUSES: frozenset[int] = frozenset({429, 529})
 
 
+async def request_with_transient_retry(
+    client: httpx.AsyncClient,
+    *,
+    request_id: str | None = None,
+    max_retries: int = 1,
+    **request_kwargs: Any,
+) -> httpx.Response:
+    """Issue a buffered httpx request, retrying once on a transient close.
+
+    ``httpx.RemoteProtocolError`` ("peer closed connection without sending
+    complete message body (incomplete chunked read)") is raised when an
+    upstream closes a pooled keep-alive connection that httpx then reuses for
+    the next request. A direct ``curl`` never hits this because it opens a
+    fresh connection per call; Headroom reuses pooled connections, so the
+    first request issued on a stale connection fails even though the upstream
+    is healthy (it answers a fresh connection with 200). Retrying opens a new
+    connection and succeeds, mirroring curl's behaviour. See GH #1112.
+
+    Only ``httpx.RemoteProtocolError`` is retried — the specific stale
+    keep-alive symptom; every other exception (``ConnectError``, timeouts,
+    HTTP status errors) propagates immediately so existing handling is
+    unchanged. Use this for buffered (non-streaming) requests only: a streamed
+    response cannot be safely replayed once bytes have reached the client.
+    """
+    import httpx
+
+    attempt = 0
+    while True:
+        try:
+            return await client.request(**request_kwargs)
+        except httpx.RemoteProtocolError as exc:
+            if attempt >= max_retries:
+                raise
+            attempt += 1
+            logger.warning(
+                "Upstream closed connection mid-response (%s); retrying on a "
+                "fresh connection (attempt %d/%d)%s",
+                exc,
+                attempt,
+                max_retries,
+                f" [{request_id}]" if request_id else "",
+            )
+
+
 # Image compression availability (do not retain a global compressor instance)
 _image_compressor_available: bool | None = None
 
@@ -1243,35 +1288,25 @@ def _read_rtk_lifetime_stats() -> dict[str, Any] | None:
                 summary=summary if isinstance(summary, dict) else {},
             )
         else:
-            # PR-G2 remediation (H2): structured log the synthetic-zero path
-            # so downstream consumers (subscription tracker, dashboards) can
-            # distinguish a healthy "RTK ran and saved nothing" from a broken
-            # "RTK failed and we faked zero".
+            # A failed read is "no data", never a zero counter — a synthetic
+            # zero here re-pins the session baseline and inflates session
+            # savings by the tool's whole lifetime on recovery.
             stderr_excerpt = (result.stderr or "")[:200]
             logger.warning(
                 "event=rtk_stats_subprocess_failed reason=non_zero_exit rc=%s stderr=%r",
                 result.returncode,
                 stderr_excerpt,
             )
-            return _context_tool_zero_payload(
-                tool=_CONTEXT_TOOL_RTK,
-                installed=True,
-                scope=scope,
-            )
+            return None
     except Exception as exc:
-        # PR-G2 remediation (H2): log the exception path too. Reason is the
-        # exception class name (without payload — RTK exceptions can carry
-        # filesystem paths).
+        # Reason is the exception class name (without payload — RTK
+        # exceptions can carry filesystem paths).
         logger.warning(
             "event=rtk_stats_subprocess_failed reason=%s error=%s",
             type(exc).__name__,
             exc,
         )
-        return _context_tool_zero_payload(
-            tool=_CONTEXT_TOOL_RTK,
-            installed=True,
-            scope=scope,
-        )
+        return None
 
     return payload
 
@@ -1285,8 +1320,6 @@ def _read_lean_ctx_lifetime_stats() -> dict[str, Any] | None:
     if not lean_ctx_path:
         return _context_tool_zero_payload(tool=_CONTEXT_TOOL_LEAN_CTX, installed=False)
 
-    base_payload = _context_tool_zero_payload(tool=_CONTEXT_TOOL_LEAN_CTX, installed=True)
-
     try:
         result = run(
             [str(lean_ctx_path), "gain", "--json"],
@@ -1294,21 +1327,32 @@ def _read_lean_ctx_lifetime_stats() -> dict[str, Any] | None:
             text=True,
             timeout=5,
         )
+        # Failed reads return None ("no data") — mirrors the rtk reader so
+        # the baseline logic never sees synthetic zeros from either tool.
         if result.returncode != 0 or not result.stdout.strip():
-            return dict(base_payload)
+            logger.warning(
+                "event=lean_ctx_stats_subprocess_failed reason=non_zero_exit rc=%s",
+                result.returncode,
+            )
+            return None
 
         data = json.loads(result.stdout)
         summary = data.get("summary", data) if isinstance(data, dict) else {}
         if not isinstance(summary, dict):
-            return dict(base_payload)
+            logger.warning("event=lean_ctx_stats_subprocess_failed reason=bad_payload")
+            return None
 
         return _context_tool_summary_payload(
             tool=_CONTEXT_TOOL_LEAN_CTX,
             installed=True,
             summary=summary,
         )
-    except Exception:
-        return dict(base_payload)
+    except Exception as exc:
+        logger.warning(
+            "event=lean_ctx_stats_subprocess_failed reason=%s",
+            type(exc).__name__,
+        )
+        return None
 
 
 def _read_context_tool_lifetime_stats(tool: str) -> dict[str, Any] | None:
@@ -1323,18 +1367,36 @@ async def initialize_context_tool_session_baseline() -> None:
     tool = _selected_context_tool()
     payload = await asyncio.to_thread(_read_context_tool_lifetime_stats, tool)
     with _context_tool_stats_cache_lock:
-        _context_tool_session_baseline.update(
-            {
-                "initialized": True,
-                "tool": tool,
-                "total_commands": int((payload or {}).get("total_commands", 0) or 0),
-                "input_tokens": int((payload or {}).get("input_tokens", 0) or 0),
-                "output_tokens": int((payload or {}).get("output_tokens", 0) or 0),
-                "tokens_saved": int((payload or {}).get("tokens_saved", 0) or 0),
-                "total_time_ms": int((payload or {}).get("total_time_ms", 0) or 0),
-                "captured_at": time.time(),
-            }
-        )
+        if payload is None or not payload.get("installed", False):
+            # Failed or tool-absent read: defer the pin to the first
+            # successful read (guarded lazy-init) — pinning zeros here would
+            # inflate session savings by the tool's whole lifetime once it
+            # recovers or gets installed.
+            _context_tool_session_baseline.update(
+                {
+                    "initialized": False,
+                    "tool": tool,
+                    "total_commands": 0,
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "tokens_saved": 0,
+                    "total_time_ms": 0,
+                    "captured_at": time.time(),
+                }
+            )
+        else:
+            _context_tool_session_baseline.update(
+                {
+                    "initialized": True,
+                    "tool": tool,
+                    "total_commands": int(payload.get("total_commands", 0) or 0),
+                    "input_tokens": int(payload.get("input_tokens", 0) or 0),
+                    "output_tokens": int(payload.get("output_tokens", 0) or 0),
+                    "tokens_saved": int(payload.get("tokens_saved", 0) or 0),
+                    "total_time_ms": int(payload.get("total_time_ms", 0) or 0),
+                    "captured_at": time.time(),
+                }
+            )
         _context_tool_stats_cache.update(
             {
                 "expires_at": 0.0,
@@ -1372,19 +1434,28 @@ def _get_context_tool_stats() -> dict[str, Any] | None:
 
     payload = _read_context_tool_lifetime_stats(tool)
     with _context_tool_stats_cache_lock:
+        # Baseline mutations only happen on successful reads from an
+        # installed tool — a failed read (None) or a tool-absent zero payload
+        # must never pin or re-pin, or session deltas inflate by the whole
+        # lifetime when the tool comes back.
+        tool_installed = payload is not None and bool(payload.get("installed", False))
         if (
-            not _context_tool_session_baseline["initialized"]
-            or _context_tool_session_baseline.get("tool") != tool
+            payload is not None
+            and tool_installed
+            and (
+                not _context_tool_session_baseline["initialized"]
+                or _context_tool_session_baseline.get("tool") != tool
+            )
         ):
             _context_tool_session_baseline.update(
                 {
                     "initialized": True,
                     "tool": tool,
-                    "total_commands": int((payload or {}).get("total_commands", 0) or 0),
-                    "input_tokens": int((payload or {}).get("input_tokens", 0) or 0),
-                    "output_tokens": int((payload or {}).get("output_tokens", 0) or 0),
-                    "tokens_saved": int((payload or {}).get("tokens_saved", 0) or 0),
-                    "total_time_ms": int((payload or {}).get("total_time_ms", 0) or 0),
+                    "total_commands": int(payload.get("total_commands", 0) or 0),
+                    "input_tokens": int(payload.get("input_tokens", 0) or 0),
+                    "output_tokens": int(payload.get("output_tokens", 0) or 0),
+                    "tokens_saved": int(payload.get("tokens_saved", 0) or 0),
+                    "total_time_ms": int(payload.get("total_time_ms", 0) or 0),
                     "captured_at": time.time(),
                 }
             )
@@ -1400,7 +1471,10 @@ def _get_context_tool_stats() -> dict[str, Any] | None:
             baseline_output_tokens = int(_context_tool_session_baseline["output_tokens"])
             baseline_tokens_saved = int(_context_tool_session_baseline["tokens_saved"])
             baseline_total_time_ms = int(_context_tool_session_baseline["total_time_ms"])
-            counter_reset_detected = (
+            # A tool-absent payload carries zero counters that are not a
+            # genuine external reset — only successful installed reads may
+            # re-pin the baseline.
+            counter_reset_detected = tool_installed and (
                 lifetime_total_commands < baseline_total_commands
                 or lifetime_input_tokens < baseline_input_tokens
                 or lifetime_output_tokens < baseline_output_tokens
@@ -2566,6 +2640,43 @@ def _reset_session_ccr_tracker_for_test() -> None:
         _session_ccr_tracker = None
 
 
+def has_new_ccr_markers(
+    *,
+    current_detected_hashes: list[str],
+    previous_forwarded_messages: list[dict[str, Any]] | None,
+    provider: Literal["anthropic", "openai", "google"],
+) -> bool:
+    """Whether the about-to-forward content carries CCR markers NOT already forwarded.
+
+    ``overlay_cached_prefix`` (#1850) replays the previously-forwarded (compressed)
+    prefix byte-identical to keep the prompt cache warm — which reintroduces the
+    ``hash=…`` markers that prefix already carried. Those markers are *historical*:
+    the agent saw them last turn and the retrieve-tool state was already settled
+    for them. Only markers that are genuinely NEW this turn justify overriding the
+    tool-injection deferral (#1006); counting the replayed ones would re-inject the
+    tool on every frozen turn and bust the *tools* cache segment (undoing the very
+    cache-safety the overlay provides).
+
+    Returns True iff ``current_detected_hashes`` contains a hash that is not present
+    in ``previous_forwarded_messages``.
+    """
+    current = set(current_detected_hashes)
+    if not current:
+        return False
+    if not previous_forwarded_messages:
+        # No prior forward → every marker is new (genuine first CCR turn).
+        return True
+    from headroom.ccr.tool_injection import CCRToolInjector
+
+    prev = CCRToolInjector(
+        provider=provider,
+        inject_tool=False,
+        inject_system_instructions=False,
+    )
+    prev.scan_for_markers(previous_forwarded_messages)
+    return bool(current - set(prev.detected_hashes))
+
+
 def should_inject_ccr_tool(
     *,
     configured_inject_tool: bool,
@@ -3035,3 +3146,216 @@ def reset_tool_search_hint_state() -> None:
     global _tool_search_hint_emitted
     with _tool_search_hint_lock:
         _tool_search_hint_emitted = False
+
+
+# ---------------------------------------------------------------------------
+# Server-side Tool Search injection (opencode / non-Claude-Code clients).
+#
+# Clients that eagerly materialize every tool schema (opencode ships ~135 tool
+# defs ≈ 28k tokens on EVERY request) never opt into Anthropic's Tool Search
+# Tool themselves. Unlike the Claude Code case above — where the schemas are
+# already in the client's own context and the proxy can't reverse it — a plain
+# API client's tools live only in the request body, so the proxy CAN defer them:
+# mark the non-core tools ``defer_loading: true`` and inject a tool_search tool.
+# Anthropic then excludes deferred tools from the context window (they stop
+# counting as input tokens until the model searches for one), while every tool
+# stays callable. Deterministic output → the tools prefix still prompt-caches.
+# ---------------------------------------------------------------------------
+
+# Core coding tools kept non-deferred so routine edit/read/run loops never pay a
+# search round-trip. Everything else (Slack/Linear/Sentry/Notion/Snowflake/…) is
+# deferred and loaded on demand. Anthropic recommends keeping the 3–5 (here a few
+# more) most frequent tools resident.
+_TOOL_SEARCH_CORE_TOOLS = frozenset(
+    {
+        "bash",
+        "bash_background",
+        "bash_background_output",
+        "bash_background_wait",
+        "bash_background_kill",
+        "read",
+        "write",
+        "edit",
+        "multiedit",
+        "apply_patch",
+        "glob",
+        "grep",
+        "task",
+        "todowrite",
+        "todoread",
+        "webfetch",
+        "question",
+        "skill",
+    }
+)
+_TOOL_SEARCH_DEFAULT_TYPE = "tool_search_tool_regex_20251119"
+_TOOL_SEARCH_DEFAULT_NAME = "tool_search_tool_regex"
+# Below this many tools the ~search round-trip isn't worth it (Anthropic's own
+# guidance: standard calling is better under ~10 tools).
+_TOOL_SEARCH_MIN_TOOLS = 12
+
+
+def inject_tool_search_deferral(
+    tools: Any,
+    *,
+    core_tools: frozenset[str] = _TOOL_SEARCH_CORE_TOOLS,
+    search_type: str = _TOOL_SEARCH_DEFAULT_TYPE,
+    search_name: str = _TOOL_SEARCH_DEFAULT_NAME,
+) -> Any:
+    """Return a new ``tools`` list with non-core tools deferred + a search tool
+    injected, or the original list unchanged when injection doesn't apply.
+
+    No-op when: not a list, fewer than ``_TOOL_SEARCH_MIN_TOOLS``, a tool_search
+    tool is already present (client already defers), or nothing would be deferred.
+
+    Invariants enforced (else Anthropic 400s): the search tool is never deferred;
+    at least one tool stays non-deferred; a deferred tool never carries
+    ``cache_control`` — if the client's tools cache breakpoint sat on a now-deferred
+    tool, it is moved to the last non-deferred real tool so the (smaller) tools
+    prefix still caches.
+    """
+    if not isinstance(tools, list) or len(tools) < _TOOL_SEARCH_MIN_TOOLS:
+        return tools
+    for tool in tools:
+        if isinstance(tool, dict) and str(tool.get("type", "")).startswith(
+            _TOOL_SEARCH_TOOL_TYPE_PREFIX
+        ):
+            return tools  # client already uses tool search — leave it alone
+
+    search_tool = {"type": search_type, "name": search_name}
+    out: list[Any] = [search_tool]
+    deferred = 0
+    dropped_cache_control = False
+    last_resident_real: dict[str, Any] | None = None
+    resident_has_cache_control = False
+
+    for tool in tools:
+        if not isinstance(tool, dict) or tool.get("type") or tool.get("name") in core_tools:
+            # Non-dict, server/typed tools (web_search, computer, …), and core
+            # tools stay resident and unchanged.
+            out.append(tool)
+            if isinstance(tool, dict) and not tool.get("type"):
+                last_resident_real = tool
+                resident_has_cache_control = resident_has_cache_control or bool(
+                    tool.get("cache_control")
+                )
+            continue
+        new_tool = dict(tool)
+        new_tool["defer_loading"] = True
+        if new_tool.pop("cache_control", None) is not None:
+            dropped_cache_control = True
+        out.append(new_tool)
+        deferred += 1
+
+    if deferred == 0:
+        return tools  # nothing to defer → don't perturb the cache prefix
+    # Preserve a tools cache breakpoint: if we stripped cache_control off a
+    # deferred tool and no resident tool carries one, move it to the last
+    # resident real tool (never the search tool, to keep its shape canonical).
+    if dropped_cache_control and not resident_has_cache_control and last_resident_real is not None:
+        last_resident_real["cache_control"] = {"type": "ephemeral"}
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Server-side Tool Search injection — OpenAI Responses API (gpt-5.4+).
+#
+# The OpenAI-side analogue of inject_tool_search_deferral above. OpenAI shipped
+# the same idea for the Responses API on gpt-5.4+: mark a function/MCP tool
+# ``defer_loading: true`` and add a ``{"type": "tool_search"}`` tool, and OpenAI
+# keeps the deferred tools' heavy parameter schemas OUT of the model's context
+# (only name+description remain) until the model searches for one — while every
+# tool stays callable and the prompt cache is preserved. Same win as Anthropic
+# (~15-25k tool-schema tokens -> ~200) for clients that ship a big tool surface
+# and never opt into tool search themselves (opencode, plain API clients).
+#
+# Differences from the Anthropic path that require a separate function:
+#   * Responses function tools carry ``type: "function"`` (Anthropic real tools
+#     have no ``type``), so the resident/defer test is inverted — we defer
+#     ``function`` (non-core) and ``mcp`` tools and keep OTHER typed/hosted tools
+#     (web_search, file_search, code_interpreter, computer, image_generation, and
+#     the search tool itself) resident.
+#   * Model-gated: only gpt-5.4+ support it; older models 400 on the fields.
+#   * No ``cache_control`` (OpenAI caches automatically), so no breakpoint move.
+# ---------------------------------------------------------------------------
+
+_OPENAI_TOOL_SEARCH_TYPE = "tool_search"
+_OPENAI_TOOL_SEARCH_MIN_TOOLS = 12
+# gpt-5.4 is the first model with Responses tool_search (OpenAI docs). Version-
+# gated by default; overridable per deployment via a regex in
+# HEADROOM_OPENAI_TOOL_SEARCH_MODELS (matched against the model name) so new
+# model families can be enabled without a code edit + release.
+_OPENAI_TOOL_SEARCH_MIN_VERSION = (5, 4)
+
+
+def _model_supports_openai_tool_search(model: str | None) -> bool:
+    """True when an OpenAI model supports the Responses ``tool_search`` feature.
+
+    Default gate: ``gpt-<major>.<minor>`` >= 5.4. A regex in
+    ``HEADROOM_OPENAI_TOOL_SEARCH_MODELS`` (matched against the model name) wins
+    when set; a malformed pattern falls back to the version gate rather than
+    crashing.
+    """
+    if not model:
+        return False
+    override = os.environ.get("HEADROOM_OPENAI_TOOL_SEARCH_MODELS", "").strip()
+    if override:
+        try:
+            return re.search(override, model) is not None
+        except re.error:
+            pass  # malformed override → fall back to the version gate
+    match = re.match(r"gpt-(\d+)(?:\.(\d+))?", model.strip().lower())
+    if not match:
+        return False
+    major, minor = int(match.group(1)), int(match.group(2) or 0)
+    return (major, minor) >= _OPENAI_TOOL_SEARCH_MIN_VERSION
+
+
+def inject_tool_search_deferral_openai(
+    tools: Any,
+    model: str | None,
+    *,
+    core_tools: frozenset[str] = _TOOL_SEARCH_CORE_TOOLS,
+) -> Any:
+    """Return a new Responses ``tools`` list with non-core function/MCP tools
+    deferred + a ``{"type": "tool_search"}`` tool injected, or the original list
+    unchanged when injection doesn't apply.
+
+    No-op when: the model doesn't support tool search (gpt-5.4+ only), ``tools``
+    is not a list, there are fewer than ``_OPENAI_TOOL_SEARCH_MIN_TOOLS``, a
+    tool_search tool is already present (client already defers), or nothing would
+    be deferred. Core coding tools and hosted/typed tools (web_search,
+    file_search, code_interpreter, computer, …) stay resident and unchanged, so
+    routine edit/read/run loops never pay a search round-trip and the request
+    stays valid; the injected search tool is itself resident.
+    """
+    if not _model_supports_openai_tool_search(model):
+        return tools
+    if not isinstance(tools, list) or len(tools) < _OPENAI_TOOL_SEARCH_MIN_TOOLS:
+        return tools
+    for tool in tools:
+        if isinstance(tool, dict) and tool.get("type") == _OPENAI_TOOL_SEARCH_TYPE:
+            return tools  # client already uses tool search — leave it alone
+
+    out: list[Any] = [{"type": _OPENAI_TOOL_SEARCH_TYPE}]
+    deferred = 0
+    for tool in tools:
+        if not isinstance(tool, dict):
+            out.append(tool)
+            continue
+        ttype = tool.get("type")
+        # Deferrable: a non-core function, or an MCP server (OpenAI models are
+        # trained to search namespaces / MCP servers). Everything else — core
+        # coding tools and other hosted tools — stays resident.
+        deferrable = (ttype == "function" and tool.get("name") not in core_tools) or ttype == "mcp"
+        if deferrable and not tool.get("defer_loading"):
+            new_tool = dict(tool)
+            new_tool["defer_loading"] = True
+            out.append(new_tool)
+            deferred += 1
+        else:
+            out.append(tool)
+
+    if deferred == 0:
+        return tools  # nothing to defer → don't perturb the request / cache prefix
+    return out

@@ -250,7 +250,12 @@ class TestWorkerConfiguration:
         from headroom.proxy.server import _MULTI_WORKER_CONFIG_ENV, run_server
 
         captured = {}
-        config = ProxyConfig(host="0.0.0.0", port=8787, max_connections=200)
+        config = ProxyConfig(
+            host="0.0.0.0",
+            port=8787,
+            max_connections=200,
+            http_proxy="http://proxy.local:8080",
+        )
 
         def fake_run(app, **kwargs):
             captured["app"] = app
@@ -270,6 +275,7 @@ class TestWorkerConfiguration:
             assert payload["host"] == "0.0.0.0"
             assert payload["port"] == 8787
             assert payload["max_connections"] == 200
+            assert payload["http_proxy"] == "http://proxy.local:8080"
         finally:
             # run_server sets this via raw os.environ. Pop it directly rather
             # than via monkeypatch.delenv: delenv records the current (JSON)
@@ -312,3 +318,28 @@ class TestWorkerConfiguration:
             server_mod.run_server(ProxyConfig(), print_banner=False)
 
         assert "loop" not in captured["kwargs"]
+
+
+class TestProviderHttpClientOptions:
+    """Provider HTTPX options should keep proxy settings scoped to provider clients."""
+
+    def test_default_http2_preserved_without_proxy(self):
+        from headroom.proxy.models import ProxyConfig
+        from headroom.proxy.server import _provider_httpx_client_options
+
+        http2, kwargs = _provider_httpx_client_options(ProxyConfig(http2=True), verify=True)
+
+        assert http2 is True
+        assert "proxy" not in kwargs
+
+    def test_http_proxy_sets_proxy_and_forces_http1(self):
+        from headroom.proxy.models import ProxyConfig
+        from headroom.proxy.server import _provider_httpx_client_options
+
+        http2, kwargs = _provider_httpx_client_options(
+            ProxyConfig(http2=True, http_proxy="http://proxy.local:8080"),
+            verify=True,
+        )
+
+        assert http2 is False
+        assert kwargs["proxy"] == "http://proxy.local:8080"

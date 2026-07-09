@@ -299,6 +299,27 @@ class TestTokenizerRegistry:
         tokenizer = get_tokenizer("unknown-model-xyz")
         assert isinstance(tokenizer, EstimatingTokenCounter)
 
+    def test_get_kimi_moonshot_calibrated_estimator(self):
+        """Kimi/Moonshot resolves to the calibrated (3.1 chars/tok) estimator
+        across every serving form — Fireworks body, litellm slug, native — so
+        the size-gates aren't starved by the ~20% under-count of the default
+        adaptive estimator (measured on a SWE-bench Kimi-K2.7-code run)."""
+        for m in (
+            "accounts/fireworks/models/kimi-k2p7-code",  # Fireworks body model
+            "fireworks_ai/kimi-k2p7-code-high",  # litellm slug
+            "moonshotai/Kimi-K2-Instruct",  # native
+            "KIMI-K2P7-CODE",  # case-insensitive
+        ):
+            tk = get_tokenizer(m)
+            assert isinstance(tk, EstimatingTokenCounter), m
+            assert tk._fixed_ratio == 3.1, f"{m}: expected 3.1, got {tk._fixed_ratio}"
+        # calibrated estimate must beat the default adaptive on Kimi-like code
+        # (which the default under-counts): denser ratio -> more tokens.
+        code = 'def f(x):\n    return {"a": 1, "b": [2, 3]}\n' * 200
+        kimi = get_tokenizer("fireworks_ai/kimi-k2p7-code-high").count_text(code)
+        default = get_tokenizer("unknown-model-xyz").count_text(code)
+        assert kimi > default, (kimi, default)
+
     def test_get_with_specific_backend(self):
         """Test forcing specific backend."""
         tokenizer = get_tokenizer("any-model", backend="estimation")

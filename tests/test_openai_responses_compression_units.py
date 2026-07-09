@@ -452,6 +452,44 @@ def test_openai_responses_adapter_preserves_excluded_tool_outputs():
     assert strategy_chain == []
 
 
+def test_openai_responses_adapter_losslessly_folds_excluded_grep_output():
+    """Excluded tools skip *lossy* compression, but grep/log/json output is still
+    byte/data-losslessly compacted on the Responses path (matches chat/Anthropic).
+    """
+    from headroom.transforms.lossless_compaction import search_unheading
+
+    router = ContentRouter()
+    router.config.exclude_tools = {"grep"}
+    handler = _handler_with_router(router)
+    grep_out = "".join(
+        f"src/mod_{f}.py:{ln}:some matching content on this line here\n"
+        for f in range(8)
+        for ln in range(6)
+    )
+    payload = {
+        "model": "gpt-5",
+        "input": [
+            {"type": "function_call", "call_id": "call_1", "name": "grep", "arguments": "{}"},
+            {"type": "function_call_output", "call_id": "call_1", "output": grep_out},
+        ],
+    }
+
+    new_payload, modified, saved, transforms, _units, _chain, _attempted = (
+        handler._compress_openai_responses_live_text_units_with_router(
+            payload,
+            model="gpt-5",
+            request_id="req_test",
+        )
+    )
+
+    assert modified is True
+    assert saved >= 0  # token accounting never goes negative
+    assert "router:excluded:lossless" in transforms
+    folded = new_payload["input"][1]["output"]
+    assert len(folded) < len(grep_out)  # byte-smaller (real guarantee)
+    assert search_unheading(folded) == grep_out  # byte-exact recovery
+
+
 def test_openai_responses_adapter_excludes_tool_case_insensitively_with_debug(monkeypatch):
     """Excluded match is case-insensitive, and the debug path stays exercised.
 

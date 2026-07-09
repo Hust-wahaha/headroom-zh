@@ -109,7 +109,7 @@
     <header class="border-b border-border px-6 py-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
         <div class="flex items-center gap-4">
             <h1 class="text-xl font-semibold tracking-tight">HEADROOM</h1>
-            <span class="text-xs text-gray-500 font-mono" x-text="'v' + version"></span>
+            <span class="text-xs text-gray-500 font-mono" x-text="formatVersion(version)"></span>
         </div>
         <div class="flex flex-col gap-3 md:flex-row md:items-center md:gap-6">
             <div class="inline-flex rounded-lg border border-border bg-surface p-1">
@@ -220,7 +220,7 @@
                 <div class="mt-1 text-xs text-gray-500 leading-relaxed">
                     <span x-text="'Proxy ' + formatNumber(stats.tokens?.proxy_compression_saved || 0) + ' (' + proxyShareOfTotal.toFixed(1) + '%)'"></span>
                     <span class="mx-1 text-gray-600">/</span>
-                    <span x-text="cliFilteringLabel + ' ' + formatNumber(cliFilteringSaved) + ' this session (' + cliFilteringSessionPctDisplay.toFixed(1) + '%)'"></span>
+                    <span x-text="cliFilteringAvailable ? (cliFilteringLabel + ' ' + formatNumber(cliFilteringSaved) + ' this session (' + cliFilteringSessionPctDisplay.toFixed(1) + '%)') : (cliFilteringLabel + ' not installed')"></span>
                 </div>
                 <div class="mt-1 text-xs text-gray-600 leading-relaxed">
                     <span x-text="'Of total wire: ' + (stats.tokens?.savings_percent || 0).toFixed(2) + '%'" title="Savings as fraction of all input tokens including frozen prefix"></span>
@@ -433,7 +433,6 @@
                     <div>
                         <div class="text-xs text-gray-500 mb-1">Compression</div>
                         <div class="text-2xl font-light tabular-nums text-emerald-400" x-text="'$' + formatCurrency(stats.cost?.compression_savings_usd || 0)"></div>
-                        <div class="text-xs text-gray-500" x-text="formatNumber(stats.tokens?.proxy_compression_saved || 0) + ' proxy tokens removed'"></div>
                     </div>
                     <template x-if="(stats.cost?.cache_savings_usd || 0) > 0">
                         <div>
@@ -756,42 +755,70 @@
             </div>
         </template>
 
-        <template x-if="(stats.prefix_cache?.totals?.requests || 0) > 0">
+        <!-- Card renders on live cache traffic OR persisted lifetime cache savings —
+             the lifetime figure must survive a restart with zero traffic. -->
+        <template x-if="cacheSessionActive || (stats.persistent_savings?.lifetime?.cache_read_tokens || 0) > 0">
             <div class="bg-surface rounded-lg p-4 border border-border mb-6">
                 <div class="flex justify-between items-center mb-3">
                     <div class="text-sm font-medium text-gray-300">Prefix Cache Impact</div>
-                    <div class="text-xs text-emerald-400 font-mono" x-text="'Net savings: $' + formatCurrency(stats.prefix_cache?.totals?.net_savings_usd || 0)"></div>
+                    <div class="text-xs text-emerald-400 font-mono"
+                         x-show="cacheSessionActive"
+                         x-text="'Net savings: $' + formatCurrency(stats.prefix_cache?.totals?.net_savings_usd || 0)"></div>
+                    <div class="text-xs text-gray-500 font-mono"
+                         x-show="!cacheSessionActive">no activity since restart</div>
                 </div>
                 <!-- Totals row -->
                 <div class="grid grid-cols-2 md:grid-cols-5 gap-4 mb-4">
                     <div>
-                        <div class="text-xs text-gray-500 uppercase tracking-wide mb-1">Cache Reads</div>
-                        <div class="text-2xl font-light tabular-nums text-emerald-400" x-text="formatNumber(stats.prefix_cache?.totals?.cache_read_tokens || 0)"></div>
-                        <div class="text-xs text-emerald-400/70" x-text="'$' + formatCurrency(stats.prefix_cache?.totals?.savings_usd || 0) + ' saved'"></div>
+                        <div class="text-xs text-gray-500 uppercase tracking-wide mb-1">Cache Reads (lifetime)</div>
+                        <div class="text-2xl font-light tabular-nums text-emerald-400" x-text="formatNumber(stats.persistent_savings?.lifetime?.cache_read_tokens || 0)"></div>
+                        <!-- Three-way zero state mirrors the Proxy $ Saved tile: real value /
+                             unpriced-but-healthy / litellm unavailable. -->
+                        <div class="text-xs text-emerald-400/70"
+                             x-show="(stats.persistent_savings?.lifetime?.cache_savings_usd || 0) > 0"
+                             x-text="'$' + formatCurrency(stats.persistent_savings?.lifetime?.cache_savings_usd || 0) + ' saved'"></div>
+                        <div class="text-xs text-gray-500"
+                             x-show="!((stats.persistent_savings?.lifetime?.cache_savings_usd || 0) > 0) && stats.litellm_available !== false">savings not priced yet</div>
+                        <div class="text-xs text-gray-500"
+                             x-show="!((stats.persistent_savings?.lifetime?.cache_savings_usd || 0) > 0) && stats.litellm_available === false">pricing needs LiteLLM</div>
                     </div>
                     <div>
                         <div class="text-xs text-gray-500 uppercase tracking-wide mb-1">Cache Writes</div>
-                        <div class="text-2xl font-light tabular-nums text-amber-400" x-text="formatNumber(stats.prefix_cache?.totals?.cache_write_tokens || 0)"></div>
-                        <div class="text-xs text-amber-400/70" x-text="'$' + formatCurrency(stats.prefix_cache?.totals?.write_premium_usd || 0) + ' write premium'"></div>
+                        <div class="text-2xl font-light tabular-nums text-amber-400"
+                             x-show="cacheSessionActive"
+                             x-text="formatNumber(stats.prefix_cache?.totals?.cache_write_tokens || 0)"></div>
+                        <div class="text-2xl font-light tabular-nums text-gray-600"
+                             x-show="!cacheSessionActive">&mdash;</div>
+                        <div class="text-xs text-amber-400/70"
+                             x-show="cacheSessionActive"
+                             x-text="'$' + formatCurrency(stats.prefix_cache?.totals?.write_premium_usd || 0) + ' write premium'"></div>
+                        <div class="text-xs text-gray-500"
+                             x-show="!cacheSessionActive">no activity since restart</div>
                     </div>
                     <div>
                         <div class="text-xs text-gray-500 uppercase tracking-wide mb-1">Hit Rate</div>
-                        <div class="text-2xl font-light tabular-nums" :class="(stats.prefix_cache?.totals?.hit_rate || 0) > 80 ? 'text-emerald-400' : (stats.prefix_cache?.totals?.hit_rate || 0) > 50 ? 'text-amber-400' : 'text-red-400'" x-text="(stats.prefix_cache?.totals?.hit_rate || 0).toFixed(0) + '%'"></div>
-                        <div class="text-xs text-gray-500" x-text="(stats.prefix_cache?.totals?.hit_requests || 0) + ' / ' + (stats.prefix_cache?.totals?.requests || 0) + ' requests'"></div>
+                        <div class="text-2xl font-light tabular-nums" x-show="cacheSessionActive" :class="(stats.prefix_cache?.totals?.hit_rate || 0) > 80 ? 'text-emerald-400' : (stats.prefix_cache?.totals?.hit_rate || 0) > 50 ? 'text-amber-400' : 'text-red-400'" x-text="(stats.prefix_cache?.totals?.hit_rate || 0).toFixed(0) + '%'"></div>
+                        <div class="text-2xl font-light tabular-nums text-gray-600" x-show="!cacheSessionActive">&mdash;</div>
+                        <div class="text-xs text-gray-500" x-show="cacheSessionActive" x-text="(stats.prefix_cache?.totals?.hit_requests || 0) + ' / ' + (stats.prefix_cache?.totals?.requests || 0) + ' requests'"></div>
+                        <div class="text-xs text-gray-500" x-show="!cacheSessionActive">no activity since restart</div>
                     </div>
                     <div>
                         <div class="text-xs text-gray-500 uppercase tracking-wide mb-1">Cache Busts</div>
-                        <div class="text-2xl font-light tabular-nums" :class="(stats.prefix_cache?.totals?.bust_count || 0) > 5 ? 'text-red-400' : (stats.prefix_cache?.totals?.bust_count || 0) > 0 ? 'text-amber-400' : 'text-emerald-400'" x-text="stats.prefix_cache?.totals?.bust_count || 0"></div>
-                        <div class="text-xs text-gray-500" x-text="formatNumber(stats.prefix_cache?.totals?.bust_write_tokens || 0) + ' tokens re-written'"></div>
+                        <div class="text-2xl font-light tabular-nums" x-show="cacheSessionActive" :class="(stats.prefix_cache?.totals?.bust_count || 0) > 5 ? 'text-red-400' : (stats.prefix_cache?.totals?.bust_count || 0) > 0 ? 'text-amber-400' : 'text-emerald-400'" x-text="stats.prefix_cache?.totals?.bust_count || 0"></div>
+                        <div class="text-2xl font-light tabular-nums text-gray-600" x-show="!cacheSessionActive">&mdash;</div>
+                        <div class="text-xs text-gray-500" x-show="cacheSessionActive" x-text="formatNumber(stats.prefix_cache?.totals?.bust_write_tokens || 0) + ' tokens re-written'"></div>
+                        <div class="text-xs text-gray-500" x-show="!cacheSessionActive">no activity since restart</div>
                     </div>
                     <div>
                         <div class="text-xs text-gray-500 uppercase tracking-wide mb-1">Providers</div>
-                        <div class="text-2xl font-light tabular-nums text-gray-300" x-text="Object.keys(stats.prefix_cache?.by_provider || {}).length"></div>
-                        <div class="text-xs text-gray-500">with cache data</div>
+                        <div class="text-2xl font-light tabular-nums text-gray-300" x-show="cacheSessionActive" x-text="Object.keys(stats.prefix_cache?.by_provider || {}).length"></div>
+                        <div class="text-2xl font-light tabular-nums text-gray-600" x-show="!cacheSessionActive">&mdash;</div>
+                        <div class="text-xs text-gray-500" x-show="cacheSessionActive">with cache data</div>
+                        <div class="text-xs text-gray-500" x-show="!cacheSessionActive">no activity since restart</div>
                     </div>
                 </div>
-                <!-- Cache efficiency bar -->
-                <div>
+                <!-- Cache efficiency bar (session-scoped; hidden until traffic arrives) -->
+                <div x-show="cacheSessionActive">
                     <div class="flex justify-between text-xs text-gray-500 mb-1">
                         <span>Cache Efficiency</span>
                         <span x-text="cacheSavingsPercent + '% of input served from cache'"></span>
@@ -1029,11 +1056,15 @@
                         <span class="text-sm text-gray-400">Before Compression</span>
                         <span class="font-mono text-sm" x-text="formatNumber(stats.tokens?.total_before_compression || 0)"></span>
                     </div>
-                    <div class="flex justify-between items-center">
+                    <div class="flex justify-between items-center" x-show="cliFilteringAvailable">
                         <span class="text-sm text-gray-400" x-text="cliFilteringLabel + ' Filtered (this session)'"></span>
                         <span class="font-mono text-sm text-emerald-400" x-text="formatNumber(cliFilteringSaved)"></span>
                     </div>
-                    <div class="flex justify-between items-center" x-show="cliFilteringLifetime > 0">
+                    <div class="flex justify-between items-center" x-show="!cliFilteringAvailable">
+                        <span class="text-sm text-gray-400" x-text="cliFilteringLabel + ' Filtered (this session)'"></span>
+                        <span class="font-mono text-sm text-gray-600">not installed</span>
+                    </div>
+                    <div class="flex justify-between items-center" x-show="cliFilteringAvailable && cliFilteringLifetime > 0">
                         <span class="text-sm text-gray-500" x-text="cliFilteringLabel + ' Filtered (lifetime)'"></span>
                         <span class="font-mono text-sm text-emerald-400/70" x-text="formatNumber(cliFilteringLifetime)"></span>
                     </div>
@@ -1080,16 +1111,8 @@
                 <div class="text-sm font-medium mb-4 text-gray-300">Performance</div>
                 <div class="space-y-3">
                     <div class="flex justify-between items-center">
-                        <span class="text-sm text-gray-400">Headroom Overhead</span>
-                        <span class="font-mono text-sm" x-text="(stats.overhead?.average_ms || 0).toFixed(0) + 'ms avg'"></span>
-                    </div>
-                    <div class="flex justify-between items-center">
                         <span class="text-sm text-gray-400">Overhead Range</span>
                         <span class="font-mono text-sm" x-text="(stats.overhead?.min_ms || 0).toFixed(0) + ' - ' + (stats.overhead?.max_ms || 0).toFixed(0) + 'ms'"></span>
-                    </div>
-                    <div class="flex justify-between items-center">
-                        <span class="text-sm text-gray-400">TTFB (upstream)</span>
-                        <span class="font-mono text-sm" x-text="((stats.ttfb?.average_ms || 0) / 1000).toFixed(2) + 's avg'"></span>
                     </div>
                     <div class="flex justify-between items-center">
                         <span class="text-sm text-gray-400">TTFB Range</span>
@@ -1411,7 +1434,7 @@
                         <div class="mt-2 text-xs text-gray-500">Based on persisted weekly buckets</div>
                     </div>
 
-                    <template x-if="historyStats.cli_filtering">
+                    <template x-if="historyStats.cli_filtering && historyCliFilteringAvailable">
                         <div class="bg-surface rounded-lg p-4 border border-border">
                             <div class="text-xs text-gray-500 uppercase tracking-wide mb-1"
                                  x-text="(historyStats.cli_filtering?.label || cliFilteringLabel) + ' Lifetime Saved'"></div>
@@ -1776,7 +1799,7 @@
                 stats: {},
                 historyStats: {},
                 healthy: true,
-                version: '0.3.0',
+                version: 'loading',
                 lastUpdate: 'never',
                 viewMode: 'session',
                 historyGranularity: 'daily',
@@ -1843,6 +1866,12 @@
                     }
                 },
 
+                formatVersion(value) {
+                    const label = String(value || 'unknown').trim();
+                    if (label === 'loading' || label === 'unknown') return label;
+                    return /^\d+\.\d+\.\d+$/.test(label) ? 'v' + label : label;
+                },
+
                 async fetchStats() {
                     try {
                         const [statsRes, healthRes] = await Promise.all([
@@ -1853,7 +1882,7 @@
                         this.stats = await statsRes.json();
                         const health = await healthRes.json();
                         this.healthy = health.status === 'healthy';
-                        this.version = health.version || '0.3.0';
+                        this.version = health.version || 'unknown';
                         this.log_full_messages = this.stats.log_full_messages || false;
 
                         // Update history for sparklines
@@ -2402,6 +2431,10 @@
 
                 // --- Prefix Cache ---
 
+                get cacheSessionActive() {
+                    return (this.stats.prefix_cache?.totals?.requests || 0) > 0;
+                },
+
                 get cacheSavingsPercent() {
                     const t = this.stats.prefix_cache?.totals || {};
                     const total = (t.cache_read_tokens || 0) + (t.cache_write_tokens || 0);
@@ -2561,6 +2594,18 @@
                 get cliFilteringSessionPctDisplay() {
                     const p = this.stats.savings?.by_layer?.cli_filtering?.session_savings_pct;
                     return (p === null || p === undefined) ? this.cliFilteringShareOfTotal : p;
+                },
+
+                get cliFilteringAvailable() {
+                    const ct = this.stats.context_tool;
+                    if (ct && typeof ct.available === 'boolean') return ct.available;
+                    return true;
+                },
+
+                get historyCliFilteringAvailable() {
+                    const hf = this.historyStats?.cli_filtering;
+                    if (hf && typeof hf.available === 'boolean') return hf.available;
+                    return true;
                 },
 
                 // --- Headline savings percent ---

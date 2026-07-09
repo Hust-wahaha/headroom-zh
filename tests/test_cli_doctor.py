@@ -56,6 +56,13 @@ class TestProxyLiveness:
         assert "v0.26.0" in result.summary
         assert "3d" in result.summary
 
+    def test_up_leaves_source_label_unprefixed(self):
+        livez = {**LIVEZ_OK, "version": "source-build+sha.abcdef123456"}
+        result = check_proxy_liveness(livez, "http://127.0.0.1:8787")
+        assert result.status == PASS
+        assert "source-build+sha.abcdef123456" in result.summary
+        assert "vsource-build" not in result.summary
+
 
 class TestVersionDrift:
     def test_match_passes(self):
@@ -73,6 +80,21 @@ class TestVersionDrift:
     def test_unknown_version_warns(self):
         assert check_version_drift({"version": "unknown"}, "0.26.0").status == WARN
         assert check_version_drift(LIVEZ_OK, "unknown").status == WARN
+
+    @pytest.mark.parametrize(
+        ("running", "installed"),
+        [
+            ("source-build+g6266a1d774b5", "0.26.0"),
+            ("source-build+sha.abcdef123456", "0.26.0"),
+            ("6266a1d", "0.26.0"),
+            ("0.26.0+gabcdef0", "0.26.0"),
+            ("0.26.0", "source-build+sha.abcdef123456"),
+        ],
+    )
+    def test_non_release_version_labels_skip_drift_comparison(self, running, installed):
+        result = check_version_drift({"version": running}, installed)
+        assert result.status == SKIP
+        assert "drift" not in result.summary
 
 
 class TestClaudeRouting:

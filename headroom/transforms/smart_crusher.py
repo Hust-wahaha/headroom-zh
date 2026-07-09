@@ -55,6 +55,7 @@ from ..config import CCRConfig, TransformResult
 from ..tokenizer import Tokenizer
 from ..utils import compute_short_hash, create_tool_digest_marker, deep_copy_messages
 from .base import Transform
+from .content_detector import normalize_concatenated_json
 
 logger = logging.getLogger(__name__)
 
@@ -468,6 +469,13 @@ class SmartCrusher(Transform):
         opaque-blob offload) leaves the content uncompacted instead.
         `None` (default) uses the instance's configured value.
         """
+        # Web search tools often return space-separated JSON objects
+        # (``{...} {...} {...}``) rather than a real array. The Rust crusher
+        # only compresses JSON arrays, so normalize that shape first —
+        # otherwise it passes through at 0% compression (#1741).
+        normalized = normalize_concatenated_json(content)
+        if normalized is not None:
+            content = normalized
         rust = (
             self._rust
             if lossless_only is None or bool(lossless_only) == self._lossless_only

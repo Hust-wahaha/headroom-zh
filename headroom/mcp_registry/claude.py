@@ -47,6 +47,7 @@ class ClaudeRegistrar(MCPRegistrar):
         """
         home = home_dir if home_dir is not None else Path.home()
         self._claude_dir = _resolve_claude_config_dir(home, config_dir, honor_env=home_dir is None)
+        self._isolated_cli_env = home_dir is not None or config_dir is not None
         self._modern_config = self._claude_dir / ".claude.json"
         self._legacy_config = self._claude_dir / "mcp.json"
         if claude_cli is ...:
@@ -96,6 +97,7 @@ class ClaudeRegistrar(MCPRegistrar):
                 [str(self._claude_cli), "mcp", "remove", server_name, "-s", "user"],
                 capture_output=True,
                 text=True,
+                env=self._claude_cli_env(),
             )
             if result.returncode == 0:
                 return True
@@ -121,6 +123,7 @@ class ClaudeRegistrar(MCPRegistrar):
             cmd,
             capture_output=True,
             text=True,
+            env=self._claude_cli_env(),
         )
         if result.returncode == 0:
             return RegisterResult(RegisterStatus.REGISTERED, "via `claude mcp add` (scope: user)")
@@ -187,10 +190,16 @@ class ClaudeRegistrar(MCPRegistrar):
             return None
         return _entry_to_spec(server_name, entry)
 
+    # ----------------------------------------------------------------------
+    # Helpers
+    # ----------------------------------------------------------------------
 
-# ----------------------------------------------------------------------
-# Helpers
-# ----------------------------------------------------------------------
+    def _claude_cli_env(self) -> dict[str, str] | None:
+        if not self._isolated_cli_env:
+            return None
+        env = os.environ.copy()
+        env["CLAUDE_CONFIG_DIR"] = str(self._claude_dir)
+        return env
 
 
 def _resolve_claude_config_dir(

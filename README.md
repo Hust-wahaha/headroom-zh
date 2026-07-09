@@ -229,6 +229,7 @@ reproduce the verified Chinese-first demo path.
 
 ```bash
 # 1 — Install a baseline runtime
+uv tool install "headroom-ai[all]"      # global `headroom` CLI in a self-contained virtual env
 pip install "headroom-ai[all]"          # Python — ships the `headroom` CLI
 npm install headroom-ai                 # TypeScript SDK only — no `headroom` CLI
 
@@ -246,9 +247,30 @@ headroom proxy --port 8787              # drop-in proxy, zero code changes
 headroom perf
 ```
 
+To use headroom, it is recommended you launch a wrapped agent session each time so that all necessary setup is completed. When wrapping a coding agent, headroom starts a local proxy, sets up an MCP server that provides tools such as rtk and tokensave, and launches a coding agent session configured to proxy requests to headroom.
+
 The `headroom` CLI ships **only** via the PyPI package. The npm `headroom-ai` is the TypeScript SDK — a library you import (`import { compress } from 'headroom-ai'`), not a CLI, so it provides no `headroom` command.
 
 Granular extras: `[proxy]`, `[mcp]`, `[ml]`, `[code]`, `[memory]`, `[vector]` (optional HNSW backend — needs a C++ toolchain, not in `[all]`), `[relevance]`, `[image]`, `[agno]`, `[langchain]`, `[evals]`, `[pytorch-mps]` (Apple-GPU memory-embedder offload — set `HEADROOM_EMBEDDER_RUNTIME=pytorch_mps`). Requires **Python 3.10+**.
+
+### Codex / global install
+
+If Codex or another MCP client cannot inherit a shell `PATH` reliably, install Headroom as a persistent uv tool and point the client at the absolute binary path:
+
+```bash
+uv tool install "headroom-ai[all]"
+command -v headroom
+```
+
+Then use the returned path in MCP config:
+
+```toml
+[mcp_servers.headroom]
+command = "/absolute/path/from/command-v/headroom"
+args = ["mcp", "serve"]
+```
+
+`command = "headroom"` only works when the client starts with a `PATH` that already includes the uv tool directory.
 
 ## Upstream foundation
 
@@ -431,6 +453,7 @@ Platform support note: macOS auth reuse via Copilot CLI Keychain storage has bee
 - **kompress_zh** — an additional Chinese plain-text compressor, routed only for Chinese-dominant prose.
 - **Image compression** — 40–90% reduction via trained ML router.
 - **CacheAligner** — stabilizes prefixes so Anthropic/OpenAI KV caches actually hit.
+- **Live-zone compression** — compresses only new bytes (fresh tool output, latest turn); frozen prefix stays byte-identical so provider cache is not busted. History is never dropped.
 - **CCR** — reversible compression; LLM retrieves originals on demand.
 - **Cross-agent memory** — shared store, agent provenance, auto-dedup.
 - **SharedContext** — compressed context passing across multi-agent workflows.
@@ -445,7 +468,7 @@ Headroom exposes one stable request lifecycle across `compress()`, the SDK, and 
 
 `Setup` → `Pre-Start` → `Post-Start` → `Input Received` → `Input Cached` → `Input Routed` → `Input Compressed` → `Input Remembered` → `Pre-Send` → `Post-Send` → `Response Received`
 
-- **Transforms** do the work: CacheAligner, ContentRouter, SmartCrusher, CodeCompressor, Kompress-v2-base, kompress_zh.
+- **Transforms** do the work: CacheAligner → ContentRouter → SmartCrusher / CodeCompressor / Kompress-v2-base / kompress_zh (live-zone only where applicable; IntelligentContext and RollingWindow were retired in PR-B1).
 - **Pipeline extensions** observe or customize lifecycle stages via `on_pipeline_event(...)`.
 - **Compression hooks** sit alongside the canonical lifecycle as an additional extension seam.
 - **Proxy extensions** remain the server/app integration seam for ASGI middleware, routes, and startup policy.
@@ -504,6 +527,12 @@ pipx install --python python3.13 "headroom-ai[all]"
 
 → [Installation guide](https://headroom-docs.vercel.app/docs/installation) — Docker tags, persistent service, PowerShell, devcontainers.
 
+> **CPU requirement (x86/x86_64):** the ONNX-backed features — Magika content
+> detection and embedding relevance — use a precompiled ONNX Runtime that needs
+> **AVX2**. On x86 hosts without AVX2 (some Docker/QEMU setups and older cloud
+> VMs) Headroom automatically falls back to its non-ONNX paths (BM25 relevance,
+> heuristic detection) rather than crashing. `arm64`/Apple Silicon needs no AVX2.
+
 ### Updating
 
 ```bash
@@ -534,9 +563,11 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh && rustup default
 winget install Rustlang.Rustup && rustup default stable
 ```
 
-Then restart your shell and run `pip install "headroom-ai[all]"` again. Where
-prebuilt wheels are available, `pip install --only-binary headroom-ai headroom-ai`
-avoids the Rust build entirely.
+Restart your shell, then `pip install "headroom-ai[all]"`. A prebuilt wheel avoids the Rust
+build entirely where available: `pip install --only-binary headroom-ai headroom-ai`. Prebuilt
+wheels are published for Windows (`win_amd64`), Linux (`x86_64` / `aarch64`), and macOS
+(Apple Silicon and Intel), so installs on those platforms never need a local Rust toolchain — the
+Rust-first dance above is only for the platform-independent sdist fallback when no wheel matches.
 
 Two runtime assets may also need corporate CA trust via `REQUESTS_CA_BUNDLE`,
 `SSL_CERT_FILE`, or `CURL_CA_BUNDLE`:
@@ -613,7 +644,7 @@ Headroom runs **locally**, covers **every** content type, works with every major
 |------------------------------------------------------------------------------|------------------------------------------------|------------------------------------|:-----:|:----------:|
 | **Headroom**                                                                 | All context — tools, RAG, logs, files, history | Proxy · library · middleware · MCP | Yes   | Yes        |
 | [RTK](https://github.com/rtk-ai/rtk)                                        | CLI command outputs                            | CLI wrapper                        | Yes   | No         |
-| [lean-ctx](https://github.com/yvgude/lean-ctx)                               | CLI commands, MCP tools, editor rules          | CLI wrapper · MCP                  | Yes   | No         |
+| [lean-ctx](https://github.com/yvgude/lean-ctx)                               | Tool output, files, shell, history             | Proxy · library · middleware · MCP · CLI | Yes | Yes    |
 | [Compresr](https://compresr.ai), [Token Co.](https://thetokencompany.ai)    | Text sent to their API                         | Hosted API call                    | No    | No         |
 | OpenAI Compaction                                                            | Conversation history                           | Provider-native                    | No    | No         |
 

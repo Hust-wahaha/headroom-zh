@@ -34,6 +34,7 @@ from typing import Any
 
 from headroom import paths as _paths
 from headroom import savings_ledger
+from headroom.cache.compression_store import format_retrieval_miss_detail
 
 # fcntl is Unix-only; on Windows we skip file locking (stats are best-effort).
 # Keep the module typed as Any so Windows mypy runs don't try to resolve Unix-only attrs.
@@ -165,9 +166,14 @@ def _format_session_summary(
     if isinstance(persistent_lifetime, dict):
         lifetime_tokens = persistent_lifetime.get("tokens_saved", 0) or 0
         lifetime_usd = persistent_lifetime.get("compression_savings_usd", 0.0) or 0.0
+        lifetime_cache_reads = persistent_lifetime.get("cache_read_tokens", 0) or 0
+        lifetime_cache_usd = persistent_lifetime.get("cache_savings_usd", 0.0) or 0.0
         lines.append("Lifetime Savings:")
         lines.append(f"  Tokens saved: {lifetime_tokens:,}")
         lines.append(f"  Compression savings: ${lifetime_usd:.2f}")
+        if lifetime_cache_reads:
+            lines.append(f"  Cache-read tokens: {lifetime_cache_reads:,}")
+            lines.append(f"  Cache savings: ${lifetime_cache_usd:.2f}")
         lines.append("")
 
     # Tip
@@ -245,6 +251,23 @@ def _read_shared_events(window_seconds: int = SESSION_WINDOW_SECONDS) -> list[di
     except Exception:
         pass
     return events
+
+
+def _build_proxy_unreachable_payload(
+    *,
+    proxy_url: str,
+    error: str,
+    http_status: int | None = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "url": proxy_url,
+        "status": "unreachable",
+        "error": error,
+        "warning": f"Configured proxy {proxy_url} is unreachable ({error}).",
+    }
+    if http_status is not None:
+        payload["http_status"] = http_status
+    return payload
 
 
 @dataclass
@@ -435,7 +458,9 @@ class HeadroomMCPServer:
         """
         # Check local store first
         store = self._get_local_store()
+        entry_status = store.get_entry_status(hash_key, clean_expired=False)
         entry = store.retrieve(hash_key)
+        expired_entry_status = None
         if entry:
             self._stats.record_retrieval(hash_key)
             return {
@@ -446,6 +471,19 @@ class HeadroomMCPServer:
                 "compressed_item_count": entry.compressed_item_count,
                 "retrieval_count": entry.retrieval_count,
             }
+        if entry_status.get("status") == "expired":
+            expired_entry_status = entry_status
+        elif entry_status.get("status") == "available":
+            created_at = entry_status.get("created_at")
+            ttl_seconds = entry_status.get("ttl_seconds")
+            if isinstance(created_at, (int, float)) and isinstance(ttl_seconds, (int, float)):
+                age_seconds = time.time() - created_at
+                if age_seconds > ttl_seconds:
+                    expired_entry_status = {
+                        **entry_status,
+                        "status": "expired",
+                        "age_seconds": age_seconds,
+                    }
 
         # Fall back to proxy if available
         if self.check_proxy and HTTPX_AVAILABLE:
@@ -457,6 +495,26 @@ class HeadroomMCPServer:
                     return result
             except Exception:
                 pass  # Proxy unavailable, that's fine
+
+        if expired_entry_status:
+            ttl_seconds = expired_entry_status.get(
+                "ttl_seconds",
+                expired_entry_status["default_ttl_seconds"],
+            )
+            return {
+                "error": (
+                    f"{format_retrieval_miss_detail(expired_entry_status)}. "
+                    "Do not retry the same hash. Re-run the source command or re-read the source file."
+                ),
+                "hash": hash_key,
+                "status": "expired",
+                "ttl_seconds": ttl_seconds,
+                "age_seconds": expired_entry_status.get("age_seconds"),
+                "hint": (
+                    "Use the source of truth to regenerate fresh content. "
+                    "Re-run the command or re-read the file."
+                ),
+            }
 
         return {
             "error": "Content not found. It may have expired or the hash may be incorrect.",
@@ -487,6 +545,58 @@ class HeadroomMCPServer:
         response.raise_for_status()
         result: dict[str, Any] = response.json()
         return result
+
+    async def _probe_proxy_unreachable(self) -> dict[str, Any] | None:
+        """Return explicit proxy-unreachable state when the configured proxy is down."""
+        if not self.check_proxy or not HTTPX_AVAILABLE:
+            return None
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                response = await client.get(f"{self.proxy_url}/livez")
+        except Exception as exc:
+            return _build_proxy_unreachable_payload(
+                proxy_url=self.proxy_url,
+                error=f"{type(exc).__name__}: {exc}",
+            )
+        if response.status_code != 200:
+            detail = None
+            try:
+                payload = response.json()
+            except Exception:
+                payload = None
+            if isinstance(payload, dict):
+                detail = payload.get("status")
+            if detail is None:
+                detail = response.text.strip() or None
+            error = f"HTTP {response.status_code}"
+            if detail:
+                error = f"{error} ({detail})"
+            return _build_proxy_unreachable_payload(
+                proxy_url=self.proxy_url,
+                error=error,
+                http_status=response.status_code,
+            )
+        try:
+            payload = response.json()
+        except Exception as exc:
+            return _build_proxy_unreachable_payload(
+                proxy_url=self.proxy_url,
+                error=f"invalid /livez payload: {type(exc).__name__}: {exc}",
+                http_status=response.status_code,
+            )
+        if not isinstance(payload, dict):
+            return _build_proxy_unreachable_payload(
+                proxy_url=self.proxy_url,
+                error="invalid /livez payload",
+                http_status=response.status_code,
+            )
+        if payload.get("status") != "healthy" or payload.get("alive") is not True:
+            return _build_proxy_unreachable_payload(
+                proxy_url=self.proxy_url,
+                error=f"proxy reported {payload.get('status', 'unhealthy')}",
+                http_status=response.status_code,
+            )
+        return None
 
     def _setup_handlers(self) -> None:
         """Register all MCP tool handlers."""
@@ -652,6 +762,11 @@ class HeadroomMCPServer:
         except Exception:
             logger.debug("durable savings recording failed", exc_info=True)
 
+        proxy_status = await self._probe_proxy_unreachable()
+        if proxy_status:
+            result["proxy"] = proxy_status
+            result["warning"] = proxy_status["warning"]
+
         return [TextContent(type="text", text=json.dumps(result, indent=2))]
 
     def _record_savings(self, result: dict[str, Any]) -> None:
@@ -766,6 +881,11 @@ class HeadroomMCPServer:
                 proxy_stats = self._extract_proxy_stats(proxy_data)
                 if proxy_stats:
                     stats["proxy"] = proxy_stats
+            else:
+                proxy_status = await self._probe_proxy_unreachable()
+                if proxy_status:
+                    stats["proxy"] = proxy_status
+                    stats["warning"] = proxy_status["warning"]
 
         return [TextContent(type="text", text=json.dumps(stats, indent=2))]
 

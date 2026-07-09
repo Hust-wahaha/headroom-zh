@@ -21,6 +21,16 @@ class _FakePrefixTracker:
     def get_frozen_message_count(self) -> int:
         return self._frozen_count
 
+    # Empty history → overlay_cached_prefix() is a no-op here, so these tests
+    # keep asserting the cache-freeze behavior they always have. The cross-turn
+    # overlay itself is exercised in test_cross_turn_cache_safety.py against the
+    # real tracker; these stubs just satisfy the handler's overlay call.
+    def get_last_original_messages(self):  # noqa: ANN201
+        return []
+
+    def get_last_forwarded_messages(self):  # noqa: ANN201
+        return []
+
     def update_from_response(self, **kwargs):  # noqa: ANN003
         return None
 

@@ -15,7 +15,7 @@ if TYPE_CHECKING:
     from fastapi.responses import Response
 
 from headroom.proxy.auth_mode import classify_client
-from headroom.proxy.helpers import extract_tags
+from headroom.proxy.helpers import COMPRESSION_TIMEOUT_SECONDS, extract_tags
 from headroom.proxy.outcome import RequestOutcome
 
 logger = logging.getLogger("headroom.proxy")
@@ -161,11 +161,18 @@ class BatchHandlerMixin:
                 )
 
                 # Use OpenAI pipeline (similar message format after conversion)
-                result = self.openai_pipeline.apply(
-                    messages=messages,
-                    model=model,
-                    model_limit=context_limit,
-                    context=extract_user_query(messages),
+                # Offload off the event loop (#1701): inline apply() blocks
+                # every other request; timeouts fall to the except below.
+                result = await self._run_compression_in_executor(
+                    lambda messages=messages, model=model, context_limit=context_limit: (
+                        self.openai_pipeline.apply(
+                            messages=messages,
+                            model=model,
+                            model_limit=context_limit,
+                            context=extract_user_query(messages),
+                        )
+                    ),
+                    timeout=COMPRESSION_TIMEOUT_SECONDS,
                 )
 
                 optimized_messages = result.messages
@@ -1078,11 +1085,18 @@ class BatchHandlerMixin:
                 if self.config.optimize:
                     try:
                         context_limit = self.openai_provider.get_context_limit(model)
-                        result = self.openai_pipeline.apply(
-                            messages=messages,
-                            model=model,
-                            model_limit=context_limit,
-                            context=extract_user_query(messages),
+                        # Offload off the event loop (#1701); timeouts fall to
+                        # the except below and pass the line through.
+                        result = await self._run_compression_in_executor(
+                            lambda messages=messages, model=model, context_limit=context_limit: (
+                                self.openai_pipeline.apply(
+                                    messages=messages,
+                                    model=model,
+                                    model_limit=context_limit,
+                                    context=extract_user_query(messages),
+                                )
+                            ),
+                            timeout=COMPRESSION_TIMEOUT_SECONDS,
                         )
                         compressed_messages = result.messages
                         # Use pipeline's token counts for consistency with pipeline logs

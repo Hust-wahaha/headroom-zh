@@ -13,7 +13,6 @@ import click
 
 from headroom import fsutil
 from headroom.install.paths import opencode_config_path
-from headroom.mcp_registry.install import DEFAULT_PROXY_URL
 
 # Headroom-managed JSON marker comments for idempotent block injection.
 _PROVIDER_MARKER_START = "// --- Headroom proxy provider ---"
@@ -31,6 +30,44 @@ _MCP_BLOCK_RE = re.compile(
     re.DOTALL,
 )
 HEADROOM_OPENCODE_PLUGIN = "headroom-opencode"
+
+# Models exposed by the injected `headroom` provider. OpenCode only resolves
+# `headroom/<id>` for ids listed in the provider's `models` map, so an empty
+# map means every documented `headroom/*` model fails with "Model not found".
+# Keep in sync with DEFAULT_MODELS in plugins/opencode/src/provider.ts and the
+# table in plugins/opencode/README.md.
+HEADROOM_OPENCODE_MODELS: dict[str, Any] = {
+    "claude-sonnet-4-6": {
+        "name": "Claude Sonnet 4.6",
+        "limit": {"context": 200000, "output": 16384},
+    },
+    "claude-opus-4-6": {
+        "name": "Claude Opus 4.6",
+        "limit": {"context": 200000, "output": 16384},
+    },
+    "claude-haiku-4-5-20251001": {
+        "name": "Claude Haiku 4.5",
+        "limit": {"context": 200000, "output": 8192},
+    },
+    "gpt-4o": {
+        "name": "GPT-4o",
+        "limit": {"context": 128000, "output": 16384},
+    },
+    "gpt-4.1": {
+        "name": "GPT-4.1",
+        "limit": {"context": 1048576, "output": 32768},
+    },
+}
+
+
+def headroom_provider_entry(port: int) -> dict[str, Any]:
+    """Return the `headroom` provider block pointed at the local proxy."""
+    return {
+        "npm": "@ai-sdk/openai-compatible",
+        "name": "Headroom Proxy",
+        "options": {"baseURL": f"http://127.0.0.1:{port}/v1"},
+        "models": HEADROOM_OPENCODE_MODELS,
+    }
 
 
 def _opencode_home_dir() -> Path:
@@ -83,38 +120,11 @@ def strip_opencode_headroom_blocks(content: str, *, remove_mcp: bool = True) -> 
 
 def _render_provider_block(port: int) -> str:
     """Render a Headroom provider block as a JSON comment-wrapped snippet."""
-    provider = {
-        "headroom": {
-            "npm": "@ai-sdk/openai-compatible",
-            "name": "Headroom Proxy",
-            "options": {"baseURL": f"http://127.0.0.1:{port}/v1"},
-        }
-    }
+    provider = {"headroom": headroom_provider_entry(port)}
     lines = [
         _PROVIDER_MARKER_START,
         f'"provider": {json.dumps(provider, indent=2)},',
         _PROVIDER_MARKER_END,
-    ]
-    return "\n".join(lines)
-
-
-def _render_mcp_block(port: int) -> str:
-    """Render a Headroom MCP block as a JSON comment-wrapped snippet."""
-    proxy_url = f"http://127.0.0.1:{port}"
-    mcp_entry: dict[str, Any] = {
-        "type": "local",
-        "command": ["headroom", "mcp", "serve"],
-        "enabled": True,
-    }
-    if proxy_url != DEFAULT_PROXY_URL:
-        mcp_entry["environment"] = {"HEADROOM_PROXY_URL": proxy_url}
-    mcp = {
-        "headroom": mcp_entry,
-    }
-    lines = [
-        _MCP_MARKER_START,
-        f'"mcp": {json.dumps(mcp, indent=2)},',
-        _MCP_MARKER_END,
     ]
     return "\n".join(lines)
 
@@ -203,13 +213,7 @@ def inject_opencode_provider_config(port: int) -> None:
             data = _parse_json_loose(content)
 
         # Merge provider into the JSON data structure.
-        provider = {
-            "headroom": {
-                "npm": "@ai-sdk/openai-compatible",
-                "name": "Headroom Proxy",
-                "options": {"baseURL": f"http://127.0.0.1:{port}/v1"},
-            }
-        }
+        provider = {"headroom": headroom_provider_entry(port)}
         data = _inject_key_into_json(data, "provider", provider)
 
         # Write back as formatted JSON (opencode uses standard JSON with comments).

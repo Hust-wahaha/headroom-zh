@@ -875,9 +875,7 @@ class CodeAwareCompressor(Transform):
             ref_counts[qname] = max(0, count - short_name_def_count.get(short, 1))
 
         # Raw importance signals per symbol
-        context_lower = context.lower() if context else ""
-        context_words = set(re.split(r"[\s,;:.()\[\]{}\"']+", context_lower)) if context else set()
-        context_words.discard("")
+        context_words, context_lower, context_has_cjk = _query_context_tokens(context)
 
         raw_signals: dict[str, float] = {}
         for qname in definitions:
@@ -898,13 +896,9 @@ class CodeAwareCompressor(Transform):
                 if short and short[0].isupper():
                     raw += 1.0
 
-            # Context boost
-            if context_words:
-                name_lower = short.lower()
-                if name_lower in context_words or (
-                    len(name_lower) > 3 and name_lower in context_lower
-                ):
-                    raw += 3.0
+            # Context boost: the relevance query named this symbol.
+            if _symbol_in_context(short.lower(), context_words, context_lower, context_has_cjk):
+                raw += 3.0
 
             raw_signals[qname] = raw
 
@@ -1438,7 +1432,11 @@ class CodeAwareCompressor(Transform):
             if _brace_in_signature:
                 # Opening brace already in signature line — just find closing
                 pass
-            elif body_lines and body_lines[0].strip().startswith("{"):
+            elif body_lines and body_lines[0].strip().endswith("{"):
+                # Matches both a bare `{` line and a multi-line signature's
+                # closing line (e.g. Go's `) error {`), where the brace
+                # shares a line with the closing paren/return type rather
+                # than starting one of its own.
                 opening_brace_line = body_lines[0]
                 body_lines = body_lines[1:]
             if body_lines and body_lines[-1].strip().endswith("}"):
@@ -1551,6 +1549,17 @@ class CodeAwareCompressor(Transform):
                 continue
             # Skip unnamed tokens (tree-sitter anonymous nodes like braces)
             if not child.is_named:
+                continue
+            # Some grammars (e.g. Go) wrap all body statements in one generic
+            # list node instead of exposing them as direct siblings of the
+            # block. Treating that wrapper as a single statement makes its
+            # row range swallow the block's own closing brace line, causing
+            # a duplicated `}` later. Unwrap it into its real statements.
+            if child.type == "statement_list":
+                for inner in child.children:
+                    if inner.type in _SKIP_TYPES or not inner.is_named:
+                        continue
+                    body_stmts.append((inner.start_point[0], inner.end_point[0]))
                 continue
             body_stmts.append((child.start_point[0], child.end_point[0]))
 
@@ -2039,6 +2048,43 @@ def _get_definition_name(node: Any) -> str | None:
             text = child.text
             return text.decode("utf-8") if isinstance(text, bytes) else str(text)
     return None
+
+
+# Symbol names are ASCII identifiers; CJK relevance queries have no spaces and use
+# CJK/full-width punctuation, so the ASCII-only delimiter class would collapse the
+# whole query into one blob and never isolate an ASCII name the user asked to keep.
+_CONTEXT_DELIMS = re.compile(r"[\s,;:.()\[\]{}\"'，、；：。．！？（）【】「」『』《》〈〉·…—　]+")
+_CJK_CHARS = re.compile(r"[　-鿿가-힯＀-￯]")
+
+
+def _query_context_tokens(context: str) -> tuple[set[str], str, bool]:
+    """Tokenize a relevance query for symbol-name matching (CJK-aware).
+
+    Returns (word set, lowercased query, has_cjk). CJK/full-width punctuation and
+    the ideographic space are delimiters so an ASCII symbol name wrapped in CJK is
+    still isolated as its own token.
+    """
+    if not context:
+        return set(), "", False
+    lowered = context.lower()
+    words = set(_CONTEXT_DELIMS.split(lowered))
+    words.discard("")
+    return words, lowered, bool(_CJK_CHARS.search(lowered))
+
+
+def _symbol_in_context(name_lower: str, words: set[str], context_lower: str, has_cjk: bool) -> bool:
+    """Whether the relevance query names this symbol.
+
+    Exact token match, or a substring fallback gated by len>3 for ASCII queries
+    (avoids spurious short-name matches) but relaxed for CJK queries -- a short
+    ASCII name glued to CJK has no delimiter to isolate it, so exact-match can't
+    fire and the guard would wrongly drop it.
+    """
+    if not words or not name_lower:
+        return False
+    if name_lower in words:
+        return True
+    return name_lower in context_lower and (len(name_lower) > 3 or has_cjk)
 
 
 def _is_public_symbol(name: str, language: CodeLanguage) -> bool:

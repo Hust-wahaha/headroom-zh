@@ -9,7 +9,7 @@ from pathlib import Path
 
 from headroom.mcp_registry.install import DEFAULT_PROXY_URL
 
-from .config import HEADROOM_OPENCODE_PLUGIN
+from .config import HEADROOM_OPENCODE_PLUGIN, headroom_provider_entry
 
 
 def proxy_base_url(port: int) -> str:
@@ -74,11 +74,7 @@ def build_opencode_config_content(
         "provider": {
             "anthropic": {"options": {"baseURL": base_url}},
             "openai": {"options": {"baseURL": base_url}},
-            "headroom": {
-                "npm": "@ai-sdk/openai-compatible",
-                "name": "Headroom Proxy",
-                "options": {"baseURL": base_url},
-            },
+            "headroom": headroom_provider_entry(port),
         }
     }
     if include_mcp:

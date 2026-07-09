@@ -93,6 +93,15 @@ impl EmbeddingScorer {
     /// quality/speed tradeoff for compression-relevance scoring on
     /// short snippets.
     pub fn try_new_with_model(model_kind: EmbeddingModel) -> Result<Self, String> {
+        // fastembed links the precompiled ONNX Runtime binary, which contains
+        // AVX2 instructions on x86. Loading/running it on a non-AVX2 CPU traps
+        // with SIGILL (issue #1723) — an uncatchable native fault. Bail early so
+        // callers fall back to the BM25/stub path instead of killing the process.
+        if !crate::onnx_cpu::onnx_runtime_supported_by_cpu() {
+            return Err("EmbeddingScorer: ONNX Runtime backend requires AVX2 on \
+                 this x86 CPU; embedding relevance disabled (falling back to BM25)"
+                .to_string());
+        }
         let name = format!("{:?}", model_kind);
         let model = TextEmbedding::try_new(InitOptions::new(model_kind))
             .map_err(|e| format!("EmbeddingScorer model load failed: {}", e))?;
@@ -308,6 +317,31 @@ mod tests {
         let s = unavailable_scorer();
         let r = s.score_batch(&[], "anything");
         assert!(r.is_empty());
+    }
+
+    // ---------- AVX2 CPU guard (issue #1723) ----------
+
+    #[test]
+    fn onnx_guard_matches_cpu_features() {
+        let supported = crate::onnx_cpu::onnx_runtime_supported_by_cpu();
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+        assert_eq!(supported, std::is_x86_feature_detected!("avx2"));
+        #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
+        assert!(supported);
+    }
+
+    #[test]
+    fn try_new_errors_on_unsupported_cpu_instead_of_sigill() {
+        // On a no-AVX2 host the guard must turn the SIGILL into a plain Err
+        // so callers fall back to BM25. On AVX2 CI runners the guard passes and
+        // there is nothing to assert (loading the model would need network).
+        if crate::onnx_cpu::onnx_runtime_supported_by_cpu() {
+            return;
+        }
+        match EmbeddingScorer::try_new() {
+            Err(err) => assert!(err.contains("AVX2"), "unexpected error: {err}"),
+            Ok(_) => panic!("ONNX backend must not load on a no-AVX2 CPU"),
+        }
     }
 
     // ---------- model-backed tests (gated on RUN_FASTEMBED_TESTS) ----------

@@ -166,3 +166,94 @@ def test_hint_slot_fires_once() -> None:
         assert take_tool_search_hint_slot() is False
     finally:
         reset_tool_search_hint_state()
+
+
+# ---------------------------------------------------------------------------
+# Server-side Tool Search injection for plain-API clients (opencode)
+# ---------------------------------------------------------------------------
+
+from headroom.proxy.helpers import (  # noqa: E402
+    _TOOL_SEARCH_DEFAULT_NAME,
+    _TOOL_SEARCH_DEFAULT_TYPE,
+    _TOOL_SEARCH_MIN_TOOLS,
+    inject_tool_search_deferral,
+)
+
+
+def _tools(n: int, *, core_first: int = 0) -> list[dict]:
+    core = ["bash", "read", "write", "edit", "grep"]
+    out: list[dict] = []
+    for i in range(n):
+        name = core[i] if i < core_first and i < len(core) else f"mcp_tool_{i}"
+        out.append({"name": name, "description": f"tool {i}", "input_schema": {}})
+    return out
+
+
+def test_inject_defers_non_core_and_injects_search_tool() -> None:
+    tools = _tools(20, core_first=3)  # bash/read/write resident, rest deferred
+    out = inject_tool_search_deferral(tools)
+    assert out is not tools
+    # search tool injected, non-deferred, correct shape
+    search = out[0]
+    assert search == {"type": _TOOL_SEARCH_DEFAULT_TYPE, "name": _TOOL_SEARCH_DEFAULT_NAME}
+    assert "defer_loading" not in search
+    # core tools stay resident; non-core deferred
+    by_name = {t.get("name"): t for t in out if "name" in t}
+    assert by_name["bash"].get("defer_loading") is None
+    assert by_name["mcp_tool_5"].get("defer_loading") is True
+    # at least one non-deferred real tool remains (Anthropic 400s otherwise)
+    assert any(not t.get("type") and not t.get("defer_loading") for t in out)
+
+
+def test_noop_below_min_tools() -> None:
+    tools = _tools(_TOOL_SEARCH_MIN_TOOLS - 1)
+    assert inject_tool_search_deferral(tools) is tools
+
+
+def test_noop_when_client_already_uses_tool_search() -> None:
+    tools = _tools(20) + [{"type": "tool_search_tool_regex_20251119", "name": "x"}]
+    assert inject_tool_search_deferral(tools) is tools
+
+
+def test_noop_when_nothing_to_defer() -> None:
+    # every tool is core -> nothing deferred -> cache prefix untouched
+    core = [
+        "bash",
+        "read",
+        "write",
+        "edit",
+        "multiedit",
+        "glob",
+        "grep",
+        "task",
+        "todowrite",
+        "todoread",
+        "webfetch",
+        "skill",
+    ]
+    tools = [{"name": n, "input_schema": {}} for n in core]
+    assert inject_tool_search_deferral(tools) is tools
+
+
+def test_cache_control_moved_off_deferred_tool_to_last_resident() -> None:
+    tools = _tools(20, core_first=3)
+    # the client's tools cache breakpoint sits on a tool we will defer
+    tools[10]["cache_control"] = {"type": "ephemeral"}
+    out = inject_tool_search_deferral(tools)
+    # no deferred tool may carry cache_control (Anthropic 400s)
+    assert all("cache_control" not in t for t in out if t.get("defer_loading"))
+    # exactly one resident real tool now carries the moved breakpoint
+    resident_cc = [
+        t
+        for t in out
+        if not t.get("type") and not t.get("defer_loading") and t.get("cache_control")
+    ]
+    assert len(resident_cc) == 1
+
+
+def test_non_dict_and_typed_tools_stay_resident() -> None:
+    tools = _tools(15, core_first=2)
+    tools.append({"type": "web_search_20250305", "name": "web_search"})
+    out = inject_tool_search_deferral(tools)
+    typed = [t for t in out if t.get("type") == "web_search_20250305"]
+    assert len(typed) == 1 and typed[0].get("defer_loading") is None
