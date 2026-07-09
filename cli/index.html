@@ -3544,14 +3544,9 @@
 <td>Disable stale/superseded read compression</td>
 </tr>
 <tr>
-<td><code>--no-ccr-inject-tool</code></td>
+<td><code>--no-ccr</code></td>
 <td>off</td>
-<td>Disable injecting the <code>headroom_retrieve</code> tool</td>
-</tr>
-<tr>
-<td><code>--no-ccr-marker</code></td>
-<td>off</td>
-<td>Disable adding retrieval markers to compressed output</td>
+<td>Disable CCR entirely — no retrieval markers in content and no injected <code>headroom_retrieve</code> tool (lossy, no recovery path)</td>
 </tr>
 <tr>
 <td><code>--no-ccr-proactive-expansion</code></td>
