@@ -183,6 +183,36 @@ class TestSQLiteMemoryStore:
             assert retrieved.content == memory.content
 
     @pytest.mark.asyncio
+    async def test_record_access_is_atomic_and_deduplicates_ids(self, store):
+        memories = [Memory(content=f"Memory {i}", user_id="alice") for i in range(2)]
+        await store.save_batch(memories)
+
+        first_access = datetime(2026, 7, 12, 9, 30)
+        updated = await store.record_access(
+            [memories[0].id, memories[0].id, memories[1].id, "missing"],
+            first_access,
+        )
+
+        assert updated == 2
+        first = await store.get(memories[0].id)
+        second = await store.get(memories[1].id)
+        assert first is not None
+        assert second is not None
+        assert first.access_count == 1
+        assert second.access_count == 1
+        assert first.last_accessed == first_access
+        assert second.last_accessed == first_access
+
+        second_access = datetime(2026, 7, 12, 9, 31)
+        assert await store.record_access([memories[0].id], second_access) == 1
+        first = await store.get(memories[0].id)
+        assert first is not None
+        assert first.access_count == 2
+        assert first.last_accessed == second_access
+
+        assert await store.record_access([]) == 0
+
+    @pytest.mark.asyncio
     async def test_delete(self, store, sample_memory):
         """Test deleting a memory."""
         await store.save(sample_memory)

@@ -70,12 +70,23 @@ def test_coding_persona_protects_working_set_and_stays_visible() -> None:
     env = profile.proxy_env()
 
     assert env["HEADROOM_SAVINGS_PROFILE"] == "coding"
+    assert env["HEADROOM_MODE"] == "cache"  # delta-only compression at ~0 prefix-cache busts
     assert env["HEADROOM_PROTECT_RECENT"] == "2"  # keep the active code working set verbatim
     assert env["HEADROOM_MIN_TOKENS"] == "25"  # low → compression is actually visible
-    assert env["HEADROOM_COMPRESS_USER_MESSAGES"] == "0"  # no prompt mutation / cache bust
-    assert env["HEADROOM_COMPRESS_SYSTEM_MESSAGES"] == "0"
+    # Cache mode compresses the newest observation delta → compress_user must be ON.
+    assert env["HEADROOM_COMPRESS_USER_MESSAGES"] == "1"
+    assert env["HEADROOM_COMPRESS_SYSTEM_MESSAGES"] == "0"  # system prompt is the hottest cache
     assert env["HEADROOM_ACCURACY_GUARD"] == "strict"
     assert "HEADROOM_TARGET_RATIO" not in env  # unset → Kompress / ambient default decides
+    # Coding posture toggles seeded through the profile.
+    assert env["HEADROOM_TOOL_SEARCH"] == "1"
+    assert env["HEADROOM_DEDUPE"] == "1"
+    assert env["HEADROOM_LOSSLESS_THEN_LOSSY"] == "1"
+    assert env["HEADROOM_PROTECT_READS"] == "1"
+    assert env["HEADROOM_CODE_AWARE_ENABLED"] == "1"
+    assert env["HEADROOM_EFFORT_ROUTER"] == "0"
+    assert env["HEADROOM_LOSSLESS"] == "0"  # lossy enabled (CCR keeps it recoverable)
+    assert env["HEADROOM_MIN_CHARS_FOR_BLOCK"] == "25"
 
 
 def test_general_persona_has_no_positional_code_protection() -> None:
@@ -89,13 +100,18 @@ def test_general_persona_has_no_positional_code_protection() -> None:
 
 
 def test_personas_omit_target_ratio_in_pipeline_kwargs() -> None:
-    for name, expected_protect in (("coding", 2), ("general", 0)):
+    # coding compresses the delta observation (cache mode) → compress_user True;
+    # general has no positional code working set and leaves user turns intact.
+    for name, expected_protect, expected_compress_user in (
+        ("coding", 2, True),
+        ("general", 0, False),
+    ):
         kwargs = proxy_pipeline_kwargs(ProxyConfig(savings_profile=name))
 
         assert kwargs["protect_recent"] == expected_protect
         assert kwargs["read_protection_window"] == expected_protect
         assert kwargs["min_tokens_to_compress"] == 25
-        assert kwargs["compress_user_messages"] is False
+        assert kwargs["compress_user_messages"] is expected_compress_user
         assert kwargs["compress_system_messages"] is False
         assert kwargs["force_kompress"] is False
         assert "target_ratio" not in kwargs  # persona never pins a keep-ratio

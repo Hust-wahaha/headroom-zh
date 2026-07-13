@@ -161,6 +161,37 @@ def test_proxy_package_import_does_not_eagerly_load_server() -> None:
     assert data["server_loaded"] is False
 
 
+def test_codex_package_import_stays_runtime_only() -> None:
+    script = textwrap.dedent(
+        """
+        import json
+        import sys
+
+        import headroom.providers.codex
+
+        print(json.dumps({
+            "images_loaded": "headroom.providers.codex.images" in sys.modules,
+            "model_metadata_loaded": "headroom.providers.codex.model_metadata" in sys.modules,
+            "responses_loaded": "headroom.providers.codex.responses" in sys.modules,
+        }))
+        """
+    )
+
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    data = json.loads(result.stdout.strip())
+    assert data == {
+        "images_loaded": False,
+        "model_metadata_loaded": False,
+        "responses_loaded": False,
+    }
+
+
 def test_proxy_server_import_skips_litellm_backend() -> None:
     script = textwrap.dedent(
         """

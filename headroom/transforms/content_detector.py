@@ -100,6 +100,15 @@ _CODE_PATTERNS = {
         re.compile(r"^\s*@\w+"),  # annotations
         re.compile(r"^\s*package\s+[\w.]+;"),
     ],
+    "csharp": [
+        re.compile(r"^\s*using\s+[\w.]+\s*;"),  # using directive (not C++ `using namespace x;`)
+        re.compile(r"^\s*namespace\s+[\w.]+"),
+        re.compile(
+            r"^\s*(public|private|protected|internal|sealed|static|abstract|partial)\s+"
+            r"(class|struct|record|interface|enum)\b"
+        ),
+        re.compile(r"^.*\b(get|set|init);"),  # auto-property accessors
+    ],
 }
 
 # Log/build output patterns

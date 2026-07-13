@@ -245,6 +245,12 @@ async def _handle_search(
         # Trim to requested top_k
         active_results = active_results[:top_k]
 
+        try:
+            await backend.record_access([r.memory.id for r in active_results])
+        except Exception as e:
+            # Usage metadata must never make a successful retrieval fail.
+            logger.warning(f"Memory MCP: failed to record access: {e}")
+
         lines = []
         for i, r in enumerate(active_results, 1):
             score = f"{r.score:.2f}" if hasattr(r, "score") else "?"

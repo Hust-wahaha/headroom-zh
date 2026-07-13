@@ -19,6 +19,7 @@ import subprocess
 import sys
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 import click
 import pytest
@@ -26,6 +27,7 @@ from click.testing import CliRunner
 
 from headroom import paths as paths_mod
 from headroom.cli import wrap as wrap_mod
+from headroom.cli.main import main
 
 # ---------------------------------------------------------------------------
 # _print_wrap_banner — centering math + box drawing.
@@ -102,6 +104,72 @@ def test_print_wrap_banner_title_is_centered_or_near_centered() -> None:
 #   4. rtk install fail + rtk_required=True → SystemExit(1)
 #   5. KeyboardInterrupt → _emit_wrap_interrupted, SystemExit(130)
 # ---------------------------------------------------------------------------
+
+
+def test_claude_context_tool_is_opt_in_for_prepare_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Claude skips context-tool setup unless the positive flag is passed."""
+    monkeypatch.delenv("HEADROOM_CONTEXT_TOOL", raising=False)
+    runner = CliRunner()
+
+    with patch.object(wrap_mod, "_prepare_wrap_rtk") as prepare_rtk:
+        default = runner.invoke(main, ["wrap", "claude", "--prepare-only"])
+        opt_in = runner.invoke(main, ["wrap", "claude", "--prepare-only", "--context-tool"])
+
+    assert default.exit_code == 0, default.output
+    assert opt_in.exit_code == 0, opt_in.output
+    assert prepare_rtk.call_count == 1
+
+
+def test_claude_context_tool_opt_in_preserves_lean_ctx_selection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The positive flag enables the configured lean-ctx installer."""
+    monkeypatch.setenv("HEADROOM_CONTEXT_TOOL", "lean-ctx")
+    runner = CliRunner()
+
+    with patch.object(wrap_mod, "_setup_lean_ctx_agent") as setup_lean_ctx:
+        result = runner.invoke(main, ["wrap", "claude", "--prepare-only", "--context-tool"])
+
+    assert result.exit_code == 0, result.output
+    setup_lean_ctx.assert_called_once_with("claude", verbose=False)
+
+
+def test_claude_no_context_tool_wins_over_context_tool(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The legacy opt-out remains authoritative when both flags are supplied."""
+    runner = CliRunner()
+
+    with patch.object(wrap_mod, "_prepare_wrap_rtk") as prepare_rtk:
+        result = runner.invoke(
+            main,
+            ["wrap", "claude", "--prepare-only", "--context-tool", "--no-context-tool"],
+        )
+
+    assert result.exit_code == 0, result.output
+    prepare_rtk.assert_not_called()
+
+
+def test_non_claude_context_tool_setup_remains_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Copilot still sets up RTK without a new positive opt-in flag."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-dummy")
+
+    with (
+        patch.object(wrap_mod.shutil, "which", return_value="copilot"),
+        patch.object(wrap_mod, "_ensure_rtk_binary", return_value=Path("/tmp/rtk")) as ensure_rtk,
+        patch.object(wrap_mod, "_launch_tool"),
+    ):
+        result = CliRunner().invoke(
+            main,
+            ["wrap", "copilot", "--no-proxy", "--", "--model", "claude-sonnet-4-20250514"],
+        )
+
+    assert result.exit_code == 0, result.output
+    ensure_rtk.assert_called_once_with(verbose=False)
 
 
 def test_setup_context_tool_lean_ctx_calls_lean_ctx_setup(monkeypatch: pytest.MonkeyPatch) -> None:

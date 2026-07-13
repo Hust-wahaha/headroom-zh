@@ -10,6 +10,8 @@ name: CI
 #
 # Notes: CPU-only torch everywhere (no CUDA stack); test shards run HF_HUB_OFFLINE.
 # Multi-version (3.10/3.11/3.13) coverage on main is a planned follow-up.
+# Windows wheel (win_amd64) built separately — builds the Rust ext just like the
+# Linux wheel, then uploads as a separate artifact for downstream consumption.
 
 on:
   push:
@@ -44,7 +46,7 @@ jobs:
       e2e: ${{ steps.filter.outputs.e2e }}
       workflows: ${{ steps.filter.outputs.workflows }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dorny/paths-filter@v4
         id: filter
         with:
@@ -76,12 +78,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PY_VERSION }}
       - name: Cache pip
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ~/.cache/pip
           key: ${{ runner.os }}-pip-lint-${{ hashFiles('pyproject.toml') }}
@@ -100,7 +102,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PY_VERSION }}
@@ -118,6 +120,31 @@ jobs:
           path: dist/*.whl
           retention-days: 1
 
+  build-wheel-windows:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PY_VERSION }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+      - name: Build wheel (fast CI cargo profile)
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip maturin
+          maturin build --profile ci --out dist --interpreter "python${{ env.PY_VERSION }}"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: headroom-wheel-windows
+          path: dist/*.whl
+          retention-days: 1
+
   prefetch-model:
     needs: changes
     if: needs.changes.outputs.code == 'true'
@@ -129,7 +156,7 @@ jobs:
           python-version: ${{ env.PY_VERSION }}
       - name: Cache HuggingFace model
         id: hfcache
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ~/.cache/huggingface
           key: ${{ runner.os }}-models-allMiniLM-v2
@@ -158,13 +185,13 @@ jobs:
     env:
       TRANSFORMERS_OFFLINE: "1"
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PY_VERSION }}
 
       - name: Cache pip
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ~/.cache/pip
           key: ${{ runner.os }}-pip-${{ env.PY_VERSION }}-${{ hashFiles('pyproject.toml') }}
@@ -172,7 +199,7 @@ jobs:
 
       - name: Restore HuggingFace model cache (warmed by prefetch-model)
         id: restore-hfcache
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ~/.cache/huggingface
           key: ${{ runner.os }}-models-allMiniLM-v2
@@ -201,7 +228,7 @@ jobs:
       - name: Install (CPU torch + prebuilt wheel + dev deps, no cargo rebuild)
         run: |
           python -m pip install --upgrade pip
-          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install torch --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple
           WHEEL="$(ls dist/*.whl)"
           pip install "${WHEEL}[dev]" pytest-split
           # cwd's ./headroom source tree shadows the installed wheel; copy the
@@ -252,18 +279,18 @@ jobs:
     env:
       FASTEMBED_CACHE_PATH: ${{ github.workspace }}/.fastembed-cache
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PY_VERSION }}
       - name: Cache pip
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ~/.cache/pip
           key: ${{ runner.os }}-pip-extras-${{ hashFiles('pyproject.toml') }}
           restore-keys: ${{ runner.os }}-pip-extras-
       - name: Cache fastembed model
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ${{ github.workspace }}/.fastembed-cache
           key: ${{ runner.os }}-fastembed-bge-small-v1
@@ -275,7 +302,7 @@ jobs:
       - name: Install (CPU torch + wheel[dev,relevance])
         run: |
           python -m pip install --upgrade pip
-          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install torch --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple
           WHEEL="$(ls dist/*.whl)"
           pip install "${WHEEL}[dev,relevance]"
           SITE="$(python -c 'import sysconfig; print(sysconfig.get_path("platlib"))')"
@@ -305,7 +332,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PY_VERSION }}
@@ -317,7 +344,7 @@ jobs:
       - name: Install (CPU torch + wheel[dev,agno])
         run: |
           python -m pip install --upgrade pip
-          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install torch --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple
           WHEEL="$(ls dist/*.whl)"
           pip install "${WHEEL}[dev,agno]"
           SITE="$(python -c 'import sysconfig; print(sysconfig.get_path("platlib"))')"
@@ -331,7 +358,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PY_VERSION }}
@@ -343,7 +370,7 @@ jobs:
       - name: Install (CPU torch + wheel[dev] + playwright)
         run: |
           python -m pip install --upgrade pip
-          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install torch --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple
           WHEEL="$(ls dist/*.whl)"
           pip install "${WHEEL}[dev]" playwright
           SITE="$(python -c 'import sysconfig; print(sysconfig.get_path("platlib"))')"
@@ -372,7 +399,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - uses: wagoid/commitlint-github-action@v6
@@ -385,12 +412,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
       - name: Cache pip
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ~/.cache/pip
           key: ${{ runner.os }}-pip-build-${{ hashFiles('pyproject.toml') }}
@@ -418,10 +445,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Cache actionlint + act
         id: tools-cache
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: |
             /usr/local/bin/actionlint
@@ -451,7 +478,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
@@ -495,7 +522,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
@@ -512,7 +539,7 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v6
         with:
           python-version: "3.11"

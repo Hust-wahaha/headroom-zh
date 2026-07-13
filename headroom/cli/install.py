@@ -59,11 +59,26 @@ def _require_manifest(profile: str) -> DeploymentManifest:
     return manifest
 
 
-def _start_deployment(manifest: DeploymentManifest) -> None:
+def _start_deployment(manifest: DeploymentManifest, *, assume_start_lock: bool = False) -> None:
+    if not assume_start_lock:
+        with acquire_runtime_start_lock(manifest.profile) as acquired:
+            if not acquired:
+                click.echo(f"Deployment '{manifest.profile}' start is already in progress.")
+                return
+            _start_deployment(manifest, assume_start_lock=True)
+            return
+
+    if probe_ready(manifest.health_url):
+        return
     if manifest.preset == InstallPreset.PERSISTENT_DOCKER.value and shutil.which("docker") is None:
         raise click.ClickException(
             "Docker is required for this deployment but 'docker' was not found on PATH."
         )
+    if runtime_status(manifest) == "running":
+        if wait_ready(manifest, timeout_seconds=_STARTUP_READY_TIMEOUT_SECONDS):
+            return
+        stop_runtime(manifest)
+
     try:
         if manifest.preset == InstallPreset.PERSISTENT_DOCKER.value:
             start_persistent_docker(manifest)
@@ -77,7 +92,7 @@ def _start_deployment(manifest: DeploymentManifest) -> None:
     except subprocess.CalledProcessError as e:
         raise click.ClickException(
             f"Cannot start deployment '{manifest.profile}': command failed "
-            f"({' '.join(map(str, e.cmd)) if isinstance(e.cmd, (list, tuple)) else e.cmd})"
+            f"({' '.join(map(str, e.cmd)) if isinstance(e.cmd, list | tuple) else e.cmd})"
         ) from None
 
     if not wait_ready(manifest, timeout_seconds=45):
@@ -276,7 +291,7 @@ def install_apply(
             _restore_deployment(existing)
         # Surface non-Click errors (OSError, CalledProcessError, …) as a clean
         # message rather than a raw traceback; Click errors pass through as-is.
-        if isinstance(exc, (click.ClickException, click.Abort)):
+        if isinstance(exc, click.ClickException | click.Abort):
             raise
         raise click.ClickException(f"Failed to install deployment '{profile}': {exc}") from exc
 
@@ -409,5 +424,5 @@ def install_agent_ensure(profile: str) -> None:
                 click.echo(f"Deployment '{profile}' is healthy.")
                 return
             stop_runtime(manifest)
-        _start_deployment(manifest)
+        _start_deployment(manifest, assume_start_lock=True)
     click.echo(f"Deployment '{profile}' is healthy.")

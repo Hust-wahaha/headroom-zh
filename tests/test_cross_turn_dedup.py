@@ -4,11 +4,15 @@ import re
 
 from headroom.transforms.cross_turn_dedup import (
     DedupBlock,
+    _num_and_key,
     dedup_blocks,
     is_prefix_monotonic,
 )
 
-_PTR_RE = re.compile(r"identical to output shown earlier \(turn (\d+), lines (\d+)-(\d+)\)")
+# Compact fold pointer: ``[↑<N>L same as msg <ref>[ <±delta>L]: '<anchor>']`` —
+# span length + referenced msg + optional line-number offset + a truncated
+# first-line anchor (no explicit line range; recovery locates the span by anchor).
+_FOLD_RE = re.compile(r"\[↑(\d+)L same as msg (\d+)(?: ([+-]\d+)L)?: '([^']*)'\]")
 
 
 def _blk(text, turn, protected=False):
@@ -24,20 +28,33 @@ def _code(prefix, n):
 
 
 def _reconstruct(orig_blocks, out_blocks):
-    """Replace each pointer with the referenced turn's original lines and assert
-    it reproduces the original block — proves references are faithful & in-context."""
+    """Replace each fold pointer with the referenced msg's original lines and assert
+    it reproduces the original block — proves references are faithful & in-context.
+
+    The compact pointer names the ref msg + span length + a first-line anchor (not
+    an explicit line range), so recovery locates the span by its anchor in the
+    referenced message and takes ``<N>`` lines. (All test spans are unnumbered, so
+    delta is always absent; a non-zero delta would renumber on the way out.)"""
     by_turn = {b.turn: b.text.split("\n") for b in orig_blocks}
+
+    def _content(line):
+        return _num_and_key(line)[2].strip()
+
     for orig, out in zip(orig_blocks, out_blocks):
         if orig.protected:
             assert out.text == orig.text
             continue
         rebuilt = []
         for line in out.text.split("\n"):
-            m = _PTR_RE.search(line)
-            if m and line.startswith("[headroom:"):
-                t, a, b = int(m.group(1)), int(m.group(2)), int(m.group(3))
-                assert t < orig.turn, "reference must point to an EARLIER turn"
-                rebuilt.extend(by_turn[t][a : b + 1])
+            m = _FOLD_RE.search(line)
+            if m and line.lstrip().startswith("[↑"):
+                assert m.group(3) is None, "unexpected delta for an unnumbered span"
+                n, ref, anchor = int(m.group(1)), int(m.group(2)), m.group(4)
+                assert ref < orig.turn, "reference must point to an EARLIER msg"
+                core = anchor[:-3] if anchor.endswith("...") else anchor
+                ref_lines = by_turn[ref]
+                idx = next(i for i, rl in enumerate(ref_lines) if _content(rl).startswith(core))
+                rebuilt.extend(ref_lines[idx : idx + n])
             else:
                 rebuilt.append(line)
         assert "\n".join(rebuilt) == orig.text, f"turn {orig.turn} not faithfully reconstructable"
@@ -48,7 +65,7 @@ def test_verbatim_reread_is_folded_keep_earliest():
     blocks = [_blk(f"cat merge.py\n{span}\ntail", 1), _blk(f"sed run\n{span}\nmore", 5)]
     out, stats = dedup_blocks(blocks)
     assert out[0].text == blocks[0].text  # earliest untouched
-    assert "[headroom:" in out[1].text  # later occurrence folded
+    assert "[↑" in out[1].text  # later occurrence folded
     assert stats["spans_folded"] == 1
     _reconstruct(blocks, out)
 
@@ -65,7 +82,7 @@ def test_cache_safety_prefix_monotonic():
 
 
 def test_below_min_lines_not_folded():
-    span = _code("", 3)  # below min_lines (7)
+    span = _code("", 2)  # below min_lines (3)
     blocks = [_blk(span, 1), _blk(span, 2)]
     out, stats = dedup_blocks(blocks)
     assert stats["spans_folded"] == 0
@@ -95,7 +112,7 @@ def test_protected_block_not_rewritten_but_is_reference_target():
     ]
     out, stats = dedup_blocks(blocks)
     assert out[0].text == blocks[0].text
-    assert "[headroom:" in out[1].text
+    assert "[↑" in out[1].text
     _reconstruct(blocks, out)
 
 
@@ -159,8 +176,8 @@ def test_apply_dedups_reread_and_keeps_prefix_stable():
     # Dedup fired on the later re-read (turn t2), earliest (t1) untouched.
     later = out2[-1]["content"][0]["content"]
     earlier = out2[2]["content"][0]["content"]
-    assert "[headroom:" in later
-    assert "[headroom:" not in earlier and span in earlier
+    assert "[↑" in later
+    assert "[↑" not in earlier and span in earlier
 
     # CACHE-SAFETY at the router level: appending turn t2 did NOT change any
     # earlier message's emitted bytes → the prompt-cache prefix is stable.
@@ -189,7 +206,7 @@ def test_apply_no_dedup_when_flag_off():
     r = ContentRouter(ContentRouterConfig(lossless=True, enable_cross_turn_dedup=False))
     out = r.apply(copy.deepcopy(msgs), _mk_tok()).messages
     joined = "".join(b["content"] for m in out for b in m["content"] if isinstance(b, dict))
-    assert "[headroom:" not in joined
+    assert "[↑" not in joined
 
 
 def test_apply_dedup_runs_in_ccr_mode_too():
@@ -214,4 +231,77 @@ def test_apply_dedup_runs_in_ccr_mode_too():
         for b in m["content"]
         if isinstance(b, dict)
     )
-    assert "[headroom:" in joined  # dedup fired despite lossless=False
+    assert "[↑" in joined  # dedup fired despite lossless=False
+
+
+# --------------------------------------------------------------------------
+# No dangling reference: dedup folds only against content present in the array
+# it processes (it runs last, over the final sent messages). If compaction
+# already removed the original, there is nothing earlier to reference → verbatim.
+# --------------------------------------------------------------------------
+def test_no_fold_when_original_absent_fallback():
+    span = _code("", 8)
+    # Only the LATER read survives; its original was compacted out of the array.
+    blocks = [_blk("unrelated log\n" + _code("z", 8), 1), _blk(f"sed\n{span}\nmore", 5)]
+    out, stats = dedup_blocks(blocks)
+    assert stats["spans_folded"] == 0
+    assert out[1].text == blocks[1].text and "[↑" not in out[1].text
+
+
+# --------------------------------------------------------------------------
+# Shape-agnostic CODE-READ coverage: a file read gets deduped wherever it lands
+# — role:tool, role:function, or a text-harness role:user string — keyed off the
+# read OUTCOME, never ordinary user prose.
+# --------------------------------------------------------------------------
+def _dedup_only(messages):
+    """Run ONLY the cross-turn dedup pass (no per-block compression) on a raw
+    message array, isolating extraction + fold across message shapes."""
+    from headroom.transforms.content_router import ContentRouter, ContentRouterConfig
+
+    r = ContentRouter(ContentRouterConfig(lossless=True, enable_cross_turn_dedup=True))
+    return r._cross_turn_dedup_messages(messages, 0, [], None)
+
+
+def _readspan():
+    return "\n".join(f"    result_{i} = compute_overdraft(business_id={i})" for i in range(10))
+
+
+def test_dedup_folds_user_string_read_observation():
+    # Text-harness shape: the read output arrives as a role:user STRING after an
+    # assistant fenced `cat`. The later identical read folds; earliest stays intact.
+    span = _readspan()
+    asst = {"role": "assistant", "content": "```bash\ncat report.py\n```"}
+    msgs = [
+        asst,
+        {"role": "user", "content": span},  # read #1 (reference target)
+        asst,
+        {"role": "user", "content": span},  # read #2 (duplicate) -> folds
+    ]
+    out = _dedup_only(msgs)
+    assert "[↑" in out[3]["content"]
+    assert out[1]["content"] == span
+
+
+def test_dedup_does_not_fold_plain_user_prose():
+    # A duplicated ORDINARY user message (no preceding read command) must stay
+    # verbatim — user intent is never folded.
+    prose = "\n".join(f"please also make sure case {i} is handled carefully" for i in range(10))
+    msgs = [
+        {"role": "user", "content": prose},
+        {"role": "assistant", "content": "understood"},
+        {"role": "user", "content": prose},  # duplicate prose -> must NOT fold
+    ]
+    out = _dedup_only(msgs)
+    assert "[↑" not in out[2]["content"] and out[2]["content"] == prose
+
+
+def test_dedup_folds_role_function_output():
+    # Legacy OpenAI role:function tool output — same operation, different label.
+    span = _readspan()
+    msgs = [
+        {"role": "function", "name": "read_file", "content": span},
+        {"role": "assistant", "content": "let me re-check"},
+        {"role": "function", "name": "read_file", "content": span},  # dup -> folds
+    ]
+    out = _dedup_only(msgs)
+    assert "[↑" in out[2]["content"]

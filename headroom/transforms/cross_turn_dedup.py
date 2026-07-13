@@ -28,6 +28,7 @@ Pure stdlib, deterministic, never raises (returns input unchanged on any error).
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 __all__ = ["DedupBlock", "dedup_blocks", "is_prefix_monotonic"]
@@ -36,11 +37,39 @@ __all__ = ["DedupBlock", "dedup_blocks", "is_prefix_monotonic"]
 # pointer. Small dups are left alone (fragmenting context is not worth it) —
 # and a larger floor keeps the pointer comfortably shorter than the span it
 # replaces, so a fold is always a net byte win.
-DEFAULT_MIN_LINES = 7
-DEFAULT_MIN_CHARS = 120
+DEFAULT_MIN_LINES = 3
+DEFAULT_MIN_CHARS = 40
 # Cap anchor candidates examined per line so a hot line (e.g. ``    return``)
 # can't blow up matching. Deterministic: candidates are kept in first-seen order.
 MAX_ANCHOR_CANDIDATES = 16
+
+# An UNPADDED leading line-number prefix: ``123:...`` or ``123<TAB>...`` at the
+# very start of the line (grep -n / sed -n / ripgrep --heading data rows). We do
+# NOT match a padded/right-aligned prefix (``   123<TAB>`` from ``cat -n``): the
+# line must start with the digit, so ``number + delta`` re-numbers byte-exactly
+# without touching alignment padding, keeping renumbered folds strictly lossless.
+_LINENO_RE = re.compile(r"^(\d+)(:|\t)(.*)$", re.DOTALL)
+
+
+def _num_and_key(line: str) -> tuple[int | None, str, str]:
+    """Split a leading unpadded line-number.
+
+    Returns ``(number, match_key, content)``:
+      * ``number`` — the leading line number (``int``) or ``None`` if absent.
+      * ``match_key`` — the line with the leading number stripped (separator
+        kept), so two occurrences of the same content at DIFFERENT line numbers
+        share a key (e.g. ``92:foo`` and ``94:foo`` -> ``:foo``). Non-numbered
+        lines key on themselves, so exact matching is unchanged for them.
+      * ``content`` — the text after the separator, for the triviality test.
+
+    This is what makes cross-turn dedup survive an edit that renumbers a file:
+    a re-read whose line numbers all shifted by a constant still folds, and the
+    shift is carried in the pointer so the original bytes stay recoverable.
+    """
+    m = _LINENO_RE.match(line)
+    if m is None:
+        return None, line, line
+    return int(m.group(1)), m.group(2) + m.group(3), m.group(3)
 
 
 @dataclass
@@ -79,20 +108,29 @@ def _is_trivial(line: str) -> bool:
     }
 
 
-def _pointer(span: list[str], ref_turn: int, ref_line: int) -> str:
+def _pointer(span: list[str], ref_turn: int, delta: int = 0) -> str:
     """A one-line, obviously-a-reference marker naming the in-context original.
 
     Includes a first-line anchor so the model can locate the block it already
     saw. Marker-free of any ``hash=`` retrieval token: recovery is in-context
-    (the original is physically present earlier in the same request)."""
-    anchor = next((ln.strip() for ln in span if ln.strip()), "")
-    if len(anchor) > 80:
-        anchor = anchor[:77] + "..."
-    end_line = ref_line + len(span) - 1
-    return (
-        f"[headroom: {len(span)} lines identical to output shown earlier "
-        f"(turn {ref_turn}, lines {ref_line}-{end_line}) — starts: {anchor!r}]"
-    )
+    (the original is physically present earlier in the same request).
+
+    ``delta`` is the uniform line-number offset of THIS span relative to the
+    referenced original (0 for a byte-identical fold). When non-zero the span is
+    the same content re-read after an edit shifted its line numbers; the offset
+    is stated so the original the pointer names + ``delta`` reconstructs this
+    span's exact numbered bytes (recovery stays in-window)."""
+    # Compact form (~35c vs the old ~100c): the ~100c pointer made sub-7-line
+    # folds net-negative, so the abundant short (2-4 line) re-read repeats were
+    # left uncompressed. Trimming the pointer + MIN_LINES=3 lets those pay off
+    # (~4.3% -> ~6% lossless on Opus). Still no hash= token (in-context recovery)
+    # and keeps a short first-line anchor so the model can locate the original.
+    anchor = next((_num_and_key(ln)[2].strip() for ln in span if ln.strip()), "")
+    if len(anchor) > 20:
+        anchor = anchor[:17] + "..."
+    if delta:
+        return f"[↑{len(span)}L same as msg {ref_turn} {delta:+d}L: {anchor!r}]"
+    return f"[↑{len(span)}L same as msg {ref_turn}: {anchor!r}]"
 
 
 def _index_lines(
@@ -104,11 +142,15 @@ def _index_lines(
 
     Keeps first-seen order and caps the candidate list per line. Only VERBATIM
     (surviving) lines should be passed here — never the lines of a span that was
-    replaced by a pointer."""
+    replaced by a pointer. Indexed by the line-number-stripped ``match_key`` so a
+    later renumbered re-read of the same content finds this anchor."""
     for li, ln in enumerate(lines):
-        if ln is None or _is_trivial(ln):
+        if ln is None:
             continue
-        bucket = anchor_index.setdefault(ln, [])
+        _, key, content = _num_and_key(ln)
+        if _is_trivial(content):
+            continue
+        bucket = anchor_index.setdefault(key, [])
         if len(bucket) < MAX_ANCHOR_CANDIDATES:
             bucket.append((block_pos, li))
 
@@ -118,34 +160,57 @@ def _longest_match(
     start: int,
     anchor_index: dict[str, list[tuple[int, int]]],
     corpus: list[list[str | None]],
-) -> tuple[int, int, int] | None:
-    """Longest contiguous run in ``cur`` starting at ``start`` that appears
-    verbatim inside a single earlier block. Returns (length, block_pos,
-    ref_line_idx) or None. ``corpus[block_pos]`` holds that block's VERBATIM
-    lines (``None`` where a span was already folded, which breaks contiguity)."""
-    anchor = cur[start]
-    candidates = anchor_index.get(anchor)
+) -> tuple[int, int, int, int] | None:
+    """Longest contiguous run in ``cur`` starting at ``start`` whose content
+    appears in a single earlier block — allowing a UNIFORM line-number shift.
+
+    Returns ``(length, block_pos, ref_line_idx, delta)`` or ``None``. ``delta``
+    is the constant line-number offset of the run vs the referenced original
+    (0 for a byte-identical fold). ``corpus[block_pos]`` holds that block's
+    VERBATIM lines (``None`` where a span was already folded, which breaks
+    contiguity).
+
+    A run extends while each pair shares a ``match_key`` (content modulo the
+    leading line number) AND every numbered pair has the SAME numeric offset —
+    so an edit that shifts a file's numbers by a constant still folds, but a
+    non-uniform change (edit *inside* the span) ends the run at the divergence.
+    Non-numbered lines must match exactly (they carry no offset)."""
+    _, anchor_key, _ = _num_and_key(cur[start])
+    candidates = anchor_index.get(anchor_key)
     if not candidates:
         return None
     best_len = 0
     best_bp = best_li = -1
+    best_delta = 0
     for bp, li in candidates:
         block_lines = corpus[bp]
         k = 0
-        while (
-            start + k < len(cur)
-            and li + k < len(block_lines)
-            and block_lines[li + k] is not None
-            and cur[start + k] == block_lines[li + k]
-        ):
+        delta: int | None = None
+        while start + k < len(cur) and li + k < len(block_lines):
+            ca = cur[start + k]
+            cb = block_lines[li + k]
+            if cb is None:  # end of a folded block in the corpus — run ends here
+                break
+            na, ka, _ = _num_and_key(ca)
+            nb, kb, _ = _num_and_key(cb)
+            if ka != kb:
+                break  # different content -> run ends
+            if na is not None and nb is not None:
+                d = na - nb
+                if delta is None:
+                    delta = d
+                elif delta != d:
+                    break  # non-uniform shift (edit inside span) -> run ends
+            elif ca != cb:
+                break  # non-numbered line must match exactly
             k += 1
         # Deterministic tie-break: longer wins; on ties keep the earliest
         # (smallest block_pos, then line) already held in best_*.
         if k > best_len:
-            best_len, best_bp, best_li = k, bp, li
+            best_len, best_bp, best_li, best_delta = k, bp, li, (delta or 0)
     if best_len == 0:
         return None
-    return best_len, best_bp, best_li
+    return best_len, best_bp, best_li, best_delta
 
 
 def dedup_blocks(
@@ -186,7 +251,7 @@ def dedup_blocks(
                     span_text = "\n".join(span)
                     if len(span_text) >= min_chars:
                         ref_turn = blocks[m[1]].turn
-                        ptr = _pointer(span, ref_turn, m[2])
+                        ptr = _pointer(span, ref_turn, m[3])
                         out.append(ptr)
                         # Folded span is NOT verbatim in this block's output:
                         # mark None so it can't seed a later contiguous match,

@@ -163,3 +163,68 @@ def test_main_logs_memory_mcp_startup_context(monkeypatch, tmp_path, caplog) -> 
         and "resolution=dynamic-cwd" in record.message
         for record in caplog.records
     )
+
+
+def test_search_records_access_only_for_returned_memories() -> None:
+    active = Memory(content="Active preference", user_id="alice")
+    extra = Memory(content="Lower-ranked preference", user_id="alice")
+    backend = SimpleNamespace(
+        search_memories=AsyncMock(
+            return_value=[
+                SimpleNamespace(memory=active, score=0.9, related_entities=[]),
+                SimpleNamespace(memory=extra, score=0.8, related_entities=[]),
+            ]
+        ),
+        get_memory=AsyncMock(
+            side_effect=lambda memory_id: {
+                active.id: active,
+                extra.id: extra,
+            }[memory_id]
+        ),
+        record_access=AsyncMock(return_value=1),
+    )
+
+    result = asyncio.run(
+        mcp_server_mod._handle_search(
+            backend,
+            {"query": "preference", "top_k": 1},
+            "alice",
+        )
+    )
+
+    backend.record_access.assert_awaited_once_with([active.id])
+    assert "Active preference" in result[0].kwargs["text"]
+    assert "Lower-ranked preference" not in result[0].kwargs["text"]
+
+
+def test_search_does_not_record_superseded_memories() -> None:
+    superseded = Memory(content="Old preference", user_id="alice")
+    replacement = Memory(content="Current preference", user_id="alice")
+    superseded.superseded_by = replacement.id
+    backend = SimpleNamespace(
+        search_memories=AsyncMock(
+            return_value=[SimpleNamespace(memory=superseded, score=0.9, related_entities=[])]
+        ),
+        get_memory=AsyncMock(return_value=superseded),
+        record_access=AsyncMock(),
+    )
+
+    result = asyncio.run(mcp_server_mod._handle_search(backend, {"query": "preference"}, "alice"))
+
+    backend.record_access.assert_not_awaited()
+    assert result[0].kwargs["text"] == "No memories found."
+
+
+def test_search_fails_open_when_access_tracking_fails() -> None:
+    memory = Memory(content="Useful preference", user_id="alice")
+    backend = SimpleNamespace(
+        search_memories=AsyncMock(
+            return_value=[SimpleNamespace(memory=memory, score=0.9, related_entities=[])]
+        ),
+        get_memory=AsyncMock(return_value=memory),
+        record_access=AsyncMock(side_effect=RuntimeError("write failed")),
+    )
+
+    result = asyncio.run(mcp_server_mod._handle_search(backend, {"query": "preference"}, "alice"))
+
+    assert "Useful preference" in result[0].kwargs["text"]

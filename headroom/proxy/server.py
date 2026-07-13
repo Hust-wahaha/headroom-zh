@@ -140,6 +140,7 @@ from headroom.proxy.helpers import (
     jitter_delay_ms,
     retry_after_ms,
 )
+from headroom.proxy.loop_callback_failure_policy import is_known_websocket_callback_failure
 from headroom.proxy.loopback_guard import is_loopback_host
 from headroom.proxy.memory_handler import MemoryConfig, MemoryHandler
 
@@ -163,6 +164,7 @@ from headroom.proxy.request_logger import RequestLogger  # noqa: F401
 from headroom.proxy.savings_tracker import LITELLM_AVAILABLE
 from headroom.proxy.semantic_cache import SemanticCache  # noqa: F401
 from headroom.proxy.ssl_context import build_httpx_verify
+from headroom.proxy.tool_schema_savings_policy import tool_schema_saved_from_tags
 from headroom.proxy.warmup import WarmupRegistry
 from headroom.proxy.ws_session_registry import WebSocketSessionRegistry
 from headroom.subscription.base import get_quota_registry, reset_quota_registry
@@ -1791,10 +1793,8 @@ class HeadroomProxy(
         construct their body from scratch, so canonical serialization is
         correct and original bytes do not exist).
         """
-        from headroom.proxy.helpers import (
-            log_outbound_request,
-            prepare_outbound_body_bytes,
-        )
+        from headroom.proxy.body_forwarding import prepare_outbound_body_bytes
+        from headroom.proxy.helpers import log_outbound_request
 
         last_error = None
         reasons = list(mutation_reasons or [])
@@ -1885,6 +1885,16 @@ class HeadroomProxy(
                 last_error = e
 
                 if not self.config.retry_enabled or attempt >= self.config.retry_max_attempts - 1:
+                    # On exhaustion, preserve the upstream 5xx status (e.g. 503
+                    # Service Unavailable, 500, 502, 504) so the client can apply
+                    # its own retry/backoff. Collapsing every exhausted 5xx into a
+                    # generic 502 hides the retryable signal and makes clients give
+                    # up. The 429/529 overload statuses are already returned
+                    # verbatim by the RETRYABLE_OVERLOAD_STATUSES branch above and
+                    # never reach here. ConnectError/TimeoutException carry no
+                    # response, so those still raise.
+                    if isinstance(e, httpx.HTTPStatusError) and e.response is not None:
+                        return e.response
                     raise
 
                 # Exponential backoff with jitter
@@ -1995,21 +2005,35 @@ def _request_is_loopback(request: Request) -> bool:
         host_header = request.headers.get("host")
     except AttributeError:
         host_header = None
-    return is_loopback_host(client_host) and is_loopback_host_header(host_header)
 
-
-def _is_known_websocket_callback_failure(context: dict[str, Any]) -> bool:
-    """Return True iff this exact websockets callback failure shape is observed."""
-    if (
-        context.get("message")
-        != "Exception in callback Connection.connection_lost(ConnectionResetError())"
-    ):
+    # The Host-header gate is the DNS-rebinding defence and always applies.
+    if not is_loopback_host_header(host_header):
         return False
-    exception = context.get("exception")
-    return (
-        isinstance(exception, AttributeError)
-        and str(exception) == "'ClientConnection' object has no attribute 'recv_messages'"
+
+    # Genuine loopback peer (native run, or curl inside the container).
+    if is_loopback_host(client_host):
+        return True
+
+    # Containerized dashboards: when Headroom runs in a bridge-network
+    # container, a browser on the host reaches it via the container's
+    # gateway, so ``request.client.host`` is the gateway IP, not 127.0.0.1
+    # — and the per-request logs / upstream URLs get stripped even though
+    # the operator is local. Treat a peer inside an operator-configured
+    # trusted-gateway CIDR as loopback-equivalent. Opt-in and empty by
+    # default (HEADROOM_PROXY_TRUSTED_GATEWAY_CIDRS), so this is a no-op
+    # unless the operator explicitly allow-lists their container gateway.
+    from headroom.proxy.forwarded_headers import (
+        load_trusted_gateway_cidrs,
+        peer_is_trusted_gateway,
     )
+
+    return peer_is_trusted_gateway(client_host, load_trusted_gateway_cidrs())
+
+
+_is_known_websocket_callback_failure = is_known_websocket_callback_failure
+
+
+_tool_schema_saved_from_tags = tool_schema_saved_from_tags
 
 
 def create_app(config: ProxyConfig | None = None) -> FastAPI:
@@ -2294,6 +2318,11 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
                 url=_upstream_check_cache["url"],
                 error=_upstream_check_cache["error"],
             ),
+            "kompress": _component_health(
+                enabled=not config.disable_kompress,
+                ready=proxy.warmup.kompress.status == "loaded",
+                backend=proxy.warmup.kompress.info.get("backend", None),
+            ),
         }
 
     def _runtime_payload() -> dict[str, Any]:
@@ -2392,7 +2421,9 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
 
     def _health_payload(*, include_config: bool) -> dict[str, Any]:
         checks = _health_checks()
-        ready = all(check["ready"] for check in checks.values())
+        # Kompress is an optional soft component: model downloads lazily on
+        # first use, so "not ready" (cold cache) must not degrade overall health.
+        ready = all(check["ready"] for name, check in checks.items() if name != "kompress")
         payload: dict[str, Any] = {
             "service": "headroom-proxy",
             "status": "healthy" if ready else "unhealthy",
@@ -2945,6 +2976,7 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
                 "total_latency_ms": log.get("total_latency_ms"),
                 "transforms_applied": log.get("transforms_applied", []),
                 "waste_signals": log.get("waste_signals"),
+                "tool_schema_saved_tokens": _tool_schema_saved_from_tags(log.get("tags")),
             }
             for log in recent_request_logs
             if log.get("input_tokens_original") is not None
@@ -3056,6 +3088,9 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
         )
         rtk_tokens_avoided = cli_tokens_avoided if cli_filtering_tool == "rtk" else 0
         lean_ctx_tokens_avoided = cli_tokens_avoided if cli_filtering_tool == "lean-ctx" else 0
+        cli_filtering_available = bool(
+            cli_filtering_stats and cli_filtering_stats.get("installed", False)
+        )
 
         # Calculate total tokens before Headroom-side reduction. Proxy
         # compression and the configured context tool both remove tokens before
@@ -3077,6 +3112,19 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
         # schema size. So the savings rate is plain `saved / attempted`
         # — adding `saved` again would double-count.
         attempted_input_tokens = getattr(m, "attempted_input_tokens_total", 0)
+        # New-content denominator: what the provider actually billed as
+        # non-cache-read input (uncached + cache-write tokens, summed
+        # across providers from response usage). Unlike
+        # `proxy_total_before_compression`, this does NOT recount the
+        # full transcript on every turn — a long session's history is
+        # served from prefix cache, not re-billed, so it doesn't belong
+        # in a denominator that claims to measure what compression had
+        # any power over. Tokens Headroom removed never reached the
+        # provider at all, so they're added back to form the baseline.
+        _pc_totals = prefix_cache_stats.get("totals", {})
+        new_input_tokens = int(_pc_totals.get("uncached_input_tokens", 0) or 0) + int(
+            _pc_totals.get("cache_write_tokens", 0) or 0
+        )
 
         # Build human-readable summary
         summary = _build_session_summary(
@@ -3126,6 +3174,19 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
         display_session = persistent_savings.get("display_session", {})
         recent_request_logs = proxy.logger.get_recent(10_000) if proxy.logger else []
         recent_request_payload = _build_recent_request_payload()
+
+        # Tool-schema deferral savings: tool-definition tokens kept out of the
+        # model's context by deferring heavy schemas until they're needed
+        # (native tool-search injection + any registered turn-hook tools
+        # rewrite). Attributed to Headroom only — see _tool_schema_saved_from_tags.
+        # Aggregated over the recent request-log window.
+        tool_schema_tokens = 0
+        tool_schema_requests = 0
+        for _ts_log in recent_request_logs:
+            _ts_saved = _tool_schema_saved_from_tags(_ts_log.get("tags"))
+            if _ts_saved > 0:
+                tool_schema_tokens += _ts_saved
+                tool_schema_requests += 1
         agent_usage = _build_agent_usage_summary(
             recent_request_logs,
             requests_by_provider=dict(m.requests_by_provider),
@@ -3170,6 +3231,7 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
                     "cli_filtering": {
                         "tool": cli_filtering_tool,
                         "label": cli_filtering_label,
+                        "available": cli_filtering_available,
                         "tokens": cli_tokens_avoided,
                         "tokens_saved": cli_tokens_avoided,
                         "session": cli_filtering_session,
@@ -3225,6 +3287,20 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
                             "(A/B holdout), always with a confidence band."
                         ),
                     },
+                    "tool_search": {
+                        "tokens": tool_schema_tokens,
+                        "tokens_saved": tool_schema_tokens,
+                        "requests": tool_schema_requests,
+                        "window": len(recent_request_logs),
+                        "description": (
+                            "Tool-definition tokens kept out of the model's context "
+                            "by deferring heavy tool schemas until they're searched "
+                            "for. Counted only when Headroom performed the deferral — "
+                            "not when the client (e.g. Claude Code / Codex) already "
+                            "had tool search enabled. Aggregated over the recent "
+                            "request window."
+                        ),
+                    },
                 },
             },
             "requests": {
@@ -3274,6 +3350,27 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
                 "proxy_savings_percent": round(
                     (proxy_compression_tokens / proxy_total_before_compression * 100)
                     if proxy_total_before_compression > 0
+                    else 0,
+                    2,
+                ),
+                # New-content-relative rate: savings as a fraction of the
+                # input that would have newly entered context (provider-
+                # billed uncached + cache-write tokens, plus the tokens
+                # compression removed before they could be billed). The
+                # whole-request ratios above recount the FULL transcript
+                # every turn, so a 200-turn session counts its history
+                # 200x into the denominator and long-running sessions
+                # (1M-context models never compact) read as ~0% no
+                # matter how well compression performs on new content.
+                # Guarded on new_input_tokens > 0 (not the full sum): the
+                # cache accumulators only see requests with cache
+                # activity, so a deployment with no cache metrics (e.g.
+                # Bedrock) would otherwise divide savings by themselves
+                # and report ~100%. No usage data -> report 0, not a lie.
+                "new_input_tokens": new_input_tokens,
+                "new_input_savings_percent": round(
+                    (proxy_compression_tokens / (new_input_tokens + proxy_compression_tokens) * 100)
+                    if new_input_tokens > 0
                     else 0,
                     2,
                 ),
@@ -3438,9 +3535,7 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
             "context_tool": {
                 "configured": cli_filtering_tool,
                 "label": cli_filtering_label,
-                "available": bool(
-                    cli_filtering_stats and cli_filtering_stats.get("installed", False)
-                ),
+                "available": cli_filtering_available,
                 "stats": cli_filtering_stats,
             },
             "cli_filtering": cli_filtering_stats,
@@ -3562,11 +3657,13 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
         """Get durable proxy compression history plus display-session state.
 
         The JSON payload also carries a ``cli_filtering`` key with live RTK
-        stats. This is a curated subset (``tool``, ``label``, ``lifetime``,
-        ``session``) tailored to the Historical tab, not the full
-        ``_get_context_tool_stats()`` payload that ``/stats`` exposes. It is
-        ``None`` when RTK is absent or its stats cannot be read, so the tab
-        simply hides the card rather than erroring.
+        stats. This is a curated subset (``tool``, ``label``, ``available``,
+        ``lifetime``, ``session``) tailored to the Historical tab, not the
+        full ``_get_context_tool_stats()`` payload that ``/stats`` exposes.
+        It is ``None`` only when the stats read hard-fails; when the tool is
+        merely absent, ``cli_filtering`` stays populated with
+        ``available: False`` and zeroed counters so the tab can distinguish
+        "not installed" from "installed, no data yet."
         """
         if format == "csv":
             filename = f"headroom-stats-history-{series}.csv"
@@ -3593,6 +3690,7 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
             history["cli_filtering"] = {
                 "tool": str(cli_stats.get("tool", "rtk")),
                 "label": str(cli_stats.get("label", "RTK")),
+                "available": bool(cli_stats.get("installed", False)),
                 "lifetime": cli_stats.get("lifetime", {}),
                 "session": cli_stats.get("session", {}),
             }
@@ -4262,7 +4360,13 @@ def _proxy_config_from_env() -> ProxyConfig:
         periodic_toin_stats_enabled=_get_env_bool("HEADROOM_PERIODIC_TOIN_STATS", True),
         proxy_token=os.environ.get("HEADROOM_PROXY_TOKEN") or None,
         offline=_get_env_bool("HEADROOM_OFFLINE", False),
-        mode=normalize_proxy_mode(_get_env_str("HEADROOM_MODE", PROXY_MODE_TOKEN)),
+        # Default mode is CACHE (Headroom's coding posture): delta-only compression
+        # at ~0 prefix-cache busts. HEADROOM_MODE overrides.
+        mode=normalize_proxy_mode(_get_env_str("HEADROOM_MODE", PROXY_MODE_CACHE)),
+        # Default savings profile is "coding" so proxy_pipeline_kwargs applies its
+        # posture (compress_user, protect_recent, min_tokens). HEADROOM_SAVINGS_PROFILE
+        # overrides.
+        savings_profile=os.environ.get("HEADROOM_SAVINGS_PROFILE") or "coding",
         read_maturation=_get_env_bool("HEADROOM_READ_MATURATION", False),
         read_maturation_quiesce_turns=_get_env_int("HEADROOM_READ_MATURATION_QUIESCE_TURNS", 5),
         read_maturation_max_hold_turns=_get_env_int("HEADROOM_READ_MATURATION_MAX_HOLD_TURNS", 25),
@@ -4273,6 +4377,12 @@ def _proxy_config_from_env() -> ProxyConfig:
 
 
 def create_app_from_env() -> FastAPI:
+    # Seed the coding-profile defaults into the process env BEFORE reading config,
+    # so the uvicorn factory launch gets Headroom's out-of-box posture (cache mode,
+    # tool-search, dedupe, read protection, …). setdefault → explicit env wins.
+    from headroom.agent_savings import seed_proxy_env_defaults
+
+    seed_proxy_env_defaults()
     return create_app(_proxy_config_from_env())
 
 
@@ -4310,6 +4420,16 @@ def run_server(
     if not FASTAPI_AVAILABLE:
         print("ERROR: FastAPI required. Install: pip install fastapi uvicorn httpx")
         sys.exit(1)
+
+    # Seed the request-time coding-profile toggles (tool-search, dedupe, read
+    # protection, lossless→lossy, effort-router, block-char floor) into the
+    # process env before serving, so downstream per-request readers pick them up.
+    # Done here (not in the CLI command) so unit tests that mock run_server never
+    # mutate os.environ. setdefault → explicit env still wins. MODE / profile are
+    # already resolved into `config` above via their inline defaults.
+    from headroom.agent_savings import seed_proxy_env_defaults
+
+    seed_proxy_env_defaults()
 
     config = config or ProxyConfig()
     code_aware_status = _get_code_aware_banner_status(config)
@@ -4918,10 +5038,10 @@ if __name__ == "__main__":
         protect_tool_results=frozenset(protect_tool_results)
         if protect_tool_results
         else frozenset(),
-        mode=normalize_proxy_mode(_get_env_str("HEADROOM_MODE", PROXY_MODE_TOKEN)),
+        mode=normalize_proxy_mode(_get_env_str("HEADROOM_MODE", PROXY_MODE_CACHE)),
         compress_user_messages=args.compress_user_messages
         or _get_env_bool("HEADROOM_COMPRESS_USER_MESSAGES", False),
-        savings_profile=os.environ.get("HEADROOM_SAVINGS_PROFILE") or None,
+        savings_profile=os.environ.get("HEADROOM_SAVINGS_PROFILE") or "coding",
         # Default 0.4 keep-ratio so the Kompress text (prose/code) path compresses
         # meaningfully out of the box; HEADROOM_TARGET_RATIO overrides.
         target_ratio=(

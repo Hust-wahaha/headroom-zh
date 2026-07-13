@@ -30,15 +30,19 @@ import pytest
 from fastapi.testclient import TestClient
 
 from headroom.pipeline import PipelineStage
-from headroom.proxy.helpers import (
+from headroom.proxy.body_forwarding import (
     BodyMutationTracker,
+    OutboundBody,
+    get_python_forwarder_mode,
+    prepare_outbound_body_bytes,
+    select_outbound_body,
+    serialize_body_canonical,
+)
+from headroom.proxy.helpers import (
     _reset_session_beta_tracker_for_test,
     append_text_to_latest_user_chat_message,
-    get_python_forwarder_mode,
     get_session_beta_tracker,
     log_outbound_request,
-    prepare_outbound_body_bytes,
-    serialize_body_canonical,
 )
 from headroom.proxy.server import ProxyConfig, create_app
 
@@ -127,6 +131,26 @@ def test_prepare_outbound_unmutated_returns_passthrough_bytes() -> None:
     )
     assert out == original
     assert source == "passthrough"
+
+
+def test_select_outbound_body_returns_value_object() -> None:
+    original = b'{"a":1}'
+    outbound = select_outbound_body(
+        body={"a": 1},
+        original_body_bytes=original,
+        body_mutated=False,
+        forwarder_mode="byte_faithful",
+    )
+    assert outbound == OutboundBody(content=original, source="passthrough")
+
+
+def test_helpers_preserve_body_forwarding_compatibility_exports() -> None:
+    from headroom.proxy import helpers
+
+    assert helpers.BodyMutationTracker is BodyMutationTracker
+    assert helpers.get_python_forwarder_mode is get_python_forwarder_mode
+    assert helpers.prepare_outbound_body_bytes is prepare_outbound_body_bytes
+    assert helpers.serialize_body_canonical is serialize_body_canonical
 
 
 def test_prepare_outbound_mutated_uses_canonical() -> None:

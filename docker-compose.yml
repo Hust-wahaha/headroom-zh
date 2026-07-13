@@ -14,6 +14,8 @@ services:
       # if you want to use a custom OpenAI-compatible API endpoint,
       # uncomment and set the following line with the desired URL
       # - OPENAI_TARGET_API_URL=https://api.x.ai
+      # CLI-filtering dashboard figures require the `rtk` binary inside this
+      # container; it is not installed by this image. See docs/content/docs/docker-install.mdx.
     ports:
       - "8787:8787"
     volumes:

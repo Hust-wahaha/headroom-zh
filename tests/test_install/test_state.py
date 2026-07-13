@@ -2,8 +2,16 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from headroom.install.models import ArtifactRecord, DeploymentManifest, ManagedMutation
-from headroom.install.state import delete_manifest, list_manifests, load_manifest, save_manifest
+from headroom.install.state import (
+    ManifestError,
+    delete_manifest,
+    list_manifests,
+    load_manifest,
+    save_manifest,
+)
 
 
 def _manifest() -> DeploymentManifest:
@@ -34,6 +42,33 @@ def test_save_and_load_manifest_round_trip(monkeypatch, tmp_path: Path) -> None:
     assert loaded.profile == "default"
     assert loaded.mutations[0].kind == "shell-block"
     assert loaded.artifacts[0].kind == "script"
+
+
+def test_load_manifest_raises_manifest_error_on_corrupt_payload(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    # Simulate a crash mid-write: a truncated/garbage manifest left on disk.
+    profile_dir = tmp_path / ".headroom" / "deploy" / "default"
+    profile_dir.mkdir(parents=True)
+    (profile_dir / "manifest.json").write_text("{not json", encoding="utf-8")
+
+    # A present-but-corrupt manifest surfaces a typed ManifestError so callers can
+    # report cleanly or degrade, rather than a raw JSONDecodeError traceback.
+    with pytest.raises(ManifestError):
+        load_manifest("default")
+
+
+def test_save_manifest_writes_atomically(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    save_manifest(_manifest())
+
+    # No leftover temp file from the atomic write; only the manifest itself.
+    profile_dir = tmp_path / ".headroom" / "deploy" / "default"
+    assert sorted(p.name for p in profile_dir.iterdir()) == ["manifest.json"]
+    # And the persisted manifest still round-trips.
+    assert load_manifest("default") is not None
 
 
 def test_list_manifests_ignores_invalid_payloads(monkeypatch, tmp_path: Path) -> None:

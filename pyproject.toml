@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "headroom-ai"
-version = "0.29.0"
+version = "0.31.0"
 description = "The Context Optimization Layer for LLM Applications - Cut costs by 50-90%"
 readme = "README.md"
 license = "Apache-2.0"
@@ -93,13 +93,15 @@ proxy-prod = [
 # The 0.x line (>=0.10,<1.0) returns standalone tree_sitter objects as expected.
 code = [
     "tree-sitter-language-pack>=0.10.0,<1.0",
-    "tree-sitter>=0.25.2,<0.26",
+    "tree-sitter>=0.25.2,<0.27",
 ]
 # ML-based compression with Kompress (ModernBERT).
 # (The legacy [llmlingua] extra was removed in 0.9.x — no live code path used it.
 # Use [ml] for the supported ML compression dependencies.)
 ml = [
-    "torch>=2.12.1",
+    # PyTorch does not publish wheels for macOS 15 x86_64 at this floor, which
+    # makes `headroom-ai[all]` unsatisfiable on Intel Macs (#1931).
+    "torch>=2.12.1; sys_platform != 'darwin' or platform_machine != 'x86_64'",
     "transformers>=4.30.0,<6.0",
     "peft>=0.11.0",
     "ms-swift>=3.0.0",
@@ -116,7 +118,7 @@ ml = [
 # [memory]) fail on any machine without a compiler — see #1368.
 memory = [
     "sqlite-vec>=0.1.6",
-    "sentence-transformers>=2.2.0,<6.0",
+    "sentence-transformers>=2.2.0,<6.0; sys_platform != 'darwin' or platform_machine != 'x86_64'",
 ]
 # Optional HNSW vector backend. Needs a C++ toolchain to build hnswlib, so it is
 # kept out of [memory] and [all]; opt in with `pip install headroom-ai[vector]`
@@ -214,7 +216,7 @@ mcp = [
 voice = [
     "onnxruntime>=1.16.0",
     "transformers>=4.30.0,<6.0",
-    "torch>=2.12.1",
+    "torch>=2.12.1; sys_platform != 'darwin' or platform_machine != 'x86_64'",
 ]
 # Voice training (includes voice deps + training extras)
 voice-train = [
@@ -225,7 +227,7 @@ voice-train = [
 # Evaluation framework
 evals = [
     "datasets>=2.14.0",
-    "sentence-transformers>=2.2.0,<6.0",
+    "sentence-transformers>=2.2.0,<6.0; sys_platform != 'darwin' or platform_machine != 'x86_64'",
     "numpy>=1.24.0",
     "scikit-learn>=1.3.0",
     "anthropic>=0.18.0",
@@ -281,12 +283,11 @@ dev = [
 # `benchmark` is deliberately EXCLUDED from `[all]`. It installs the
 # EleutherAI lm-evaluation-harness (lm-eval), which headroom invokes as an
 # external subprocess (`python -m lm_eval`) — it is never imported as a
-# library, so it is not a true runtime dependency. lm-eval pulls two
-# transitive deps with unpatchable High CVEs (sqlitedict CVE-2024-35515,
-# nltk CVE-2026-54293 via rouge-score), neither of which has an upstream
-# fix. Keeping `benchmark` out of `[all]` means `pip install
-# headroom-ai[all]` is CVE-free; researchers who need the accuracy harness
-# opt in explicitly with `pip install headroom-ai[benchmark]`.
+# library, so it is not a true runtime dependency. lm-eval pulls sqlitedict
+# CVE-2024-35515, which has no upstream fix. Keeping `benchmark` out of
+# `[all]` means `pip install headroom-ai[all]` is CVE-free; researchers who
+# need the accuracy harness opt in explicitly with `pip install
+# headroom-ai[benchmark]`.
 all = [
     "headroom-ai[proxy,code,ml,memory,relevance,image,reports,otel,evals,voice,html,mcp,spreadsheet]",
 ]
@@ -327,6 +328,8 @@ constraint-dependencies = [
     "langsmith>=0.9.0",
     # CVE-2026-49825 (High, XSS) — transitive via lxml[html-clean]; fix at 0.4.5
     "lxml-html-clean>=0.4.5",
+    # CVE-2026-54293 (High) — transitive via rouge-score/lm-eval; fix at 3.10.0
+    "nltk>=3.10.0",
 ]
 
 # Pin the project's package index to public PyPI. Without this, `uv lock`

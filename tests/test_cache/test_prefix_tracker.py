@@ -393,6 +393,38 @@ class TestSessionTrackerStore:
 
         assert id_a != id_b
 
+    def test_compute_session_id_distinguishes_top_level_system(self, store):
+        """Anthropic carries the system prompt as a top-level field (not a
+        role:'system' message). The handler folds it in as a synthetic system
+        message so two conversations with the same model and turns but different
+        system prompts get distinct ids — otherwise they share one tracker and
+        their sticky state cross-contaminates. This exercises that mechanism."""
+
+        class MockRequest:
+            headers = {}
+
+        turns = [{"role": "user", "content": "hello"}]
+
+        def with_system(system):
+            # Mirror what handlers/anthropic.py does for the top-level system.
+            return [{"role": "system", "content": system}, *turns]
+
+        id_a = store.compute_session_id(
+            MockRequest(), "claude-3", with_system("You are a Python expert.")
+        )
+        id_b = store.compute_session_id(
+            MockRequest(), "claude-3", with_system("You are a Rust expert.")
+        )
+        assert id_a != id_b
+
+        # A list-of-text-blocks system folds the same text as the string form.
+        id_a_list = store.compute_session_id(
+            MockRequest(),
+            "claude-3",
+            with_system([{"type": "text", "text": "You are a Python expert."}]),
+        )
+        assert id_a_list == id_a
+
     def test_compute_session_id_is_stable_when_only_non_system_turns_change(self, store):
         """Appending non-system turns should keep the same fallback session id."""
 

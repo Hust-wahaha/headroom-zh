@@ -48,14 +48,18 @@ except ImportError:
 SCHEMA_VERSION = 1
 UNKNOWN = "unknown"
 
-DEFAULT_RETENTION_DAYS = 365
+# Report windows never look back further than 30 days, and events older than
+# this are pruned from disk, keeping the JSONL small.
+MAX_RETENTION_DAYS = 30
+DEFAULT_RETENTION_DAYS = 30
 # Blended input price ($/token) used only when litellm cannot price the model.
 # Mirrors the ~$3 / 1M input-token assumption the MCP stats path already uses.
 DEFAULT_FALLBACK_INPUT_COST_PER_TOKEN = 3.0 / 1_000_000
 
 # Disk hygiene: compact the ledger once it grows past this size. Retention is
 # also enforced on read, so accuracy never depends on compaction having run.
-_COMPACT_SIZE_BYTES = 8 * 1024 * 1024
+# Small because retention is only 30 days — the file should never be large.
+_COMPACT_SIZE_BYTES = 1 * 1024 * 1024
 
 
 def _utc_now() -> datetime:
@@ -286,6 +290,9 @@ def aggregate_savings(
     """Aggregate the durable ledger into lifetime / windowed / per-dimension views."""
 
     now = now or _utc_now()
+    # Hard-cap the lookback at 30 days regardless of caller input (0/None means
+    # "use the cap", never "unbounded"), keeping the report bounded and small.
+    retention_days = max(1, min(retention_days or MAX_RETENTION_DAYS, MAX_RETENTION_DAYS))
     events = _read_events(path, retention_days=retention_days, now=now)
 
     # "Today" is local-calendar-day; the 7-day window is a rolling 168h.
@@ -294,7 +301,9 @@ def aggregate_savings(
     )
     week_cutoff = now - timedelta(days=7)
 
-    all_time = _Bucket()
+    # All retained events are within the 30-day cap, so this bucket doubles as
+    # both the "Last 30 days" window and the (now 30-day-bounded) lifetime view.
+    windowed = _Bucket()
     today = _Bucket()
     last_7 = _Bucket()
     by_model: dict[str, _Bucket] = {}
@@ -309,7 +318,7 @@ def aggregate_savings(
         except (TypeError, ValueError):
             cost = 0.0
 
-        all_time.add(saved=saved, before=before, cost=cost)
+        windowed.add(saved=saved, before=before, cost=cost)
         if ts >= today_cutoff:
             today.add(saved=saved, before=before, cost=cost)
         if ts >= week_cutoff:
@@ -328,11 +337,11 @@ def aggregate_savings(
     return SavingsReport(
         path=str(_resolve_path(path)),
         schema_version=SCHEMA_VERSION,
-        lifetime=all_time.to_dict(),
+        lifetime=windowed.to_dict(),
         windows={
             "today": today.to_dict(),
             "last_7_days": last_7.to_dict(),
-            "all_time": all_time.to_dict(),
+            "last_30_days": windowed.to_dict(),
         },
         by_model=model_rows,
         by_client=_ranked(by_client, "client"),
@@ -383,6 +392,7 @@ def _maybe_compact(target: Path) -> None:
 
 __all__ = [
     "SCHEMA_VERSION",
+    "MAX_RETENTION_DAYS",
     "DEFAULT_RETENTION_DAYS",
     "DEFAULT_FALLBACK_INPUT_COST_PER_TOKEN",
     "SavingsReport",

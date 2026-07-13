@@ -51,6 +51,27 @@ class TestSemanticCache:
         entry = cache.get("Unknown query", messages_hash="unknown")
         assert entry is None
 
+    def test_same_query_different_context_does_not_collide(self, cache):
+        """Two requests that share a trailing user message but differ in earlier
+        context (distinct messages_hash) must not overwrite each other. Before the
+        fix both were keyed by sha256(query), so the second clobbered the first and
+        the first's hash resolved to the second's response."""
+        cache.put("run the tests", {"text": "response A"}, messages_hash="ctxA")
+        cache.put("run the tests", {"text": "response B"}, messages_hash="ctxB")
+
+        got_a = cache.get("run the tests", messages_hash="ctxA")
+        got_b = cache.get("run the tests", messages_hash="ctxB")
+
+        assert got_a is not None and got_a.response == {"text": "response A"}
+        assert got_b is not None and got_b.response == {"text": "response B"}
+
+    def test_exact_match_verifies_messages_hash(self, cache):
+        """A stored entry is only returned when its messages_hash matches the
+        looked-up hash — never another conversation's cached response."""
+        cache.put("continue", {"text": "A"}, messages_hash="hA")
+        # A lookup for a hash that isn't stored is a miss, not a wrong hit.
+        assert cache.get("continue", messages_hash="hB") is None
+
     def test_lru_eviction(self):
         """Test LRU eviction when at capacity."""
         config = SemanticCacheConfig(max_entries=3)

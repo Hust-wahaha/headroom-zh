@@ -342,6 +342,31 @@ class SQLiteMemoryStore:
 
             return [self._row_to_memory(row) for row in cursor]
 
+    async def record_access(
+        self,
+        memory_ids: list[str],
+        accessed_at: datetime | None = None,
+    ) -> int:
+        """Atomically record one retrieval for each distinct memory ID."""
+        unique_ids = list(dict.fromkeys(memory_ids))
+        if not unique_ids:
+            return 0
+
+        timestamp = accessed_at or datetime.utcnow()
+        placeholders = ", ".join("?" for _ in unique_ids)
+        with self._get_conn() as conn:
+            cursor = conn.execute(
+                f"""
+                UPDATE memories
+                SET access_count = access_count + 1,
+                    last_accessed = ?
+                WHERE id IN ({placeholders})
+                """,  # nosec B608
+                [timestamp.isoformat(), *unique_ids],
+            )
+            conn.commit()
+            return cursor.rowcount
+
     async def delete(self, memory_id: str) -> bool:
         """Delete a memory by ID.
 

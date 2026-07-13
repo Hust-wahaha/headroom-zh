@@ -6,7 +6,9 @@ import json
 from pathlib import Path
 
 from headroom.learn.verbosity import (
+    VerbosityProfile,
     VerbositySignals,
+    _parse_session,
     analyze,
     extract_signals,
     recommend_level,
@@ -249,3 +251,70 @@ class TestAnalyze:
         from headroom.learn.verbosity import VerbosityProfile
 
         assert VerbosityProfile.load(tmp_path / "nope.json") is None
+
+
+class TestWindowsEncoding:
+    """Windows defaults text I/O without an explicit encoding to a locale
+    codec (e.g. GBK, cp1252) rather than UTF-8. Transcripts containing
+    non-ASCII text then raised UnicodeDecodeError, which was silently
+    swallowed and produced "Sessions: 0, human turns: 0" (issue #1624).
+
+    ``locale.getpreferredencoding`` is monkeypatched to simulate that
+    non-UTF-8 default on any platform, including the UTF-8-default CI/dev
+    machines this suite normally runs on.
+    """
+
+    def _write_utf8_session(self, tmp_path: Path, name: str, lines: list[dict]) -> Path:
+        p = tmp_path / f"{name}.jsonl"
+        p.write_text(
+            "\n".join(json.dumps(line, ensure_ascii=False) for line in lines),
+            encoding="utf-8",
+        )
+        return p
+
+    def test_parse_session_reads_non_ascii_under_non_utf8_locale(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("locale.getpreferredencoding", lambda do_setlocale=True: "cp1252")
+        p = self._write_utf8_session(
+            tmp_path,
+            "s",
+            [
+                _user("你好，请帮我写代码", ts="2026-01-01T00:00:00Z"),
+                _assistant("好的，" + LONG, ts="2026-01-01T00:00:01Z"),
+            ],
+        )
+        responses, humans, _ = _parse_session(p)
+        assert len(responses) == 1
+        assert len(humans) == 1
+
+    def test_extract_signals_not_empty_under_non_utf8_locale(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("locale.getpreferredencoding", lambda do_setlocale=True: "cp1252")
+        p = self._write_utf8_session(
+            tmp_path,
+            "s",
+            [
+                _user("開始してください", ts="2026-01-01T00:00:00Z"),
+                _assistant(LONG, ts="2026-01-01T00:00:01Z"),
+            ],
+        )
+        sig, _ = extract_signals([p])
+        assert sig.sessions == 1
+        assert sig.asst_responses == 1
+
+    def test_profile_save_load_roundtrip_non_ascii_under_non_utf8_locale(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr("locale.getpreferredencoding", lambda do_setlocale=True: "cp1252")
+        prof = VerbosityProfile(
+            project_path="D:\\work\\DPJ",
+            level=2,
+            confidence="high",
+            source="heuristic",
+            rationale="用户回复很快，倾向于更简短的回答",
+            signals={},
+        )
+        path = tmp_path / "verbosity.json"
+        prof.save(path)
+        loaded = VerbosityProfile.load(path)
+        assert loaded is not None
+        assert loaded.rationale == prof.rationale
+        assert loaded.project_path == prof.project_path

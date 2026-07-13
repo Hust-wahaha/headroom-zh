@@ -272,7 +272,12 @@ def test_runtime_start_lock_blocks_another_process(monkeypatch, tmp_path: Path) 
         "with acquire_runtime_start_lock('default') as acquired:\n"
         "    print(acquired)\n"
     )
-    env = {**os.environ, "HOME": str(tmp_path), "PYTHONPATH": str(Path.cwd())}
+    env = {
+        **os.environ,
+        "HOME": str(tmp_path),
+        "USERPROFILE": str(tmp_path),
+        "PYTHONPATH": str(Path.cwd()),
+    }
 
     with acquire_runtime_start_lock("default") as acquired:
         assert acquired is True

@@ -1077,7 +1077,13 @@ def _is_copilot_api_token(token: str) -> bool:
 
     Copilot API tokens currently use the "tid_" prefix.
     GitHub OAuth tokens (for example "gho_", "ghs_", "ghp_", "github_pat_")
-    should be exchanged and must not be forwarded directly.
+    should be exchanged and must not be forwarded directly to the Copilot
+    *subscription/user-info* APIs (see resolve_subscription_bearer_token_details()),
+    which is the only caller of this helper. It intentionally stays narrow:
+    broadening it here would also change subscription-resolution behavior,
+    which is a separate concern from forwarding a bearer token for
+    chat-completion/inference requests -- see _is_forwardable_copilot_bearer_token()
+    for that case.
     """
     normalized = token.strip()
     if not normalized:
@@ -1092,6 +1098,39 @@ def _is_copilot_api_token(token: str) -> bool:
         return False
 
     return normalized.startswith("tid_")
+
+
+def _is_forwardable_copilot_bearer_token(token: str) -> bool:
+    """Return True when a bearer token should be forwarded as-is for Copilot inference.
+
+    Unlike _is_copilot_api_token() (used only for subscription/user-info
+    resolution), this accepts both short-lived Copilot API tokens (`tid_`)
+    AND GitHub OAuth tokens (`gho_`, `ghs_`, `ghp_`, `github_pat_`) as valid,
+    forwardable Copilot bearer credentials for chat-completion/inference
+    requests.
+
+    Verified live in two independent reports that a caller-supplied `gho_`
+    token is already valid and correctly entitled when sent directly to
+    the real Copilot inference API, and that replacing it with Headroom's
+    own independently-fetched/exchanged token is actively harmful:
+
+    - A live Copilot CLI session's own `gho_`-prefixed token worked
+      end-to-end for model "claude-sonnet-5" when forwarded unchanged, but
+      got `400 model_not_supported` once Headroom swapped in a different,
+      less-entitled re-exchanged token for the exact same request.
+    - headroomlabs-ai/headroom#1813: OpenCode's native Copilot integration
+      sends its own `gho_` token directly; replacing it changes the
+      effective client/integrator lane Copilot's backend sees, breaking
+      model discovery/inference parity with native (non-proxied) behavior.
+
+    Only genuinely non-Copilot-shaped or blank/whitespace-only tokens fall
+    through to replacement.
+    """
+    normalized = token.strip()
+    if not normalized:
+        return False
+
+    return normalized.startswith(("tid_", "gho_", "ghs_", "ghp_", "github_pat_"))
 
 
 def _token_kind(token: str) -> str:
@@ -1115,7 +1154,11 @@ async def apply_copilot_api_auth(headers: dict[str, str], *, url: str) -> dict[s
     incoming_auth = next((v for k, v in resolved.items() if k.lower() == "authorization"), None)
     if incoming_auth:
         scheme, _, raw_token = incoming_auth.partition(" ")
-        if scheme.lower() == "bearer" and raw_token and _is_copilot_api_token(raw_token):
+        if (
+            scheme.lower() == "bearer"
+            and raw_token
+            and _is_forwardable_copilot_bearer_token(raw_token)
+        ):
             logger.info(
                 "apply_copilot_api_auth: passing through client token kind=%s",
                 _token_kind(raw_token),

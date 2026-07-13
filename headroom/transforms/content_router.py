@@ -58,10 +58,12 @@ from ..config import (
 )
 from ..parser import CCR_RETRIEVAL_MARKER_RE
 from ..tokenizer import Tokenizer
+from . import mixed_content as _mixed_content
 from .base import Transform
 from .content_detector import ContentType, DetectionResult, _try_detect_log, _try_detect_search
 from .content_detector import detect_content_type as _regex_detect_content_type
 from .error_detection import content_has_strong_error_indicators
+from .mixed_content import ContentSection, mixed_content_indicators
 from .relevance_split import build_relevance_query, plan_relevance_split
 
 logger = logging.getLogger(__name__)
@@ -70,6 +72,11 @@ _CJK_CHAR_PATTERN = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
 _LATIN_WORD_PATTERN = re.compile(r"[A-Za-z]{2,}")
 _PATHLIKE_PATTERN = re.compile(r"(https?://|[A-Za-z]:\\|/|\\\\|\.py\b|\.md\b|\.json\b|\.yaml\b|\.yml\b)")
 _WHITESPACE_PATTERN = re.compile(r"\s+")
+
+_extract_json_block = _mixed_content._extract_json_block
+is_mixed_content = _mixed_content.is_mixed_content
+split_into_sections = _mixed_content.split_into_sections
+
 
 _detect_backend_warned = False
 _detect_panic_warned = False
@@ -321,12 +328,7 @@ def _json_shape(content: str) -> dict[str, Any]:
 
 
 def _mixed_indicators(content: str) -> dict[str, bool]:
-    return {
-        "has_code_fences": bool(_CODE_FENCE_PATTERN.search(content)),
-        "has_json_blocks": bool(_JSON_BLOCK_START.search(content)),
-        "has_prose": len(_PROSE_PATTERN.findall(content)) > 5,
-        "has_search_results": bool(_SEARCH_RESULT_PATTERN.search(content)),
-    }
+    return mixed_content_indicators(content)
 
 
 def _is_chinese_dominant_text(content: str, *, min_cjk_chars: int = 10, ratio: float = 0.30) -> bool:
@@ -929,18 +931,6 @@ class RoutingDecision:
 
 
 @dataclass
-class ContentSection:
-    """A typed section of content."""
-
-    content: str
-    content_type: ContentType
-    language: str | None = None
-    start_line: int = 0
-    end_line: int = 0
-    is_code_fence: bool = False
-
-
-@dataclass
 class RouterCompressionResult:
     """Result from ContentRouter with routing metadata.
 
@@ -1219,190 +1209,6 @@ class ContentRouterConfig:
     # Group search-compressor output by file (`rg --heading` style).
     # Default False; the proxy enables it in token mode.
     search_group_by_file: bool = False
-
-
-# Patterns for detecting mixed content
-_CODE_FENCE_PATTERN = re.compile(r"^```(\w*)\s*$", re.MULTILINE)
-_JSON_BLOCK_START = re.compile(r"^\s*[\[{]", re.MULTILINE)
-_SEARCH_RESULT_PATTERN = re.compile(r"^\S+:\d+:", re.MULTILINE)
-_PROSE_PATTERN = re.compile(r"[A-Z][a-z]+\s+\w+\s+\w+")
-
-
-def is_mixed_content(content: str) -> bool:
-    """Detect if content contains multiple distinct types.
-
-    Args:
-        content: Content to analyze.
-
-    Returns:
-        True if content appears to be mixed (multiple types).
-    """
-    indicators = {
-        "has_code_fences": bool(_CODE_FENCE_PATTERN.search(content)),
-        "has_json_blocks": bool(_JSON_BLOCK_START.search(content)),
-        "has_prose": len(_PROSE_PATTERN.findall(content)) > 5,
-        "has_search_results": bool(_SEARCH_RESULT_PATTERN.search(content)),
-    }
-
-    # Mixed if 2+ indicators are true
-    return sum(indicators.values()) >= 2
-
-
-def split_into_sections(content: str) -> list[ContentSection]:
-    """Parse mixed content into typed sections.
-
-    Args:
-        content: Mixed content to split.
-
-    Returns:
-        List of ContentSection objects.
-    """
-    sections: list[ContentSection] = []
-    lines = content.split("\n")
-
-    i = 0
-    while i < len(lines):
-        line = lines[i]
-
-        # Code fence: ```language
-        if match := _CODE_FENCE_PATTERN.match(line):
-            language = match.group(1) or "unknown"
-            code_lines = []
-            start_line = i
-            i += 1
-
-            while i < len(lines) and not lines[i].startswith("```"):
-                code_lines.append(lines[i])
-                i += 1
-
-            sections.append(
-                ContentSection(
-                    content="\n".join(code_lines),
-                    content_type=ContentType.SOURCE_CODE,
-                    language=language,
-                    start_line=start_line,
-                    end_line=i,
-                    is_code_fence=True,
-                )
-            )
-            i += 1  # Skip closing ```
-            continue
-
-        # JSON block
-        if line.strip().startswith(("[", "{")):
-            json_content, end_i = _extract_json_block(lines, i)
-            if json_content:
-                sections.append(
-                    ContentSection(
-                        content=json_content,
-                        content_type=ContentType.JSON_ARRAY,
-                        start_line=i,
-                        end_line=end_i,
-                    )
-                )
-                i = end_i + 1
-                continue
-
-        # Search result lines
-        if _SEARCH_RESULT_PATTERN.match(line):
-            search_lines = []
-            start_line = i
-            while i < len(lines) and _SEARCH_RESULT_PATTERN.match(lines[i]):
-                search_lines.append(lines[i])
-                i += 1
-            sections.append(
-                ContentSection(
-                    content="\n".join(search_lines),
-                    content_type=ContentType.SEARCH_RESULTS,
-                    start_line=start_line,
-                    end_line=i - 1,
-                )
-            )
-            continue
-
-        # Collect text until next special section
-        text_lines = [line]
-        start_line = i
-        i += 1
-
-        while i < len(lines):
-            next_line = lines[i]
-            # Stop if we hit a special section
-            if (
-                _CODE_FENCE_PATTERN.match(next_line)
-                or next_line.strip().startswith(("[", "{"))
-                or _SEARCH_RESULT_PATTERN.match(next_line)
-            ):
-                break
-            text_lines.append(next_line)
-            i += 1
-
-        # Only add non-empty text sections
-        text_content = "\n".join(text_lines)
-        if text_content.strip():
-            sections.append(
-                ContentSection(
-                    content=text_content,
-                    content_type=ContentType.PLAIN_TEXT,
-                    start_line=start_line,
-                    end_line=i - 1,
-                )
-            )
-
-    return sections
-
-
-def _extract_json_block(lines: list[str], start: int) -> tuple[str | None, int]:
-    """Extract a complete JSON block from lines.
-
-    Args:
-        lines: All lines of content.
-        start: Starting line index.
-
-    Returns:
-        Tuple of (json_content, end_line_index) or (None, start) if invalid.
-    """
-    bracket_count = 0
-    brace_count = 0
-    json_lines = []
-    in_string = False
-    escaped = False
-
-    for i in range(start, len(lines)):
-        line = lines[i]
-        json_lines.append(line)
-
-        # Count brackets/braces, but ignore any that appear inside a JSON
-        # string literal — a naive line.count() treats e.g. the "]" in
-        # {"path": "a]b"} as a closing bracket and terminates the block
-        # early, splitting one array across multiple sections.
-        for ch in line:
-            if escaped:
-                escaped = False
-                continue
-            if ch == "\\":
-                if in_string:
-                    escaped = True
-                continue
-            if ch == '"':
-                in_string = not in_string
-                continue
-            if in_string:
-                continue
-            if ch == "[":
-                bracket_count += 1
-            elif ch == "]":
-                bracket_count -= 1
-            elif ch == "{":
-                brace_count += 1
-            elif ch == "}":
-                brace_count -= 1
-
-        if bracket_count <= 0 and brace_count <= 0 and json_lines:
-            return "\n".join(json_lines), i
-
-    # Didn't find complete JSON
-    return None, start
 
 
 class ContentRouter(Transform):
@@ -2686,6 +2492,16 @@ class ContentRouter(Transform):
             if compressor:
                 if not compressor.is_ready():
                     compressor.ensure_background_load()
+                    # Surface: warn once per ContentRouter instance so operators
+                    # know compression is degraded — model not cached, or
+                    # HuggingFace unreachable (corporate firewall, SSL, etc.).
+                    if not getattr(self, "_kompress_warned", False):
+                        logger.warning(
+                            "Kompress model not ready; requests will not be "
+                            "compressed. Check HuggingFace connectivity or "
+                            "pre-download: headroom-ai[ml] + first-run warmup."
+                        )
+                        self._kompress_warned = True
                 else:
                     try:
                         result = compressor.compress(
@@ -3101,9 +2917,10 @@ class ContentRouter(Transform):
                     try:
                         backend = compressor.preload(allow_download=False)
                     except KompressModelNotCached:
-                        logger.info(
-                            "Kompress model not cached; deferring download to "
-                            "first use to keep startup non-blocking"
+                        logger.warning(
+                            "Kompress model not cached; compression disabled "
+                            "until model is downloaded. Ensure HuggingFace is "
+                            "accessible or pre-download with headroom-ai[ml]."
                         )
                         status["kompress"] = "deferred"
                     else:
@@ -4484,8 +4301,26 @@ class ContentRouter(Transform):
         try:
             from headroom.transforms.cross_turn_dedup import DedupBlock, dedup_blocks
 
-            locs: list[tuple[int, int | None]] = []
+            locs: list[tuple[int, int | None, int | None]] = []
             dblocks: list[DedupBlock] = []
+
+            def _is_user_read_observation(idx: int) -> bool:
+                # A file read can land in a plain ``role:user`` STRING (text
+                # harnesses: the assistant emits a fenced ``cat/sed/head …`` and the
+                # output comes back as the next user turn). Fold those too, but ONLY
+                # when the preceding assistant turn actually issued a read command —
+                # never ordinary user prose. Same OUTCOME the router uses to protect
+                # reads, re-derived here on dedup's own array so indices stay
+                # self-consistent (no coupling to pre-scan positional indices).
+                for j in range(idx - 1, -1, -1):
+                    rj = messages[j].get("role")
+                    if rj == "assistant":
+                        cmd = _fenced_shell_command(messages[j].get("content"))
+                        return bool(cmd and _is_read_command(cmd))
+                    if rj == "user":
+                        return False
+                return False
+
             for i, msg in enumerate(messages):
                 content = msg.get("content")
                 frozen = i < frozen_message_count
@@ -4493,18 +4328,44 @@ class ContentRouter(Transform):
                     for bidx, block in enumerate(content):
                         if not isinstance(block, dict) or block.get("type") != "tool_result":
                             continue
-                        text = block.get("content")
-                        if not isinstance(text, str) or not text:
-                            continue
+                        tc = block.get("content")
                         protected = frozen or ("cache_control" in block)
-                        locs.append((i, bidx))
-                        dblocks.append(DedupBlock(text=text, turn=i, protected=protected))
-                elif isinstance(content, str) and msg.get("role") == "tool":
-                    if not content:
-                        continue
-                    protected = frozen or ("cache_control" in msg)
-                    locs.append((i, None))
-                    dblocks.append(DedupBlock(text=content, turn=i, protected=protected))
+                        if isinstance(tc, str) and tc:
+                            locs.append((i, bidx, None))
+                            dblocks.append(DedupBlock(text=tc, turn=i, protected=protected))
+                        elif isinstance(tc, list):
+                            # Anthropic tool_result carries LIST content (a `text`
+                            # sub-block holds the bash/read output). The string-only
+                            # path above skipped these entirely, so reads never
+                            # deduped on Anthropic models. Dedup the single text
+                            # sub-block (the common form); leave multi-text/mixed
+                            # blocks verbatim to stay trivially lossless.
+                            text_subs = [
+                                (si, sub)
+                                for si, sub in enumerate(tc)
+                                if isinstance(sub, dict)
+                                and sub.get("type") == "text"
+                                and isinstance(sub.get("text"), str)
+                                and sub.get("text")
+                            ]
+                            if len(text_subs) == 1:
+                                si, sub = text_subs[0]
+                                locs.append((i, bidx, si))
+                                dblocks.append(
+                                    DedupBlock(text=sub["text"], turn=i, protected=protected)
+                                )
+                elif isinstance(content, str) and content:
+                    # Tool output as a STRING under any harness label: OpenAI/Kimi
+                    # ``role:tool``, legacy ``role:function``, or a text-harness
+                    # ``role:user`` read output. Key off the OUTCOME, not the role —
+                    # ``role:user`` is gated to genuine reads so prose never folds.
+                    role = msg.get("role")
+                    if role in ("tool", "function") or (
+                        role == "user" and _is_user_read_observation(i)
+                    ):
+                        protected = frozen or ("cache_control" in msg)
+                        locs.append((i, None, None))
+                        dblocks.append(DedupBlock(text=content, turn=i, protected=protected))
 
             if len(dblocks) < 2:
                 return messages
@@ -4514,7 +4375,7 @@ class ContentRouter(Transform):
 
             new_messages = list(messages)
             touched: dict[int, dict[str, Any]] = {}
-            for (mi, blk_idx), od, nd in zip(locs, dblocks, deduped):
+            for (mi, blk_idx, sub_idx), od, nd in zip(locs, dblocks, deduped):
                 if od.protected or nd.text == od.text:
                     continue
                 if mi not in touched:
@@ -4529,8 +4390,19 @@ class ContentRouter(Transform):
                 m = touched[mi]
                 if blk_idx is None:
                     m["content"] = nd.text
-                else:
+                elif sub_idx is None:
                     m["content"][blk_idx]["content"] = nd.text
+                else:
+                    # List-content tool_result: deep-copy the block + its sub-list
+                    # before mutating so the input message is never touched.
+                    blk = dict(m["content"][blk_idx])
+                    sub_list = [
+                        dict(s) if isinstance(s, dict) else s for s in blk.get("content", [])
+                    ]
+                    sub_list[sub_idx] = dict(sub_list[sub_idx])
+                    sub_list[sub_idx]["text"] = nd.text
+                    blk["content"] = sub_list
+                    m["content"][blk_idx] = blk
 
             if route_counts is not None:
                 route_counts["cross_turn_dedup"] = (

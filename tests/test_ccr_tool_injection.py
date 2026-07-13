@@ -313,6 +313,23 @@ class TestParseToolCall:
 
         assert hash_key is None
 
+    def test_parse_openai_non_object_arguments_returns_none(self):
+        """OpenAI arguments that decode to a non-object (array/string/number)
+        must return None, not crash on `.get`."""
+        for args in ("[]", '"abc"', "123"):
+            tool_call = {"function": {"name": CCR_TOOL_NAME, "arguments": args}}
+            assert parse_tool_call(tool_call, "openai") is None
+
+    def test_parse_openai_null_arguments_returns_none(self):
+        """A null `arguments` value (json.loads(None) -> TypeError) is handled."""
+        tool_call = {"function": {"name": CCR_TOOL_NAME, "arguments": None}}
+        assert parse_tool_call(tool_call, "openai") is None
+
+    def test_parse_anthropic_non_dict_input_returns_none(self):
+        """A non-dict Anthropic `input` must return None, not crash."""
+        tool_call = {"name": CCR_TOOL_NAME, "input": ["not", "a", "dict"]}
+        assert parse_tool_call(tool_call, "anthropic") is None
+
 
 class TestHashSecurityValidation:
     """Test hash validation security measures.

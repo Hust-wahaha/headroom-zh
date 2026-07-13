@@ -40,6 +40,11 @@ def _should_set_body_tools(tools: list | None, original_tools: list | None) -> b
     return bool(tools or original_tools is not None)
 
 
+def _should_apply_presend_tools(presend_tools: list | None, original_tools: list | None) -> bool:
+    """Mirror the fixed PRE_SEND write-back condition in the OpenAI handler."""
+    return bool(presend_tools or original_tools is not None)
+
+
 def _sort_tools(tools: list | None) -> list | None:
     return AnthropicHandlerMixin._sort_tools_deterministically(tools)
 
@@ -109,6 +114,19 @@ class TestHandlerGuardCondition:
 
         assert not _legacy_should_set_body_tools_after_sort(tools_after_helpers, original_tools)
         assert _should_set_body_tools_after_sort(tools_after_helpers, original_tools)
+
+    def test_presend_empty_list_stays_omitted_when_client_omitted_tools(self):
+        """PRE_SEND must not re-introduce ``tools: []`` for a tools-free request."""
+        assert not _should_apply_presend_tools([], None)
+
+    def test_presend_preserves_explicit_client_empty_tools(self):
+        """PRE_SEND must still preserve an explicit client ``tools: []`` field."""
+        assert _should_apply_presend_tools([], [])
+
+    def test_presend_can_clear_previously_present_tools(self):
+        """PRE_SEND may deliberately replace a real tool list with ``[]``."""
+        original_tools = [{"type": "function", "function": {"name": "my_tool"}}]
+        assert _should_apply_presend_tools([], original_tools)
 
 
 # ---------------------------------------------------------------------------

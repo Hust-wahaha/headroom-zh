@@ -516,6 +516,12 @@ class LocalBackend:
         results.sort(key=lambda x: x.score, reverse=True)
         return results[:top_k]
 
+    async def record_access(self, memory_ids: list[str]) -> int:
+        """Record retrieval metadata for memories returned to a caller."""
+        await self._ensure_initialized()
+        assert self._hierarchical_memory is not None
+        return await self._hierarchical_memory.record_access(memory_ids)
+
     async def update_memory(
         self,
         memory_id: str,

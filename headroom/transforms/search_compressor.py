@@ -50,6 +50,36 @@ from typing import Any, cast
 logger = logging.getLogger(__name__)
 
 
+def _is_cjk_char(c: str) -> bool:
+    """True for CJK ideographs, kana, and Hangul. Code-point ranges kept
+    byte-identical with the Rust `is_cjk_char` for search-compressor parity."""
+    o = ord(c)
+    return (
+        0x3040 <= o <= 0x30FF
+        or 0x3400 <= o <= 0x4DBF
+        or 0x4E00 <= o <= 0x9FFF
+        or 0xAC00 <= o <= 0xD7AF
+        or 0xF900 <= o <= 0xFAFF
+    )
+
+
+def _cjk_bigrams(text: str) -> set[str]:
+    """CJK character bigrams from the CJK runs of a (lowercased) query, so a
+    spaceless CJK query can match content. Mirrors the Rust `cjk_bigrams`."""
+    out: set[str] = set()
+    run: list[str] = []
+    for c in text:
+        if _is_cjk_char(c):
+            run.append(c)
+        else:
+            for i in range(len(run) - 1):
+                out.add(run[i] + run[i + 1])
+            run = []
+    for i in range(len(run) - 1):
+        out.add(run[i] + run[i + 1])
+    return out
+
+
 # ─── Public dataclasses (preserve existing import surface) ──────────────────
 
 
@@ -223,14 +253,21 @@ class SearchCompressor:
 
         Stays Python so the legacy direct-call test surface keeps
         working without rebuilding through Rust on every test. The
-        scoring constants must mirror Rust `SearchCompressor::score_matches`
-        — Rust unit tests pin Rust's behavior; the parity assertion at
-        the bottom of this module pins both sides agree.
+        scoring constants mirror Rust `SearchCompressor::score_matches`,
+        pinned by Rust unit tests and Python tests over the same inputs:
+        word-overlap and CJK-bigram scoring are byte-equal. (The error-
+        boost keyword set still diverges for a few terms fixed only on
+        the Rust side -- see keyword_detector; there is no cross-impl
+        assertion, so this equality is test-pinned, not mechanically
+        enforced.)
         """
         from headroom.transforms.error_detection import PRIORITY_PATTERNS_SEARCH
 
         context_lower = context.lower()
+        # Dedup whitespace words (len>2 by codepoints), and add CJK char bigrams
+        # so a spaceless CJK query can match content.
         context_words = {w for w in context_lower.split() if len(w) > 2}
+        context_words |= _cjk_bigrams(context_lower)
 
         for fm in file_matches.values():
             for match in fm.matches:

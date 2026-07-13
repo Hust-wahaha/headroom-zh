@@ -25,7 +25,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.base.sha }}
 
@@ -151,7 +151,7 @@ jobs:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       REPO: ${{ github.repository }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.base.sha }}
 
@@ -197,21 +197,22 @@ jobs:
 
           for pr in $pr_numbers; do
             data="$(gh pr view "$pr" --repo "$REPO" \
-              --json isDraft,labels,mergeStateStatus,statusCheckRollup)"
+              --json isDraft,labels,mergeStateStatus,reviewDecision,statusCheckRollup)"
 
             merge_state="$(jq -r '.mergeStateStatus // "UNKNOWN"' <<<"$data")"
             check_state="$(python3 .github/scripts/pr-health-labels.py --state-json "$data")"
             is_draft="$(jq -r '.isDraft' <<<"$data")"
+            review_decision="$(jq -r '.reviewDecision // ""' <<<"$data")"
 
             if [[ "$merge_state" == "BEHIND" ]]; then
               gh pr edit "$pr" --repo "$REPO" --add-label "status: needs rebase"
-            else
+            elif [[ "$merge_state" != "UNKNOWN" ]]; then
               gh pr edit "$pr" --repo "$REPO" --remove-label "status: needs rebase" || true
             fi
 
             if [[ "$merge_state" == "DIRTY" ]]; then
               gh pr edit "$pr" --repo "$REPO" --add-label "status: has conflicts"
-            else
+            elif [[ "$merge_state" != "UNKNOWN" ]]; then
               gh pr edit "$pr" --repo "$REPO" --remove-label "status: has conflicts" || true
             fi
 
@@ -221,7 +222,7 @@ jobs:
               gh pr edit "$pr" --repo "$REPO" --remove-label "status: ci failing" || true
             fi
 
-            if [[ "$merge_state" == "BEHIND" || "$merge_state" == "DIRTY" || "$check_state" == "failing" || "$is_draft" == "true" ]]; then
+            if [[ "$merge_state" == "BEHIND" || "$merge_state" == "DIRTY" || "$check_state" == "failing" || "$is_draft" == "true" || "$review_decision" == "CHANGES_REQUESTED" ]]; then
               gh pr edit "$pr" --repo "$REPO" --remove-label "status: ready for review" || true
             fi
           done

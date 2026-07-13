@@ -20,17 +20,15 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ..cache.compression_store import format_retrieval_miss_detail, get_compression_store
-from .tool_injection import CCR_TOOL_NAME, parse_tool_call
+from .tool_calls import (
+    CCRToolCall,
+    extract_tool_calls,
+    has_ccr_tool_calls,
+    parse_ccr_tool_calls,
+)
+from .tool_injection import CCR_TOOL_NAME
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass
-class CCRToolCall:
-    """Represents a detected CCR tool call."""
-
-    tool_call_id: str
-    hash_key: str
 
 
 @dataclass
@@ -110,13 +108,7 @@ class CCRResponseHandler:
         Returns:
             True if response contains headroom_retrieve tool calls.
         """
-        tool_calls = self._extract_tool_calls(response, provider)
-        return any(
-            tc.get("name") == CCR_TOOL_NAME
-            or tc.get("function", {}).get("name") == CCR_TOOL_NAME
-            or tc.get("functionCall", {}).get("name") == CCR_TOOL_NAME  # Google format
-            for tc in tool_calls
-        )
+        return has_ccr_tool_calls(response, provider)
 
     def _extract_tool_calls(
         self,
@@ -124,29 +116,10 @@ class CCRResponseHandler:
         provider: str,
     ) -> list[dict[str, Any]]:
         """Extract tool calls from response based on provider format."""
-        if provider == "anthropic":
-            # Anthropic format: content blocks with type=tool_use
-            content = response.get("content", [])
-            if isinstance(content, list):
-                return [block for block in content if block.get("type") == "tool_use"]
-            return []
-
-        elif provider == "openai":
-            # OpenAI format: message.tool_calls array
-            message = response.get("choices", [{}])[0].get("message", {})
-            tool_calls = message.get("tool_calls", [])
-            return list(tool_calls) if tool_calls else []
-
-        elif provider == "google":
-            # Google/Gemini format: candidates[0].content.parts contains functionCall objects
-            # Each part with a functionCall has: {"functionCall": {"name": "...", "args": {...}}}
-            candidates = response.get("candidates", [])
-            if not candidates:
-                return []
-            parts = candidates[0].get("content", {}).get("parts", [])
-            return [part for part in parts if "functionCall" in part]
-
-        return []
+        if provider == "openai" and response.get("choices") == []:
+            # Preserve legacy private-method behavior for existing tests/callers.
+            raise IndexError("list index out of range")
+        return extract_tool_calls(response, provider)
 
     def _parse_ccr_tool_calls(
         self,
@@ -158,34 +131,7 @@ class CCRResponseHandler:
         Returns:
             Tuple of (ccr_tool_calls, other_tool_calls)
         """
-        all_tool_calls = self._extract_tool_calls(response, provider)
-
-        ccr_calls = []
-        other_calls = []
-
-        for tc in all_tool_calls:
-            hash_key = parse_tool_call(tc, provider)
-
-            if hash_key is not None:
-                # This is a CCR tool call - extract tool_call_id based on provider
-                if provider == "google":
-                    # Google uses function name as identifier for matching responses
-                    # The functionResponse.name must match the functionCall.name
-                    tool_call_id = tc.get("functionCall", {}).get("name", CCR_TOOL_NAME)
-                else:
-                    # Anthropic and OpenAI use explicit IDs
-                    tool_call_id = tc.get("id", "")
-                ccr_calls.append(
-                    CCRToolCall(
-                        tool_call_id=tool_call_id,
-                        hash_key=hash_key,
-                    )
-                )
-            else:
-                # Not a CCR tool call
-                other_calls.append(tc)
-
-        return ccr_calls, other_calls
+        return parse_ccr_tool_calls(response, provider)
 
     def _execute_retrieval(self, ccr_call: CCRToolCall) -> CCRToolResult:
         """Execute a CCR retrieval.
@@ -318,6 +264,23 @@ class CCRResponseHandler:
                 ]
             }
 
+        elif provider == "openai_responses":
+            # Responses API: `function_call_output` items, echoed back into
+            # `input[]` alongside (not nested under) the preceding
+            # function_call items. Sentinel key mirrors the "openai"
+            # multi-message pattern above — handle_response() extends
+            # rather than appends when it sees this key.
+            return {
+                "_openai_responses_tool_results": [
+                    {
+                        "type": "function_call_output",
+                        "call_id": result.tool_call_id,
+                        "output": result.content,
+                    }
+                    for result in results
+                ]
+            }
+
         elif provider == "google":
             # Google/Gemini: user message with functionResponse parts
             # Format: {"role": "user", "parts": [{"functionResponse": {"name": "...", "response": {...}}}]}
@@ -376,6 +339,13 @@ class CCRResponseHandler:
                 "content": message.get("content"),
                 "tool_calls": message.get("tool_calls"),
             }
+        elif provider == "openai_responses":
+            # Responses API: the model's turn is the full `output[]` array
+            # (function_call items, message items, reasoning items, ...),
+            # echoed back verbatim as `input[]` items — not a single
+            # role/content dict like chat completions. Sentinel key mirrors
+            # `_openai_tool_results`; handle_response() extends on it.
+            return {"_openai_responses_output_items": response.get("output", [])}
         elif provider == "google":
             # Google/Gemini format: role is "model", content is in candidates[0].content.parts
             candidates = response.get("candidates", [])
@@ -466,9 +436,18 @@ class CCRResponseHandler:
             )
 
             # Build continuation messages
-            # Add assistant message (the response that had tool calls)
+            # Add assistant message (the response that had tool calls).
+            # Responses API turns are a list of output items rather than a
+            # single role/content dict, so extend on that sentinel instead
+            # of appending it as one entry.
             assistant_msg = self._extract_assistant_message(current_response, provider)
-            current_messages.append(assistant_msg)
+            if (
+                isinstance(assistant_msg, dict)
+                and "_openai_responses_output_items" in assistant_msg
+            ):
+                current_messages.extend(assistant_msg["_openai_responses_output_items"])
+            else:
+                current_messages.append(assistant_msg)
 
             # Add tool results
             tool_result_msg = self._create_tool_result_message(results, provider)
@@ -476,6 +455,8 @@ class CCRResponseHandler:
             if provider == "openai" and "_openai_tool_results" in tool_result_msg:
                 # OpenAI uses multiple messages for tool results
                 current_messages.extend(tool_result_msg["_openai_tool_results"])
+            elif "_openai_responses_tool_results" in tool_result_msg:
+                current_messages.extend(tool_result_msg["_openai_responses_tool_results"])
             else:
                 current_messages.append(tool_result_msg)
 

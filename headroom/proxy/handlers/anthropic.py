@@ -532,10 +532,10 @@ class AnthropicHandlerMixin:
         from headroom.cache.compression_store import get_compression_store
         from headroom.ccr import CCRToolInjector
         from headroom.providers.anthropic import sanitize_anthropic_model_id
+        from headroom.proxy.body_forwarding import BodyMutationTracker
         from headroom.proxy.helpers import (
             MAX_MESSAGE_ARRAY_LENGTH,
             MAX_REQUEST_BODY_SIZE,
-            BodyMutationTracker,
             _get_image_compressor,
             compute_turn_id,
             read_request_json_with_bytes,
@@ -775,6 +775,13 @@ class AnthropicHandlerMixin:
             headers = dict(request.headers.items())
             headers.pop("host", None)
             headers.pop("content-length", None)
+            # read_request_json_with_bytes already content-decoded the inbound
+            # body (zstd/gzip/deflate/br), so the bytes we forward are plain.
+            # A stale content-encoding makes the upstream try to decompress
+            # already-decoded JSON and reject it with HTTP 400 (#1542 — same
+            # fix the /v1/responses path already carries).
+            headers.pop("content-encoding", None)
+            headers.pop("transfer-encoding", None)
             # Strip accept-encoding so httpx negotiates its own encoding.
             # Edge proxies (Cloudflare Workers, etc.) may forward "br, zstd" which
             # the upstream can honor; if httpx lacks brotli support the response
@@ -1041,10 +1048,32 @@ class AnthropicHandlerMixin:
             optimized_messages = messages
             optimized_tokens = original_tokens
 
-            # Get prefix cache tracker for this session
-            session_id = self.session_tracker_store.compute_session_id(request, model, messages)
+            # Get prefix cache tracker for this session. Anthropic carries the
+            # system prompt as a top-level field, not a role:"system" message, so
+            # fold it into the session-id inputs as a synthetic system message —
+            # otherwise every conversation on the same model would share one
+            # session id (and its sticky CCR/memory tools, beta headers, and
+            # frozen-prefix state). This synthetic message only derives the id; it
+            # is never forwarded.
+            system_prompt = body.get("system")
+            session_messages = (
+                [{"role": "system", "content": system_prompt}, *messages]
+                if system_prompt is not None
+                else messages
+            )
+            session_id = self.session_tracker_store.compute_session_id(
+                request, model, session_messages
+            )
             prefix_tracker = self.session_tracker_store.get_or_create(session_id, "anthropic")
             frozen_message_count = prefix_tracker.get_frozen_message_count()
+            # Idle gap since the previous turn's response, snapshotted at fetch
+            # (before get_or_create bumped the access clock). Forwarded to the
+            # pipeline so the net-cost/TTL gate (HEADROOM_NET_COST_POLICY=1) can
+            # decay P_alive as the ~300s prompt-cache lapse nears and admit
+            # otherwise-frozen compaction as a free rewrite. Harmless when the
+            # policy is off (router ignores idle_seconds unless enabled) and near
+            # 0 for back-to-back agent turns (cache still warm → no decay).
+            idle_seconds = getattr(prefix_tracker, "_idle_seconds_at_fetch", 0.0)
             if is_cache_mode(self.config.mode):
                 frozen_message_count = self._strict_previous_turn_frozen_count(
                     original_client_messages,
@@ -1266,6 +1295,7 @@ class AnthropicHandlerMixin:
                                         model_limit=context_limit,
                                         context=extract_user_query(working_messages),
                                         frozen_message_count=frozen_message_count,
+                                        idle_seconds=idle_seconds,
                                         biases=biases,
                                         request_id=request_id,
                                         compression_policy=compression_policy,
@@ -1295,6 +1325,7 @@ class AnthropicHandlerMixin:
                                             model_limit=context_limit,
                                             context=extract_user_query(working_messages),
                                             frozen_message_count=frozen_message_count,
+                                            idle_seconds=idle_seconds,
                                             biases=biases,
                                             request_id=request_id,
                                             compression_policy=compression_policy,
@@ -1428,6 +1459,7 @@ class AnthropicHandlerMixin:
                                             model_limit=context_limit,
                                             context=extract_user_query(compression_input),
                                             frozen_message_count=prefix_n,
+                                            idle_seconds=idle_seconds,
                                             biases=biases,
                                             request_id=request_id,
                                             compression_policy=compression_policy,
@@ -1486,7 +1518,8 @@ class AnthropicHandlerMixin:
                 prefix_tracker.get_last_original_messages(),
                 prefix_tracker.get_last_forwarded_messages(),
             )
-            if _ov != optimized_messages:
+            _overlay_replayed = _ov != optimized_messages
+            if _overlay_replayed:
                 optimized_messages = _ov
                 optimized_tokens = tokenizer.count_messages(optimized_messages)
 
@@ -1502,7 +1535,18 @@ class AnthropicHandlerMixin:
 
             # Guard: if "optimization" inflated tokens, revert to originals.
             # Skip in cache mode where prefix-stability may legitimately shift counts.
-            if optimized_tokens > original_tokens and not is_cache_mode(self.config.mode):
+            # ALSO skip when overlay_cached_prefix just replayed a byte-identical
+            # cached prefix (token mode): reverting to the raw originals there
+            # would re-forward the uncompressed prefix and BUST the live prompt
+            # cache — trading a 90% read discount for a full re-write — which is
+            # far more expensive than the small tail inflation this guard exists
+            # to avoid. The nominal "inflation" is also an artifact of comparing
+            # the cached (compressed) forwarding against the raw original count.
+            if (
+                optimized_tokens > original_tokens
+                and not is_cache_mode(self.config.mode)
+                and not _overlay_replayed
+            ):
                 logger.warning(
                     f"[{request_id}] Optimization inflated tokens "
                     f"({original_tokens} -> {optimized_tokens}), reverting to original messages"
@@ -1673,7 +1717,13 @@ class AnthropicHandlerMixin:
                         )
                 except Exception:  # advisory hint only — must never fail a request
                     pass
-            ccr_workspace_key = ccr_workspace_label = None
+            # Initialize before the gated block so the proactive-expansion
+            # gate below (which references ``ccr_workspace_key`` regardless of
+            # the inject flags) does not raise ``UnboundLocalError`` when the
+            # block is skipped — e.g. ``--no-ccr-inject-tool`` with the default
+            # ``ccr_inject_system_instructions=False``, or when ``_bypass`` is
+            # set. The downstream uses already treat falsy as "unresolved".
+            ccr_workspace_key, ccr_workspace_label = None, None
             if (
                 self.config.ccr_inject_tool or self.config.ccr_inject_system_instructions
             ) and not _bypass:
@@ -2397,12 +2447,16 @@ class AnthropicHandlerMixin:
                             )
                         except Exception:
                             attempted_input_tokens = original_tokens
-                        # Backend (Bedrock / Vertex) non-streaming.
-                        # Cache metrics aren't extracted from the backend
-                        # response here yet — that's a follow-up. The
-                        # funnel passes 0s for the cache fields, which
-                        # is the same observable behaviour as the
-                        # pre-refactor code (which also omitted them).
+
+                        cr_tokens = usage.get("cache_read_input_tokens", 0)
+                        cw_tokens = usage.get("cache_creation_input_tokens", 0)
+                        cw_5m_tokens, cw_1h_tokens = self._extract_anthropic_cache_ttl_metrics(
+                            usage
+                        )
+                        uncached_input_tokens = max(
+                            0, attempted_input_tokens - cr_tokens - cw_tokens
+                        )
+
                         await self._record_request_outcome(
                             RequestOutcome(
                                 request_id=request_id,
@@ -2413,6 +2467,11 @@ class AnthropicHandlerMixin:
                                 output_tokens=output_tokens,
                                 tokens_saved=tokens_saved,
                                 attempted_input_tokens=attempted_input_tokens,
+                                cache_read_tokens=cr_tokens,
+                                cache_write_tokens=cw_tokens,
+                                cache_write_5m_tokens=cw_5m_tokens,
+                                cache_write_1h_tokens=cw_1h_tokens,
+                                uncached_input_tokens=uncached_input_tokens,
                                 total_latency_ms=total_latency,
                                 overhead_ms=optimization_latency,
                                 pipeline_timing=pipeline_timing,
@@ -2748,10 +2807,10 @@ class AnthropicHandlerMixin:
                             # continuation body is synthesized by Headroom
                             # so it is treated as mutated and goes through
                             # the canonical serializer.
-                            from headroom.proxy.helpers import (
-                                log_outbound_request,
+                            from headroom.proxy.body_forwarding import (
                                 prepare_outbound_body_bytes,
                             )
+                            from headroom.proxy.helpers import log_outbound_request
 
                             ccr_outbound_bytes, ccr_outbound_source = prepare_outbound_body_bytes(
                                 body=continuation_body,
@@ -3048,6 +3107,7 @@ class AnthropicHandlerMixin:
                             request_id=request_id,
                             provider=provider_name,
                             model=model,
+                            status_code=response.status_code,
                             original_tokens=original_tokens,
                             optimized_tokens=optimized_tokens,
                             output_tokens=output_tokens,
@@ -3503,6 +3563,7 @@ class AnthropicHandlerMixin:
                     request_id=request_id,
                     provider="anthropic",
                     model="batch",
+                    status_code=response.status_code,
                     original_tokens=total_original_tokens,
                     optimized_tokens=total_optimized_tokens,
                     output_tokens=0,
@@ -3608,7 +3669,13 @@ class AnthropicHandlerMixin:
             request_id=None,
         )
 
-        body = await request.body()
+        from starlette.requests import ClientDisconnect
+
+        try:
+            body = await request.body()
+        except ClientDisconnect:
+            logger.debug("Client disconnected during body read for anthropic batch passthrough")
+            return Response(status_code=204)
 
         response = await self.http_client.request(  # type: ignore[union-attr]
             method=request.method,
@@ -3627,6 +3694,7 @@ class AnthropicHandlerMixin:
                 request_id=request_id,
                 provider="anthropic",
                 model="passthrough:batches",
+                status_code=response.status_code,
                 original_tokens=0,
                 optimized_tokens=0,
                 output_tokens=0,

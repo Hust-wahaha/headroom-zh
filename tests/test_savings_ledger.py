@@ -66,7 +66,7 @@ def test_breakdowns_aggregate_by_dimension(monkeypatch, tmp_path):
     assert clients["proxy"]["tokens_saved"] == 1400
 
 
-def test_windows_today_week_alltime(monkeypatch, tmp_path):
+def test_windows_today_week_last30(monkeypatch, tmp_path):
     _events_env(monkeypatch, tmp_path)
     now = datetime(2026, 6, 17, 12, 0, tzinfo=UTC)
     L.record_savings_event(
@@ -84,32 +84,35 @@ def test_windows_today_week_alltime(monkeypatch, tmp_path):
         tokens_after=700,
         model=None,
         client="c",
-        timestamp=now - timedelta(days=30),
+        timestamp=now - timedelta(days=20),
     )
     report = L.aggregate_savings(now=now)
     assert report.windows["today"]["tokens_saved"] == 500
     assert report.windows["last_7_days"]["tokens_saved"] == 500 + 400
-    assert report.windows["all_time"]["tokens_saved"] == 500 + 400 + 300
-    assert report.windows["all_time"]["calls"] == 3
+    assert report.windows["last_30_days"]["tokens_saved"] == 500 + 400 + 300
+    assert report.windows["last_30_days"]["calls"] == 3
     # 500 saved out of 1000 before today
     assert report.windows["today"]["savings_percent"] == pytest.approx(50.0)
 
 
-def test_retention_excludes_old_events(monkeypatch, tmp_path):
+def test_retention_hard_capped_at_30_days(monkeypatch, tmp_path):
     _events_env(monkeypatch, tmp_path)
     now = datetime(2026, 6, 17, 12, 0, tzinfo=UTC)
     L.record_savings_event(
         tokens_before=1000, tokens_after=500, model=None, client="c", timestamp=now
     )
+    # 60 days old: within the requested 365-day window but past the 30-day cap.
     L.record_savings_event(
         tokens_before=1000,
         tokens_after=500,
         model=None,
         client="c",
-        timestamp=now - timedelta(days=400),
+        timestamp=now - timedelta(days=60),
     )
+    # Caller asks for 365 days, but retention is hard-capped at 30.
     report = L.aggregate_savings(now=now, retention_days=365)
     assert report.lifetime["calls"] == 1
+    assert report.windows["last_30_days"]["calls"] == 1
 
 
 def test_appends_do_not_clobber_and_survive_restart(monkeypatch, tmp_path):
@@ -184,7 +187,7 @@ def test_cli_renders_sections_and_json(monkeypatch, tmp_path):
     assert result.exit_code == 0
     # No redundant top-line headline; the windows lead the output.
     assert "cost avoided" not in result.output
-    assert "Today" in result.output and "All time" in result.output
+    assert "Today" in result.output and "Last 30 days" in result.output
     assert "Savings by client" in result.output and "claude-code" in result.output
     assert "Per-repo totals" not in result.output
 
@@ -192,7 +195,7 @@ def test_cli_renders_sections_and_json(monkeypatch, tmp_path):
     assert result_json.exit_code == 0
     payload = json.loads(result_json.output)
     assert payload["lifetime"]["tokens_saved"] == 700
-    assert payload["windows"]["all_time"]["calls"] == 1
+    assert payload["windows"]["last_30_days"]["calls"] == 1
     assert "by_repo" not in payload
 
 
@@ -279,3 +282,21 @@ def test_proxy_record_request_appends_ledger_event(tmp_path, monkeypatch):
     assert "claude-code" in clients
     assert "proxy" in clients
     assert any(row["model"] == "gpt-4o" for row in report.by_model)
+
+
+# --------------------------------------------------------------------------- #
+# retention cap + stale-schema reset
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize("bad_days", ["31", "60", "365"])
+def test_cli_days_flag_capped_at_30(monkeypatch, tmp_path, bad_days):
+    pytest.importorskip("click")
+    from click.testing import CliRunner
+
+    from headroom.cli.savings import savings
+
+    _events_env(monkeypatch, tmp_path)
+    result = CliRunner().invoke(savings, ["--days", bad_days])
+    assert result.exit_code != 0
+    assert "30" in result.output  # IntRange error mentions the allowed max

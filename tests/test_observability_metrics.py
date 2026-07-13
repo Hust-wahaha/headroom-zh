@@ -198,3 +198,20 @@ async def test_prometheus_metrics_reads_late_configured_otel_metrics() -> None:
         assert spy.rate_limited_calls == [{"provider": "anthropic", "model": "claude-sonnet"}]
     finally:
         reset_otel_metrics()
+
+
+@pytest.mark.asyncio
+async def test_prometheus_metrics_clamps_negative_token_savings() -> None:
+    metrics = PrometheusMetrics()
+
+    await metrics.record_request(
+        provider="openai",
+        model="openai-compatible",
+        input_tokens=100,
+        output_tokens=5,
+        tokens_saved=-25,
+        latency_ms=1.0,
+    )
+
+    assert metrics.tokens_saved_total == 0
+    assert metrics.savings_history[-1][1] == 0

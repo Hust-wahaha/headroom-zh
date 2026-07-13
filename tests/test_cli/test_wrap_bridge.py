@@ -32,7 +32,7 @@ def test_wrap_claude_prepare_only_skips_host_binary_lookup() -> None:
 
     with patch("headroom.cli.wrap._prepare_wrap_rtk") as prepare_rtk:
         with patch("headroom.cli.wrap.shutil.which") as which_mock:
-            result = runner.invoke(main, ["wrap", "claude", "--prepare-only"])
+            result = runner.invoke(main, ["wrap", "claude", "--prepare-only", "--context-tool"])
 
     assert result.exit_code == 0, result.output
     prepare_rtk.assert_called_once()
@@ -48,7 +48,7 @@ def test_wrap_claude_prepare_only_uses_lean_ctx_when_configured(monkeypatch) -> 
             "headroom.cli.wrap._setup_lean_ctx_agent",
             return_value=Path("lean-ctx"),
         ) as setup:
-            result = runner.invoke(main, ["wrap", "claude", "--prepare-only"])
+            result = runner.invoke(main, ["wrap", "claude", "--prepare-only", "--context-tool"])
 
     assert result.exit_code == 0, result.output
     prepare_rtk.assert_not_called()

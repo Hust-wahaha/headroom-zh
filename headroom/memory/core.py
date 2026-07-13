@@ -304,6 +304,21 @@ class HierarchicalMemory:
 
         return memory
 
+    async def record_access(
+        self,
+        memory_ids: list[str],
+        accessed_at: datetime | None = None,
+    ) -> int:
+        """Record retrieval metadata for memories returned to a caller."""
+        unique_ids = list(dict.fromkeys(memory_ids))
+        if not unique_ids:
+            return 0
+
+        updated = await self._store.record_access(unique_ids, accessed_at)
+        if self._cache is not None:
+            await self._cache.invalidate_batch(unique_ids)
+        return updated
+
     async def query(self, filter: MemoryFilter) -> list[Memory]:
         """Query memories with filtering.
 

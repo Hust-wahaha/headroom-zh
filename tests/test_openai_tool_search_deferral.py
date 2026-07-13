@@ -70,6 +70,29 @@ def test_defers_non_core_and_injects_search_tool():
         assert by_name[n].get("defer_loading") is True  # non-core deferred
 
 
+def test_terminal_reserved_namespace_stays_resident():
+    terminal = _fn("terminal")
+    tools = [terminal] + [_fn(f"peer_{i}") for i in range(11)]
+    snapshot = copy.deepcopy(tools)
+
+    out = inject_tool_search_deferral_openai(tools, "gpt-5.6-terra")
+
+    forwarded = next(t for t in out if t.get("name") == "terminal")
+    assert forwarded == terminal
+    assert "defer_loading" not in forwarded
+    assert next(t for t in out if t.get("name") == "peer_0").get("defer_loading") is True
+    assert tools == snapshot
+
+
+def test_terminal_helper_remains_deferrable():
+    tools = [_fn("terminal_helper")] + [_fn(f"peer_{i}") for i in range(11)]
+
+    out = inject_tool_search_deferral_openai(tools, "gpt-5.6-terra")
+
+    helper = next(t for t in out if t.get("name") == "terminal_helper")
+    assert helper.get("defer_loading") is True
+
+
 def test_defers_mcp_server():
     tools = [_fn(n) for n in _CORE] + [{"type": "mcp", "server_label": "sentry"}]
     tools += [_fn(f"x{i}") for i in range(8)]

@@ -40,7 +40,7 @@ def _window_line(label: str, window: dict[str, Any]) -> str:
     before = int(window.get("tokens_before", 0) or 0)
     cost = float(window.get("cost_usd", 0.0) or 0.0)
     return (
-        f"{label:<11} {_bar(pct)} {pct:5.1f}%  "
+        f"{label:<12} {_bar(pct)} {pct:5.1f}%  "
         f"saved {_tokens(saved)} / {_tokens(before)} tokens  {_money(cost)}"
     )
 
@@ -49,10 +49,10 @@ def _window_line(label: str, window: dict[str, Any]) -> str:
 @click.option("--json", "as_json", is_flag=True, help="Emit the raw report as JSON.")
 @click.option(
     "--days",
-    type=click.IntRange(min=1),
+    type=click.IntRange(min=1, max=savings_ledger.MAX_RETENTION_DAYS),
     default=savings_ledger.DEFAULT_RETENTION_DAYS,
     show_default=True,
-    help="Retention/lookback window for the ledger, in days.",
+    help=f"Retention/lookback window for the ledger, in days (max {savings_ledger.MAX_RETENTION_DAYS}).",
 )
 @click.option("--reset", is_flag=True, help="Delete the savings ledger and start fresh.")
 def savings(as_json: bool, days: int, reset: bool) -> None:
@@ -87,7 +87,7 @@ def savings(as_json: bool, days: int, reset: bool) -> None:
     click.echo("")
     click.echo(_window_line("Today", report.windows["today"]))
     click.echo(_window_line("Last 7 days", report.windows["last_7_days"]))
-    click.echo(_window_line("All time", report.windows["all_time"]))
+    click.echo(_window_line("Last 30 days", report.windows["last_30_days"]))
 
     if report.by_model:
         click.echo("")

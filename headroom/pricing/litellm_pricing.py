@@ -11,6 +11,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from headroom.pricing.litellm_model_resolution import (
+    pricing_lookup_candidates,
+    resolve_litellm_model_name,
+)
+
 # litellm calls `dotenv.load_dotenv()` during its own import, which loads
 # the project `.env` into `os.environ`. We don't want that side effect —
 # importing a pricing helper should not silently leak API keys into the
@@ -33,16 +38,6 @@ except ImportError:
     litellm = None  # type: ignore[assignment]
     LITELLM_AVAILABLE = False
 
-# Aliases for models removed from LiteLLM's cost database (retired/renamed).
-# Maps old model name -> current LiteLLM key that has equivalent pricing.
-_MODEL_ALIASES: dict[str, str] = {
-    # Claude 3.5 Sonnet retired Feb 2026, pricing same as claude-sonnet-4-20250514
-    "claude-3-5-sonnet-20241022": "claude-sonnet-4-20250514",
-    "claude-3-5-sonnet-20240620": "claude-sonnet-4-20250514",
-    # Claude 3 Sonnet retired
-    "claude-3-sonnet-20240229": "claude-3-haiku-20240307",
-}
-
 _resolved_model_cache: dict[str, str] = {}
 
 
@@ -62,36 +57,15 @@ def _resolve_litellm_model_uncached(model: str) -> str:
     """Uncached resolution — called once per unique model name."""
     if not LITELLM_AVAILABLE:
         return model
-    # Try as-is first
-    try:
-        litellm.cost_per_token(model=model, prompt_tokens=1, completion_tokens=0)
-        return model
-    except Exception:
-        pass
-    # Try with provider prefix
-    prefixes = {
-        "claude-": "anthropic/",
-        "gpt-": "openai/",
-        "o1-": "openai/",
-        "o3-": "openai/",
-        "o4-": "openai/",
-        "gemini-": "google/",
-        "minimax-": "minimax/",
-        "deepseek-": "deepseek/",
-    }
-    # Case-insensitive prefix match: MiniMax uses mixed-case model
-    # names like "MiniMax-M3" (capital M's); we shouldn't require the
-    # user to lower-case their config to match.
-    model_lower = model.lower()
-    for pattern, prefix in prefixes.items():
-        if model_lower.startswith(pattern):
-            prefixed = f"{prefix}{model}"
-            try:
-                litellm.cost_per_token(model=prefixed, prompt_tokens=1, completion_tokens=0)
-                return prefixed
-            except Exception:
-                break
-    return model
+
+    def is_known_model(candidate: str) -> bool:
+        try:
+            litellm.cost_per_token(model=candidate, prompt_tokens=1, completion_tokens=0)
+            return True
+        except Exception:
+            return False
+
+    return resolve_litellm_model_name(model, is_known_model)
 
 
 def _register_minimax_pricing() -> None:
@@ -160,21 +134,11 @@ def get_model_pricing(model: str) -> LiteLLMModelPricing | None:
         return None
     cost_data = litellm.model_cost
 
-    # Try exact match first
-    info = cost_data.get(model)
-
-    # Try common provider prefixes if not found
-    if info is None:
-        for prefix in ["openai/", "anthropic/", "google/", "mistral/", "deepseek/"]:
-            if f"{prefix}{model}" in cost_data:
-                info = cost_data[f"{prefix}{model}"]
-                break
-
-    # Try retired/renamed model aliases (LiteLLM removes old model keys over time)
-    if info is None:
-        alias = _MODEL_ALIASES.get(model)
-        if alias:
-            info = cost_data.get(alias)
+    info = None
+    for candidate in pricing_lookup_candidates(model):
+        info = cost_data.get(candidate)
+        if info is not None:
+            break
 
     if info is None:
         return None

@@ -311,6 +311,22 @@ class MemoryStore(Protocol):
         """
         ...
 
+    async def record_access(
+        self,
+        memory_ids: list[str],
+        accessed_at: datetime | None = None,
+    ) -> int:
+        """Record one retrieval for each distinct memory ID.
+
+        Args:
+            memory_ids: IDs of memories actually returned to a caller.
+            accessed_at: Retrieval time (defaults to now).
+
+        Returns:
+            Number of existing memories updated.
+        """
+        ...
+
     async def delete(self, memory_id: str) -> bool:
         """
         Delete a memory by ID.

@@ -80,6 +80,19 @@ def test_savings_zero_when_no_tokens_saved():
     assert stats["total_tokens_saved"] == 0
 
 
+def test_negative_token_savings_are_clamped_to_zero():
+    """Estimator artifacts must not reduce cumulative savings below reality."""
+    from headroom.proxy.server import CostTracker
+
+    ct = CostTracker()
+
+    ct.record_tokens("openai-compatible", tokens_saved=-500, tokens_sent=5_000)
+    stats = ct.stats()
+
+    assert stats["total_tokens_saved"] == 0
+    assert stats["per_model"]["openai-compatible"]["tokens_saved"] == 0
+
+
 def test_multi_model_savings():
     """Savings across multiple models use each model's own list price."""
     from headroom.proxy.server import CostTracker

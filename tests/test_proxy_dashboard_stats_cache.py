@@ -445,6 +445,138 @@ def test_stats_reports_lean_ctx_as_selected_cli_filter(monkeypatch: pytest.Monke
     assert payload["savings"]["by_layer"]["compression"]["lean_ctx_tokens"] == 9
 
 
+def test_stats_cli_filtering_available_false_when_not_installed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reproduction: savings.by_layer.cli_filtering.available reflects `installed`
+    when the context tool isn't installed. On origin/main, `available` doesn't
+    exist in this dict at all (`KeyError`); this asserts the fixed key/value.
+    """
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    import headroom.proxy.server as server
+    from headroom.proxy.server import ProxyConfig, create_app
+
+    monkeypatch.setattr(
+        server,
+        "get_compression_store",
+        lambda: _StatsStub({"store": 0}, "store", {}),
+    )
+    monkeypatch.setattr(
+        server,
+        "get_telemetry_collector",
+        lambda: _StatsStub({"telemetry": 0}, "telemetry", {}),
+    )
+    monkeypatch.setattr(
+        server,
+        "get_compression_feedback",
+        lambda: _StatsStub({"feedback": 0}, "feedback", {}),
+    )
+    monkeypatch.setattr(
+        server,
+        "_get_context_tool_stats",
+        lambda: {
+            "tool": "rtk",
+            "label": "RTK",
+            "installed": False,
+            "total_commands": 0,
+            "tokens_saved": 0,
+            "avg_savings_pct": 0.0,
+        },
+    )
+    monkeypatch.setattr(server, "get_toin", lambda: _ToinStub())
+
+    app = create_app(
+        ProxyConfig(
+            optimize=False,
+            cache_enabled=False,
+            rate_limit_enabled=False,
+            cost_tracking_enabled=False,
+            log_requests=False,
+            ccr_inject_tool=False,
+            ccr_handle_responses=False,
+            ccr_context_tracking=False,
+        )
+    )
+
+    with TestClient(app) as client:
+        response = client.get("/stats")
+
+    payload = response.json()
+    assert response.status_code == 200
+    assert payload["savings"]["by_layer"]["cli_filtering"]["available"] is False
+    # Preservation: context_tool.available keeps matching the same `installed`
+    # value it always did, now computed via the hoisted local.
+    assert payload["context_tool"]["available"] is False
+
+
+def test_stats_cli_filtering_available_true_at_boundary_zero_tokens_saved(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Boundary value 0.0: installed but genuinely zero savings must still
+    report `available: True` with a real `0`, never collapsing into the
+    "not installed" state. This is the negative-space guard against the fix
+    over-triggering on the #1831 reporter's original zero-figures symptom.
+    """
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    import headroom.proxy.server as server
+    from headroom.proxy.server import ProxyConfig, create_app
+
+    monkeypatch.setattr(
+        server,
+        "get_compression_store",
+        lambda: _StatsStub({"store": 0}, "store", {}),
+    )
+    monkeypatch.setattr(
+        server,
+        "get_telemetry_collector",
+        lambda: _StatsStub({"telemetry": 0}, "telemetry", {}),
+    )
+    monkeypatch.setattr(
+        server,
+        "get_compression_feedback",
+        lambda: _StatsStub({"feedback": 0}, "feedback", {}),
+    )
+    monkeypatch.setattr(
+        server,
+        "_get_context_tool_stats",
+        lambda: {
+            "tool": "rtk",
+            "label": "RTK",
+            "installed": True,
+            "total_commands": 0,
+            "tokens_saved": 0,
+            "avg_savings_pct": 0.0,
+        },
+    )
+    monkeypatch.setattr(server, "get_toin", lambda: _ToinStub())
+
+    app = create_app(
+        ProxyConfig(
+            optimize=False,
+            cache_enabled=False,
+            rate_limit_enabled=False,
+            cost_tracking_enabled=False,
+            log_requests=False,
+            ccr_inject_tool=False,
+            ccr_handle_responses=False,
+            ccr_context_tracking=False,
+        )
+    )
+
+    with TestClient(app) as client:
+        response = client.get("/stats")
+
+    payload = response.json()
+    assert response.status_code == 200
+    assert payload["savings"]["by_layer"]["cli_filtering"]["available"] is True
+    assert payload["savings"]["by_layer"]["cli_filtering"]["tokens_saved"] == 0
+    assert payload["context_tool"]["available"] is True
+
+
 def test_cost_merge_uses_generic_cli_filtering_name() -> None:
     from headroom.proxy.cost import merge_cost_stats
 

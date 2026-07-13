@@ -112,6 +112,85 @@ def test_openai_cache_mode_freezes_previous_turns() -> None:
         assert captured["frozen_message_count"] == 2
 
 
+@pytest.mark.parametrize("tail_role", ["tool", "function"])
+def test_openai_cache_mode_keeps_final_tool_observation_mutable(tail_role: str) -> None:
+    captured = {}
+    with _make_proxy_client() as client:
+        proxy = client.app.state.proxy
+        proxy.config.optimize = True
+        proxy.config.mode = "cache"
+
+        fake_tracker = _FakePrefixTracker(frozen_count=0)
+        proxy.session_tracker_store.compute_session_id = lambda request, model, messages: (
+            "stable-session"
+        )
+        proxy.session_tracker_store.get_or_create = lambda session_id, provider: fake_tracker
+
+        def _fake_apply(**kwargs):
+            captured.setdefault("calls", []).append(
+                {
+                    "frozen_message_count": kwargs.get("frozen_message_count"),
+                    "roles": [msg.get("role") for msg in kwargs["messages"]],
+                    "mode": proxy.config.mode,
+                }
+            )
+            return SimpleNamespace(
+                messages=kwargs["messages"],
+                transforms_applied=["test:compress-tail"],
+                timing={},
+                tokens_before=120,
+                tokens_after=80,
+                waste_signals=None,
+            )
+
+        proxy.openai_pipeline.apply = _fake_apply
+
+        async def _fake_retry(method, url, headers, body, stream=False, **kwargs):  # noqa: ANN001
+            return httpx.Response(
+                200,
+                json={
+                    "id": "chatcmpl_tool_tail",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "message": {"role": "assistant", "content": "ok"},
+                            "finish_reason": "stop",
+                        }
+                    ],
+                    "usage": {"prompt_tokens": 80, "completion_tokens": 3, "total_tokens": 83},
+                },
+            )
+
+        proxy._retry_request = _fake_retry
+
+        tail = {
+            "role": tail_role,
+            "content": "large command observation " * 200,
+        }
+        if tail_role == "tool":
+            tail["tool_call_id"] = "call_1"
+        else:
+            tail["name"] = "bash"
+
+        response = client.post(
+            "/v1/chat/completions",
+            headers={"authorization": "Bearer test-key"},
+            json={
+                "model": "gpt-4o-mini",
+                "messages": [
+                    {"role": "user", "content": "turn1"},
+                    {"role": "assistant", "content": "run command"},
+                    tail,
+                ],
+            },
+        )
+
+        assert response.status_code == 200
+        assert any(call["frozen_message_count"] == 2 for call in captured["calls"]), captured[
+            "calls"
+        ]
+
+
 def test_openai_cache_mode_restores_mutated_frozen_prefix() -> None:
     captured = {}
     with _make_proxy_client() as client:

@@ -14,7 +14,6 @@ import math
 import os
 import tempfile
 import threading
-import urllib.parse
 from csv import DictWriter
 from datetime import datetime, timedelta, timezone
 from io import StringIO
@@ -22,6 +21,10 @@ from pathlib import Path
 from typing import Any
 
 from headroom import paths as _paths
+from headroom.proxy import project_name_policy
+
+PROJECT_NAME_MAX_LENGTH = project_name_policy.PROJECT_NAME_MAX_LENGTH
+sanitize_project_name = project_name_policy.sanitize_project_name
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +34,6 @@ DEFAULT_SAVINGS_FILE = "proxy_savings.json"
 SCHEMA_VERSION = 4
 DEFAULT_MAX_HISTORY_POINTS = 5000
 DEFAULT_MAX_PROJECTS = 50
-PROJECT_NAME_MAX_LENGTH = 128
 DEFAULT_MAX_HISTORY_AGE_DAYS = 365
 DEFAULT_MAX_RESPONSE_HISTORY_POINTS = 500
 DEFAULT_DISPLAY_SESSION_INACTIVITY_MINUTES = 60
@@ -218,16 +220,22 @@ def _estimate_cache_savings_usd(model: str, cache_read_tokens: int) -> float:
     """Estimate cache-read savings in USD — the discount delta vs list price.
 
     Cache reads bill at the provider's discounted rate, so the saving per token
-    is ``input_cost_per_token - cache_read_input_token_cost``. Unknown models or
-    an unavailable litellm price as 0.0 (fail open); tokens still accumulate.
+    is ``input_cost_per_token - cache_read_input_token_cost``. Unknown models
+    price as 0.0 (fail open); tokens still accumulate. An unavailable litellm
+    falls back to ``DEFAULT_FALLBACK_INPUT_COST_PER_TOKEN``, matching
+    ``_estimate_input_cost_usd``/``_estimate_compression_savings_usd`` — otherwise
+    cache_savings_usd silently reads as $0 forever on any install without
+    litellm (e.g. Python 3.14, where headroom's own dependency spec excludes it).
 
     Deliberately diverges from ``proxy/cost.py``'s session-scoped provider
     multipliers (``_CACHE_ECONOMICS``): this lifetime figure follows the
     per-model litellm pricing the rest of this module already uses.
     """
     litellm = _get_litellm_module()
-    if cache_read_tokens <= 0 or litellm is None:
+    if cache_read_tokens <= 0:
         return 0.0
+    if litellm is None:
+        return float(cache_read_tokens) * float(DEFAULT_FALLBACK_INPUT_COST_PER_TOKEN)
 
     try:
         resolved = _resolve_litellm_model(model)
@@ -362,23 +370,6 @@ def _empty_display_session() -> dict[str, Any]:
         "started_at": None,
         "last_activity_at": None,
     }
-
-
-def sanitize_project_name(value: Any) -> str | None:
-    """Normalize a client-supplied project name; ``None`` when unusable.
-
-    Strips control characters, trims whitespace, and caps length so a
-    misbehaving client cannot bloat the persisted state or the dashboard.
-    Percent-encoded values (from non-ASCII cwd names) are decoded first so
-    the stored project name matches the original directory name.
-    """
-    if not isinstance(value, str):
-        return None
-    value = urllib.parse.unquote(value)
-    cleaned = "".join(ch for ch in value if ch.isprintable()).strip()
-    if not cleaned:
-        return None
-    return cleaned[:PROJECT_NAME_MAX_LENGTH]
 
 
 def _empty_project_entry() -> dict[str, Any]:

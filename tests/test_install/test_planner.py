@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import click
+import pytest
+
 from headroom.install.models import ConfigScope, InstallPreset, ProviderSelectionMode, ToolTarget
-from headroom.install.planner import build_manifest, resolve_targets
+from headroom.install.planner import PROVIDER_SCOPE_TARGETS, build_manifest, resolve_targets
 
 
 def test_resolve_targets_auto_falls_back_when_detection_empty(monkeypatch) -> None:
@@ -146,3 +149,41 @@ def test_build_manifest_persists_no_http2_override() -> None:
 
     assert manifest.proxy_args.count("--no-http2") == 1
     assert "HEADROOM_HTTP2" not in manifest.base_env
+
+
+def test_resolve_targets_provider_scope_all_ignores_unsupported_requested() -> None:
+    """`all` mode never consults the requested list, so an unsupported entry
+    like `cursor` must not make it raise — it should return the full provider
+    target set (regression: this used to raise a ClickException)."""
+    targets = resolve_targets(
+        ProviderSelectionMode.ALL.value,
+        ["cursor"],
+        scope=ConfigScope.PROVIDER.value,
+    )
+
+    assert targets == [t.value for t in PROVIDER_SCOPE_TARGETS]
+
+
+def test_resolve_targets_provider_scope_auto_ignores_unsupported_requested(monkeypatch) -> None:
+    """`auto` mode also ignores the requested list, so an unsupported entry
+    must not raise."""
+    monkeypatch.setattr("headroom.install.planner.detect_targets", lambda: [])
+
+    targets = resolve_targets(
+        ProviderSelectionMode.AUTO.value,
+        ["cursor"],
+        scope=ConfigScope.PROVIDER.value,
+    )
+
+    assert targets == [ToolTarget.CLAUDE.value, ToolTarget.CODEX.value]
+
+
+def test_resolve_targets_provider_scope_manual_rejects_unsupported() -> None:
+    """The manual path DOES consult the requested list, so an unsupported
+    target under provider scope must still be rejected."""
+    with pytest.raises(click.ClickException, match="cursor"):
+        resolve_targets(
+            ProviderSelectionMode.MANUAL.value,
+            ["cursor"],
+            scope=ConfigScope.PROVIDER.value,
+        )

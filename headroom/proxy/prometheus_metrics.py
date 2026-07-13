@@ -597,9 +597,7 @@ class PrometheusMetrics:
         # model. Clamp so total_tokens_removed / avg_compression_pct reflect the
         # actually-forwarded bytes instead of surfacing spurious negatives.
         if tokens_saved < 0:
-            import logging as _lg
-
-            _lg.getLogger(__name__).debug(
+            logger.debug(
                 "metrics.record: clamping negative tokens_saved=%d to 0 for %s (artifact; wire not inflated)",
                 tokens_saved,
                 model,

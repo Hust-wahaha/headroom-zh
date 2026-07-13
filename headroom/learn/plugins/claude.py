@@ -96,6 +96,11 @@ class ClaudeCodePlugin(LearnPlugin, ConversationScanner):
             if not jsonl_files:
                 continue
 
+            session_project_path = self._project_path_from_session_cwd(jsonl_files)
+            if session_project_path is not None:
+                project_path = session_project_path
+                name = _project_display_name(project_path, entry.name)
+
             projects.append(
                 ProjectInfo(
                     name=name,
@@ -107,6 +112,27 @@ class ClaudeCodePlugin(LearnPlugin, ConversationScanner):
             )
 
         return projects
+
+    @staticmethod
+    def _project_path_from_session_cwd(jsonl_files: list[Path]) -> Path | None:
+        for jsonl_path in sorted(jsonl_files):
+            try:
+                with open(jsonl_path, encoding="utf-8", errors="replace") as f:
+                    for line in f:
+                        if not line.strip():
+                            continue
+                        try:
+                            event = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        cwd = event.get("cwd")
+                        if isinstance(cwd, str) and cwd:
+                            project_path = Path(cwd)
+                            if project_path.exists():
+                                return project_path
+            except (OSError, UnicodeDecodeError):
+                continue
+        return None
 
     def scan_project(
         self, project: ProjectInfo, max_workers: int = 1, include_subagents: bool = True
@@ -420,9 +446,23 @@ def _greedy_path_decode(base: Path, parts: list[str]) -> Path | None:
         return None
 
     try:
-        children = sorted(child for child in base.iterdir() if child.is_dir())
+        entries = list(base.iterdir())
     except OSError:
         return None
+
+    # Windows profiles routinely contain reparse-point junctions (e.g.
+    # "AppData\Local\Temporary Internet Files") that raise PermissionError on
+    # is_dir(). Skip those entries individually instead of letting one
+    # inaccessible sibling abort the whole listing — and thus every project
+    # path that happens to walk through this directory.
+    children = []
+    for entry in entries:
+        try:
+            if entry.is_dir():
+                children.append(entry)
+        except OSError:
+            continue
+    children.sort()
 
     for child in children:
         for tokenization in _component_tokenizations(child.name):

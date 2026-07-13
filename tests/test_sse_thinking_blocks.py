@@ -23,8 +23,6 @@ from __future__ import annotations
 import json
 from typing import Any
 
-import pytest
-
 from headroom.proxy.handlers.streaming import StreamingMixin
 
 
@@ -40,6 +38,15 @@ def _build_sse(events: list[dict[str, Any]]) -> str:
         out.append(f"data: {json.dumps(ev)}")
         out.append("")  # event terminator
     return "\n".join(out) + "\n"
+
+
+def _sse_events(sse_text: str) -> list[dict[str, Any]]:
+    """Extract JSON data objects from an SSE payload string."""
+    events: list[dict[str, Any]] = []
+    for line in sse_text.splitlines():
+        if line.startswith("data: "):
+            events.append(json.loads(line[6:]))
+    return events
 
 
 def test_thinking_delta_accumulated() -> None:
@@ -275,14 +282,51 @@ def test_response_to_sse_does_not_default_missing_stop_reason() -> None:
     assert "end_turn" not in sse_text
 
 
-def test_response_to_sse_rejects_unknown_content_block() -> None:
+def test_response_to_sse_emits_unknown_content_block_verbatim() -> None:
     parser = _Parser()
+    block = {"type": "future_block", "payload": {"preserve": ["me"]}}
 
-    with pytest.raises(ValueError, match="Unsupported Anthropic content block type"):
-        parser._response_to_sse(
-            {"content": [{"type": "future_block", "payload": "preserve me"}]},
-            "anthropic",
-        )
+    sse_text = b"".join(parser._response_to_sse({"content": [block]}, "anthropic")).decode("utf-8")
+    events = _sse_events(sse_text)
+
+    block_start = next(ev for ev in events if ev["type"] == "content_block_start")
+    assert block_start["content_block"] == block
+    assert not any(ev["type"] == "content_block_delta" for ev in events)
+
+
+def test_response_to_sse_emits_server_tool_use_without_delta() -> None:
+    parser = _Parser()
+    server_tool_use = {
+        "type": "server_tool_use",
+        "id": "srvtoolu_123",
+        "name": "web_search",
+        "input": {"query": "headroom server_tool_use SSE crash"},
+    }
+    response = {
+        "id": "msg_3",
+        "model": "claude-opus-4",
+        "role": "assistant",
+        "content": [
+            {"type": "text", "text": "Searching."},
+            server_tool_use,
+        ],
+        "stop_reason": "end_turn",
+        "usage": {"output_tokens": 5},
+    }
+
+    sse_text = b"".join(parser._response_to_sse(response, "anthropic")).decode("utf-8")
+    events = _sse_events(sse_text)
+
+    block_starts = [ev for ev in events if ev["type"] == "content_block_start"]
+    assert block_starts[1]["index"] == 1
+    assert block_starts[1]["content_block"] == server_tool_use
+    assert not any(ev["type"] == "content_block_delta" and ev["index"] == 1 for ev in events)
+    assert any(
+        ev["type"] == "content_block_delta"
+        and ev["index"] == 0
+        and ev["delta"] == {"type": "text_delta", "text": "Searching."}
+        for ev in events
+    )
 
 
 # Issue #1876: CCR buffered-stream re-synthesis corrupted extended-thinking

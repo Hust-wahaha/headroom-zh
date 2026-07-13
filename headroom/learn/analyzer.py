@@ -73,6 +73,24 @@ _CLI_TIMEOUT = 300
 _CLI_IDLE_TIMEOUT = 60
 
 
+def _resolve_windows_cli_shim(cmd: list[str]) -> list[str] | None:
+    """Resolve an npm-installed CLI shim to its real executable on Windows.
+
+    ``subprocess`` launches via ``CreateProcess`` on Windows, which — unlike a
+    shell — does not apply the ``PATHEXT`` extension search. An npm-installed
+    CLI's PATH entry is usually a ``.cmd``/``.bat`` shim, so the bare command
+    name raises ``FileNotFoundError`` even though ``shutil.which`` (which does
+    apply ``PATHEXT``) resolves it fine. Re-resolve through ``shutil.which``
+    and retry with the resolved path.
+    """
+    if os.name != "nt":
+        return None
+    resolved = shutil.which(cmd[0])
+    if resolved is None:
+        return None
+    return [resolved, *cmd[1:]]
+
+
 def _resolve_timeout_secs(env_var: str, default: int) -> int:
     """Resolve a positive-integer timeout from *env_var* or fall back to *default*.
 
@@ -452,28 +470,50 @@ Return ONLY valid JSON matching this schema — no other text:
 def _strip_fenced_json(raw: str) -> dict:
     """Strip optional markdown fences and parse JSON.
 
-    Handles both raw JSON and fenced code blocks (e.g. ``​`json ... ``​`).
-    Only the first opening fence and last closing fence are removed, preserving
-    any triple-backtick content that may appear inside the JSON payload.
+    Handles raw JSON and fenced code blocks (e.g. ``​`json ... ``​`), including
+    the case where the model prefixes prose before the fence (e.g. "Here is the
+    JSON:") despite being told to return JSON only. Between the first opening
+    fence and last closing fence is preferred, preserving any triple-backtick
+    content inside the JSON payload; a first-``{`` / last-``}`` slice is the
+    final fallback.
 
     Args:
-        raw: Raw text output from an LLM, possibly wrapped in markdown fences.
+        raw: Raw text output from an LLM, possibly wrapped in markdown fences
+            and/or preceded by explanatory prose.
 
     Returns:
         Parsed JSON as a dictionary.
 
     Raises:
-        json.JSONDecodeError: If the text is not valid JSON after stripping.
+        json.JSONDecodeError: If no candidate parses as a JSON object.
     """
     text = raw.strip()
-    if text.startswith("```"):
-        lines = text.split("\n")
-        # Remove the first line (opening fence, e.g. ```json)
-        lines = lines[1:]
-        # Remove the last line if it is a closing fence
-        if lines and lines[-1].strip().startswith("```"):
-            lines = lines[:-1]
-        text = "\n".join(lines)
+
+    candidates: list[str] = []
+    # 1. Fenced block located anywhere (tolerates a prose preamble before it).
+    lines = text.split("\n")
+    fence_idxs = [i for i, ln in enumerate(lines) if ln.strip().startswith("```")]
+    if len(fence_idxs) >= 2:
+        candidates.append("\n".join(lines[fence_idxs[0] + 1 : fence_idxs[-1]]))
+    elif len(fence_idxs) == 1:
+        candidates.append("\n".join(lines[fence_idxs[0] + 1 :]))
+    # 2. The whole text as-is (the common raw-JSON case).
+    candidates.append(text)
+    # 3. First-``{`` .. last-``}`` slice (prose on both sides, no fence).
+    start, end = text.find("{"), text.rfind("}")
+    if start != -1 and end > start:
+        candidates.append(text[start : end + 1])
+
+    for candidate in candidates:
+        try:
+            parsed = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+
+    # Nothing parsed as an object: re-raise the natural error on the raw text
+    # so callers see a JSONDecodeError, preserving the documented contract.
     result: dict = json.loads(text)
     return result
 
@@ -528,10 +568,20 @@ def _call_cli_llm(digest: str, model: str) -> dict:
             timeout=hard_cap,
         )
     except FileNotFoundError:
-        raise RuntimeError(
-            f"`{cmd[0]}` not found in PATH. Install it or use a different backend "
-            "with --model <litellm-model-name>."
-        ) from None
+        shim_cmd = _resolve_windows_cli_shim(cmd)
+        if shim_cmd is None:
+            raise RuntimeError(
+                f"`{cmd[0]}` not found in PATH. Install it or use a different backend "
+                "with --model <litellm-model-name>."
+            ) from None
+        cmd = shim_cmd
+        try:
+            result = run(cmd, input=prompt, capture_output=True, text=True, timeout=hard_cap)
+        except FileNotFoundError:
+            raise RuntimeError(
+                f"`{cmd[0]}` not found in PATH. Install it or use a different backend "
+                "with --model <litellm-model-name>."
+            ) from None
     except subprocess.TimeoutExpired:
         raise RuntimeError(
             f"`{' '.join(cmd)}` did not respond within {hard_cap}s. "
@@ -573,8 +623,9 @@ def _call_claude_cli_streaming(
     Threads (rather than ``select``) drain stdout/stderr so the watchdog works
     on Windows too, where ``select`` does not support pipe handles.
     """
-    try:
-        proc = Popen(
+
+    def _popen(cmd: list[str]) -> subprocess.Popen:
+        return Popen(
             cmd,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
@@ -582,11 +633,24 @@ def _call_claude_cli_streaming(
             text=True,
             bufsize=1,  # line-buffered
         )
+
+    try:
+        proc = _popen(cmd)
     except FileNotFoundError:
-        raise RuntimeError(
-            f"`{cmd[0]}` not found in PATH. Install it or use a different backend "
-            "with --model <litellm-model-name>."
-        ) from None
+        shim_cmd = _resolve_windows_cli_shim(cmd)
+        if shim_cmd is None:
+            raise RuntimeError(
+                f"`{cmd[0]}` not found in PATH. Install it or use a different backend "
+                "with --model <litellm-model-name>."
+            ) from None
+        cmd = shim_cmd
+        try:
+            proc = _popen(cmd)
+        except FileNotFoundError:
+            raise RuntimeError(
+                f"`{cmd[0]}` not found in PATH. Install it or use a different backend "
+                "with --model <litellm-model-name>."
+            ) from None
 
     assert proc.stdin is not None and proc.stdout is not None and proc.stderr is not None
     try:

@@ -8,8 +8,6 @@ Extracted from server.py for maintainability.
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import json
 import sys
 from collections import OrderedDict
 from datetime import datetime
@@ -19,23 +17,9 @@ if TYPE_CHECKING:
     from ..memory.tracker import ComponentStats
 
 from headroom.proxy.models import CacheEntry
+from headroom.proxy.semantic_cache_key_policy import compute_semantic_cache_key, strip_cache_control
 
-
-def _strip_cache_control(obj: Any) -> Any:
-    """Recursively drop ``cache_control`` annotations before hashing.
-
-    Clients (notably Claude Code) move the ``cache_control`` cache breakpoint to
-    the newest content on each call, so the same logical ``system``/``tools``
-    payload carries the marker on one call and not the next. Stripping it keeps
-    the cache key stable across that movement. Mirrors
-    ``helpers._strip_per_call_annotations`` but kept local so the cache module
-    stays free of the heavier proxy-helpers import chain.
-    """
-    if isinstance(obj, dict):
-        return {k: _strip_cache_control(v) for k, v in obj.items() if k != "cache_control"}
-    if isinstance(obj, list):
-        return [_strip_cache_control(item) for item in obj]
-    return obj
+_strip_cache_control = strip_cache_control
 
 
 class SemanticCache:
@@ -66,15 +50,7 @@ class SemanticCache:
         untouched). Absent fields don't contribute, so truly-identical requests
         still hit.
         """
-        normalized = json.dumps(
-            {
-                "model": model,
-                "messages": messages,
-                **{k: _strip_cache_control(v) for k, v in key_fields.items()},
-            },
-            sort_keys=True,
-        )
-        return hashlib.sha256(normalized.encode()).hexdigest()[:32]
+        return compute_semantic_cache_key(messages, model, **key_fields)
 
     async def get(self, messages: list[dict], model: str, **key_fields: Any) -> CacheEntry | None:
         """Get cached response if exists and not expired."""

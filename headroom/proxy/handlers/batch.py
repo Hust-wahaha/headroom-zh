@@ -385,14 +385,21 @@ class BatchHandlerMixin:
         # Byte-faithful body bytes (PR-A3, fixes P0-2). When ``body`` is
         # None we forward the original bytes verbatim; otherwise the dict
         # has been synthesized by Headroom and is canonically serialized.
-        from headroom.proxy.helpers import (
-            log_outbound_request,
+        from headroom.proxy.body_forwarding import (
+            get_python_forwarder_mode,
             prepare_outbound_body_bytes,
             serialize_body_canonical,
         )
+        from headroom.proxy.helpers import log_outbound_request
 
         if body is None:
-            body_content = await request.body()
+            from starlette.requests import ClientDisconnect
+
+            try:
+                body_content = await request.body()
+            except ClientDisconnect:
+                logger.debug("Client disconnected during body read for google batch passthrough")
+                return Response(status_code=204)
             outbound_source = "passthrough"
             body_mutated = False
         else:
@@ -411,8 +418,6 @@ class BatchHandlerMixin:
         )
         # ``prepare_outbound_body_bytes`` is consulted only for the legacy
         # operator opt-in path so we honor the env-var override here too.
-        from headroom.proxy.helpers import get_python_forwarder_mode
-
         if get_python_forwarder_mode() == "legacy_json_kwarg" and body is not None:
             outbound_bytes, _ = prepare_outbound_body_bytes(
                 body=body,
@@ -503,7 +508,13 @@ class BatchHandlerMixin:
             else:
                 url = f"{url}?key={api_key}"
 
-        body = await request.body()
+        from starlette.requests import ClientDisconnect
+
+        try:
+            body = await request.body()
+        except ClientDisconnect:
+            logger.debug("Client disconnected during body read for gemini passthrough")
+            return Response(status_code=204)
 
         response = await self.http_client.request(  # type: ignore[union-attr]
             method=request.method,
@@ -921,10 +932,8 @@ class BatchHandlerMixin:
             # batch_body is synthesized by Headroom (compressed file_id +
             # metadata), so it is treated as mutated and goes through the
             # canonical serializer.
-            from headroom.proxy.helpers import (
-                log_outbound_request,
-                prepare_outbound_body_bytes,
-            )
+            from headroom.proxy.body_forwarding import prepare_outbound_body_bytes
+            from headroom.proxy.helpers import log_outbound_request
 
             outbound_bytes, outbound_source = prepare_outbound_body_bytes(
                 body=batch_body,
@@ -1172,12 +1181,12 @@ class BatchHandlerMixin:
         """
         from fastapi.responses import Response
 
+        from headroom.proxy.body_forwarding import prepare_outbound_body_bytes
         from headroom.proxy.helpers import (
             _read_request_body_bytes,
             _strip_internal_headers,
             log_outbound_headers,
             log_outbound_request,
-            prepare_outbound_body_bytes,
         )
 
         headers = dict(request.headers.items())

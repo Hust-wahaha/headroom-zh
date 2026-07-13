@@ -745,9 +745,7 @@ class CostTracker:
         # clamp it so `total_tokens_removed` reflects actually-forwarded bytes
         # instead of surfacing spurious negatives (verified clean on the wire).
         if tokens_saved < 0:
-            import logging as _lg
-
-            _lg.getLogger(__name__).debug(
+            logger.debug(
                 "record_tokens: clamping negative tokens_saved=%d to 0 for %s (artifact; wire not inflated)",
                 tokens_saved,
                 model,

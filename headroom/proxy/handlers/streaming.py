@@ -571,9 +571,11 @@ class StreamingMixin:
                     "content_block": block,
                 }
             else:
-                raise ValueError(
-                    f"Unsupported Anthropic content block type for SSE conversion: {block.get('type')!r}"
-                )
+                block_start = {
+                    "type": "content_block_start",
+                    "index": idx,
+                    "content_block": block,
+                }
 
             events.append(
                 f"event: content_block_start\ndata: {json.dumps(block_start)}\n\n".encode()
@@ -1050,11 +1052,11 @@ class StreamingMixin:
         # bytes once before entering the connection-retry loop. When a
         # transform mutated the body we re-serialize canonically; otherwise
         # we forward the original client bytes verbatim.
+        from headroom.proxy.body_forwarding import prepare_outbound_body_bytes
         from headroom.proxy.helpers import (
             capture_codex_wire_debug,
             codex_wire_debug_enabled,
             log_outbound_request,
-            prepare_outbound_body_bytes,
         )
 
         outbound_bytes, outbound_source = prepare_outbound_body_bytes(

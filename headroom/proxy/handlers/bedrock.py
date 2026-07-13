@@ -129,6 +129,11 @@ class BedrockHandlerMixin:
         try:
             body, raw = await read_request_json_with_bytes(request)
         except Exception as err:
+            from starlette.requests import ClientDisconnect
+
+            if isinstance(err, ClientDisconnect):
+                logger.debug("[%s] %s client disconnected during body read", request_id, LOG_TAG)
+                return Response(status_code=204)
             logger.warning(
                 "[%s] %s could not parse body; forwarding verbatim: %s",
                 request_id,

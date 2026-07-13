@@ -127,6 +127,33 @@ response = client.chat.completions.create(
 </Tab>
 </Tabs>
 
+### Proxy upstream override (`x-headroom-base-url`)
+
+When using the proxy, send the `x-headroom-base-url` request header to route a
+single request to a different upstream instead of the configured provider URL.
+This lets a client that speaks a provider's wire format authenticate against a
+compatible gateway (for example an OpenAI-compatible endpoint, or an
+Anthropic-Messages gateway such as OpenCode Zen) without changing the proxy
+configuration.
+
+The header is honored by the OpenAI-compatible routes, the Anthropic Messages
+route (`POST /v1/messages`), and the generic passthrough route. The proxy
+forwards the request to `<x-headroom-base-url>` + the original request path
+(e.g. `/v1/messages`). An empty or whitespace-only value is ignored and the
+configured upstream is used.
+
+```bash
+curl http://127.0.0.1:8787/v1/messages \
+  -H "content-type: application/json" \
+  -H "anthropic-version: 2023-06-01" \
+  -H "x-headroom-base-url: https://opencode.ai/zen/go" \
+  -H "x-api-key: <gateway-api-key>" \
+  -d '{"model":"glm-5.2","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}'
+```
+
+When `HEADROOM_STRIP_INTERNAL_HEADERS` is `enabled` (the default), the proxy
+reads this header for routing and then strips it before forwarding upstream.
+
 ## SmartCrusher Configuration
 
 Fine-tune JSON compression behavior:

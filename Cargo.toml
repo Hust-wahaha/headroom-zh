@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/headroom-core",
     "crates/headroom-proxy",
+    "crates/headroom-simulators",
     "crates/headroom-py",
     "crates/headroom-parity",
 ]
@@ -14,6 +15,7 @@ members = [
 default-members = [
     "crates/headroom-core",
     "crates/headroom-proxy",
+    "crates/headroom-simulators",
     "crates/headroom-parity",
 ]
 
@@ -47,7 +49,7 @@ serde = { version = "1", features = ["derive"] }
 # Enabled here in Phase A so PR-B2 can land as a pure consumer change.
 serde_json = { version = "1", features = ["preserve_order", "arbitrary_precision", "raw_value"] }
 bytes = "1"
-thiserror = "1"
+thiserror = "2"
 # `log` compat: when no tracing subscriber is active (the case inside the
 # headroom-py cdylib), events are re-emitted as `log` records so pyo3-log
 # can forward them to Python's logging. No effect on binaries that install
