@@ -2558,11 +2558,16 @@ class AnthropicHandlerMixin:
                         metadata={"path": pipeline_path, "stream": True},
                     )
                     await _finalize_pre_upstream()
+                    explicit_session_header = request.headers.get("x-headroom-session-id")
                     session_key = self._get_session_key(
                         body,
-                        session_header=request.headers.get("x-headroom-session-id"),
+                        session_header=explicit_session_header,
                     )
-                    if session_key in self._active_streams:
+                    # Only opt-in (header-bearing) callers participate in
+                    # mid-turn steering; see StreamingMixin._should_queue_mid_turn
+                    # for why the coarse md5 fallback must not queue concurrent
+                    # independent streams (it wrongly 202s a streaming caller).
+                    if self._should_queue_mid_turn(session_key, explicit_session_header):
                         from fastapi.responses import JSONResponse
 
                         queued = self._queue_mid_turn_message(session_key, body)

@@ -142,6 +142,52 @@ def test_vertex_rawpredict_anthropic_runs_compression_handler(monkeypatch) -> No
     assert captured["model"] == "claude-sonnet-4-6"
 
 
+def test_vertex_google_generate_content_uses_region_derived_host(monkeypatch) -> None:
+    """The google-publisher generateContent route must derive the upstream host
+    from the request's location (like the anthropic route), not send a
+    europe-west1 request to the fixed us-central1 host."""
+    captured: dict[str, str] = {}
+
+    # The route calls handle_gemini_generate_content(request, model, base_url, provider).
+    async def fake(self, request, model, base_url, provider, *rest):  # type: ignore[no-untyped-def]
+        captured.update(base_url=str(base_url), provider=str(provider), model=str(model))
+        return JSONResponse({"ok": True})
+
+    monkeypatch.setattr(HeadroomProxy, "handle_gemini_generate_content", fake)
+
+    with TestClient(_default_vertex_app()) as client:
+        resp = client.post(
+            "/v1/projects/p/locations/europe-west1/publishers/google/models/"
+            "gemini-2.0-flash:generateContent",
+            json={"contents": []},
+        )
+    assert resp.status_code == 200
+    assert captured["provider"] == "vertex:google"
+    assert captured["base_url"] == "https://europe-west1-aiplatform.googleapis.com"
+    assert captured["model"] == "gemini-2.0-flash"
+
+
+def test_vertex_google_count_tokens_uses_region_derived_host(monkeypatch) -> None:
+    """The google-publisher countTokens route is region-aware too."""
+    captured: dict[str, str] = {}
+
+    async def fake(self, request, model, base_url, provider, *rest):  # type: ignore[no-untyped-def]
+        captured.update(base_url=str(base_url), provider=str(provider))
+        return JSONResponse({"ok": True})
+
+    monkeypatch.setattr(HeadroomProxy, "handle_gemini_count_tokens", fake)
+
+    with TestClient(_default_vertex_app()) as client:
+        resp = client.post(
+            "/v1/projects/p/locations/europe-west1/publishers/google/models/"
+            "gemini-2.0-flash:countTokens",
+            json={"contents": []},
+        )
+    assert resp.status_code == 200
+    assert captured["provider"] == "vertex:google"
+    assert captured["base_url"] == "https://europe-west1-aiplatform.googleapis.com"
+
+
 def test_vertex_rawpredict_versionless_anthropic_rewrites_to_v1(monkeypatch) -> None:
     captured: dict[str, Any] = {}
 

@@ -1,4 +1,4 @@
-"""Output token shaping for proxied Anthropic requests.
+"""Output token shaping for proxied Anthropic and OpenAI Responses requests.
 
 Headroom's transforms compress what goes INTO the model. This module is the
 first request-side lever on what comes OUT of it. The proxy never generates
@@ -29,10 +29,19 @@ Safety rules (each prevents a concrete failure mode):
 
 Turn classification is purely structural (block types, roles, ``is_error``
 flags) — no content regexes or keyword patterns.
+
+The same two levers exist for the OpenAI Responses format (Codex et al.):
+:func:`classify_responses_turn` reads the ``input`` item list,
+:func:`apply_responses_verbosity_steering` appends the byte-stable steering
+block to the tail of the ``instructions`` string, and
+:func:`route_responses_effort` lowers an explicitly-present
+``reasoning.effort`` on mechanical continuations. :func:`shape_responses_request`
+is the Responses-format counterpart of :func:`shape_request`.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass
 from typing import Any
@@ -339,5 +348,179 @@ def shape_request(
             result.changed = True
             result.labels.extend(labels)
         logger.debug("OutputShaper: turn=%s mutations=%s", kind.value, labels)
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# OpenAI Responses format (Codex, /v1/responses HTTP + WebSocket)
+# ---------------------------------------------------------------------------
+
+# Responses ``reasoning.effort`` uses "minimal" as its floor (Anthropic's
+# ``output_config.effort`` does not), so it gets its own rank table.
+_RESPONSES_EFFORT_RANK = {"minimal": 0, "low": 1, "medium": 2, "high": 3, "xhigh": 4}
+
+# Trailing ``input`` item types that represent tool output coming back to the
+# model — the Responses counterpart of an Anthropic ``tool_result`` block.
+_RESPONSES_TOOL_OUTPUT_TYPES = frozenset(
+    {
+        "function_call_output",
+        "custom_tool_call_output",
+        "local_shell_call_output",
+        "computer_call_output",
+    }
+)
+
+
+def _responses_tool_output_is_error(item: dict[str, Any]) -> bool:
+    """Structural error sniff on a Responses tool-output item.
+
+    The Responses format has no ``is_error`` flag, but agent harnesses encode
+    failure structurally in the ``output`` payload: a JSON object with a
+    nonzero ``exit_code``, ``success: false``, or a truthy ``error`` field.
+    Only those JSON fields are inspected — never prose content.
+    """
+    output = item.get("output")
+    data: Any = output
+    if isinstance(output, str):
+        stripped = output.strip()
+        if not (stripped.startswith("{") and stripped.endswith("}")):
+            return False
+        try:
+            data = json.loads(stripped)
+        except (ValueError, TypeError):
+            return False
+    if not isinstance(data, dict):
+        return False
+    # Direct fields, plus the common {"output": ..., "metadata": {...}} nesting.
+    scopes: list[dict[str, Any]] = [data]
+    metadata = data.get("metadata")
+    if isinstance(metadata, dict):
+        scopes.append(metadata)
+    for scope in scopes:
+        exit_code = scope.get("exit_code")
+        if isinstance(exit_code, int) and exit_code != 0:
+            return True
+        if scope.get("success") is False:
+            return True
+        if scope.get("error"):
+            return True
+    return False
+
+
+def classify_responses_turn(input_data: Any) -> TurnKind:
+    """Classify a Responses request's turn from its ``input`` field.
+
+    Mirrors :func:`classify_turn` semantics on the Responses item list: the
+    trailing run of tool-output items decides the turn. A trailing user
+    message is a new ask; tool outputs are mechanical unless any carries a
+    structural error marker. Purely structural — item types and JSON fields,
+    no content regexes.
+    """
+    if isinstance(input_data, str):
+        return TurnKind.NEW_USER_ASK if input_data.strip() else TurnKind.UNKNOWN
+    if not isinstance(input_data, list) or not input_data:
+        return TurnKind.UNKNOWN
+
+    saw_tool_output = False
+    saw_error = False
+    for item in reversed(input_data):
+        if not isinstance(item, dict):
+            return TurnKind.UNKNOWN
+        itype = item.get("type")
+        if itype in _RESPONSES_TOOL_OUTPUT_TYPES:
+            saw_tool_output = True
+            if _responses_tool_output_is_error(item):
+                saw_error = True
+            continue
+        # First non-tool-output item ends the trailing run.
+        if saw_tool_output:
+            break
+        if itype == "message" or (itype is None and "role" in item):
+            role = item.get("role")
+            if role == "user":
+                return TurnKind.NEW_USER_ASK
+            return TurnKind.UNKNOWN
+        return TurnKind.UNKNOWN
+
+    if saw_error:
+        return TurnKind.ERROR_CONTINUATION
+    if saw_tool_output:
+        return TurnKind.MECHANICAL_CONTINUATION
+    return TurnKind.UNKNOWN
+
+
+def apply_responses_verbosity_steering(body: dict[str, Any], level: int) -> bool:
+    """Append the steering block to the tail of ``instructions``.
+
+    ``instructions`` is the Responses cache hot zone: the appended block is
+    byte-stable per level, so within a conversation every shaped turn sends
+    identical instructions bytes and the provider prefix cache stays hot
+    after the first shaped turn (the same contract as the Anthropic
+    system-tail append).
+    """
+    return apply_openai_responses_verbosity_steering(body, level)
+
+
+def route_responses_effort(
+    body: dict[str, Any],
+    kind: TurnKind,
+    settings: OutputShaperSettings,
+) -> list[str]:
+    """Lower ``reasoning.effort`` on mechanical continuations.
+
+    Only lowers a value the client explicitly sent — presence proves the
+    target model accepts the parameter. Never injects ``reasoning`` where
+    absent, and never touches new asks or error continuations.
+    """
+    if kind is not TurnKind.MECHANICAL_CONTINUATION:
+        return []
+
+    reasoning = body.get("reasoning")
+    if not isinstance(reasoning, dict):
+        return []
+    effort = reasoning.get("effort")
+    target = settings.mechanical_effort
+    if (
+        isinstance(effort, str)
+        and effort in _RESPONSES_EFFORT_RANK
+        and target in _RESPONSES_EFFORT_RANK
+        and _RESPONSES_EFFORT_RANK[effort] > _RESPONSES_EFFORT_RANK[target]
+    ):
+        reasoning["effort"] = target
+        return [f"output_shaper:effort:{effort}->{target}"]
+    return []
+
+
+def shape_responses_request(
+    body: dict[str, Any],
+    settings: OutputShaperSettings | None = None,
+    level_override: int | None = None,
+) -> ShapeResult:
+    """Apply all output-shaping levers to a Responses payload in place.
+
+    The Responses counterpart of :func:`shape_request`: same settings, same
+    labels, same level-resolution contract.
+    """
+    if settings is None:
+        settings = OutputShaperSettings.from_env()
+    result = ShapeResult()
+    if not settings.enabled:
+        return result
+
+    assert result.labels is not None  # __post_init__ guarantees this
+
+    level = settings.verbosity_level if level_override is None else level_override
+    if level > 0 and apply_responses_verbosity_steering(body, level):
+        result.changed = True
+        result.labels.append(f"output_shaper:verbosity:L{level}")
+
+    if settings.effort_router_enabled:
+        kind = classify_responses_turn(body.get("input"))
+        labels = route_responses_effort(body, kind, settings)
+        if labels:
+            result.changed = True
+            result.labels.extend(labels)
+        logger.debug("OutputShaper(responses): turn=%s mutations=%s", kind.value, labels)
 
     return result

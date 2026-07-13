@@ -120,6 +120,24 @@ def _normalize_openai_max_tokens(body: dict[str, Any]) -> None:
     body.pop("max_tokens", None)
 
 
+def _apply_stream_usage_option(body: dict[str, Any]) -> None:
+    """Ask the upstream for a usage chunk (for token counting) in-place, without
+    overriding an explicit client ``stream_options.include_usage``.
+
+    Forcing ``include_usage`` on a client that passed ``false`` (or that set the
+    dict without the key) makes the upstream append a trailing usage-only chunk
+    (``choices: []``) the client never asked for; the common
+    ``chunk.choices[0].delta`` pattern then raises ``IndexError``. So only inject
+    the option when the client left the choice open: no ``stream_options`` at all,
+    or a ``stream_options`` dict that does not mention ``include_usage``.
+    """
+    stream_options = body.get("stream_options")
+    if stream_options is None:
+        body["stream_options"] = {"include_usage": True}
+    elif isinstance(stream_options, dict) and "include_usage" not in stream_options:
+        stream_options["include_usage"] = True
+
+
 def _header_get(headers: dict[str, str], name: str) -> str | None:
     """Case-insensitive header lookup for plain dicts."""
     lowered = name.lower()
@@ -463,6 +481,81 @@ _OPENAI_TOOL_SCHEMA_DROP_KEYS = {
 
 def _json_byte_len(value: Any) -> int:
     return len(_json_debug_dumps(value).encode("utf-8", errors="replace"))
+
+
+def _shape_openai_responses_payload(
+    payload: dict[str, Any],
+    *,
+    model: str,
+    request_id: str,
+) -> tuple[list[str], bool]:
+    """Output shaping for a Responses payload (opt-in, HEADROOM_OUTPUT_SHAPER).
+
+    The Responses counterpart of the Anthropic handler's shaping block:
+    conversation-stable holdout assignment, stratum labelling for the
+    output-savings ledger, then verbosity steering on the ``instructions``
+    tail and ``reasoning.effort`` routing on mechanical continuations.
+
+    Returns ``(labels, mutated)``. ``labels`` are carried on the transforms
+    channel for both arms (the control arm's stratum label is what feeds the
+    ledger's live baseline); ``mutated`` is True only when the payload bytes
+    actually changed, so an unshaped control-arm request never forces a
+    re-serialization of byte-faithful client bytes. Never raises — shaping
+    must not be able to break request forwarding.
+    """
+    try:
+        from headroom.proxy import runtime_env
+        from headroom.proxy.output_savings import (
+            assign_arm,
+            conversation_key_from_responses_body,
+            stratum_key,
+            stratum_label,
+        )
+        from headroom.proxy.output_shaper import (
+            OutputShaperSettings,
+            classify_responses_turn,
+            resolve_verbosity_level,
+            shape_responses_request,
+        )
+
+        settings = OutputShaperSettings.from_env()
+        if not settings.enabled:
+            return [], False
+
+        try:
+            holdout = float(runtime_env.getenv("HEADROOM_OUTPUT_HOLDOUT", "0") or "0")
+        except ValueError:
+            holdout = 0.0
+        arm = assign_arm(conversation_key_from_responses_body(payload), holdout)
+
+        turn_kind = classify_responses_turn(payload.get("input")).value
+        approx_input_tokens = len(json.dumps(payload)) // 4
+        stratum = stratum_key(
+            turn_kind=turn_kind,
+            input_tokens=approx_input_tokens,
+            model=model or str(payload.get("model", "")),
+            has_tools=bool(payload.get("tools")),
+        )
+        labels = [stratum_label(arm, stratum)]
+
+        if arm != "treatment":
+            return labels, False
+
+        level, src = resolve_verbosity_level(settings)
+        shape_result = shape_responses_request(payload, settings, level_override=level)
+        if shape_result.changed:
+            labels.extend(shape_result.labels or [])
+            logger.info(
+                "[%s] OutputShaper(responses, L%s/%s): %s",
+                request_id,
+                level,
+                src,
+                shape_result.labels,
+            )
+        return labels, shape_result.changed
+    except Exception:  # pragma: no cover - defensive; never break forwarding
+        logger.warning("[%s] OutputShaper(responses) failed; skipping", request_id, exc_info=True)
+        return [], False
 
 
 def _compact_openai_tool_schema_value(
@@ -1987,8 +2080,18 @@ class OpenAIHandlerMixin:
         timing: dict[str, float] = {}
 
         def _compress():  # noqa: ANN202
+            # Output shaping (opt-in via HEADROOM_OUTPUT_SHAPER) runs before
+            # compression so the turn classifier sees the client's input as
+            # sent, and the steering/effort mutations ride the same rewrite
+            # path as compression at every call site (HTTP /v1/responses, WS
+            # first frame, WS subsequent frames). Runs inside the executor
+            # closure so the extra payload serialization stays off the event
+            # loop.
+            shape_labels, shape_mutated = _shape_openai_responses_payload(
+                payload, model=model, request_id=request_id
+            )
             try:
-                return self._compress_openai_responses_payload(
+                result = self._compress_openai_responses_payload(
                     payload,
                     model=model,
                     request_id=request_id,
@@ -1997,11 +2100,25 @@ class OpenAIHandlerMixin:
             except TypeError as exc:
                 if "unexpected keyword argument 'timing'" not in str(exc):
                     raise
-                return self._compress_openai_responses_payload(
+                result = self._compress_openai_responses_payload(
                     payload,
                     model=model,
                     request_id=request_id,
                 )
+            if shape_labels:
+                # Carry the shaper labels on the transforms channel so the
+                # outcome funnel feeds the output-savings ledger
+                # (outcome.py record_from_labels). The modified flag is
+                # forced only when shaping actually mutated the payload, so
+                # every call site's rewrite path serializes the shaped bytes.
+                result = (
+                    result[0],
+                    result[1] or shape_mutated,
+                    result[2],
+                    [*shape_labels, *result[3]],
+                    *result[4:],
+                )
+            return result
 
         result = await self._run_compression_in_executor(
             _compress,
@@ -3160,12 +3277,10 @@ class OpenAIHandlerMixin:
 
         try:
             if stream:
-                # Inject stream_options to get usage stats in streaming response
-                # This allows accurate token counting instead of byte-based estimation
-                if "stream_options" not in body:
-                    body["stream_options"] = {"include_usage": True}
-                elif isinstance(body.get("stream_options"), dict):
-                    body["stream_options"]["include_usage"] = True
+                # Request usage stats for accurate token counting instead of
+                # byte-based estimation — without overriding an explicit client
+                # choice (see _apply_stream_usage_option).
+                _apply_stream_usage_option(body)
 
                 self.pipeline_extensions.emit(
                     PipelineStage.POST_SEND,
@@ -4029,11 +4144,16 @@ class OpenAIHandlerMixin:
                     request_id=request_id,
                 )
                 attempted_input_tokens = int(_attempted_tokens)
+                if _transforms:
+                    # Record transform labels even when the payload bytes are
+                    # unchanged: control-arm output-shaper labels
+                    # (output_shaper:control:*) must reach the outcome ledger
+                    # for A/B baseline accounting.
+                    transforms_applied = [*_transforms, *list(transforms_applied)]
                 if _modified:
                     body_mutation_tracker.mark_mutated("responses_compression")
                     tokens_saved = int(_tokens_saved)
                     optimized_tokens = max(0, original_tokens - tokens_saved)
-                    transforms_applied = [*_transforms, *list(transforms_applied)]
                     logger.info(
                         "[%s] /v1/responses compressed %d→%d bytes "
                         "(%d tokens saved, auth_mode=%s, transforms=%s)",
@@ -5517,6 +5637,13 @@ class OpenAIHandlerMixin:
                                 strategy_chain=_codex_ws_strategy_chain(_ws_transforms),
                                 final_strategies=_codex_ws_final_strategies(_ws_compression_timing),
                             )
+                        # Record transform labels even when the frame bytes are
+                        # unchanged: control-arm output-shaper labels
+                        # (output_shaper:control:*) must reach the outcome
+                        # ledger for A/B baseline accounting.
+                        for _t in _ws_transforms:
+                            if _t not in transforms_applied:
+                                transforms_applied.append(_t)
                         if _modified:
                             if isinstance(_new_inner, dict):
                                 _rewrite_started = time.perf_counter()
@@ -5533,9 +5660,6 @@ class OpenAIHandlerMixin:
                                 _record_ws_compression_overhead(_rewrite_ms)
                                 tokens_saved += int(_ws_saved)
                                 attempted_input_tokens_total += int(_ws_attempted_tokens)
-                                for _t in _ws_transforms:
-                                    if _t not in transforms_applied:
-                                        transforms_applied.append(_t)
                                 logger.info(
                                     "[%s] WS /v1/responses compressed "
                                     "%d→%d bytes (%d tokens saved, "
@@ -5898,6 +6022,13 @@ class OpenAIHandlerMixin:
                                 model=str(inner_payload.get("model") or "unknown"),
                             )
                             return raw_msg, False, "compression_exception"
+                        # Record transform labels even when the frame bytes are
+                        # unchanged: control-arm output-shaper labels
+                        # (output_shaper:control:*) must reach the outcome
+                        # ledger for A/B baseline accounting.
+                        for t in frame_transforms:
+                            if t not in transforms_applied:
+                                transforms_applied.append(t)
                         if not modified:
                             reason = frame_reason or "no_compression"
                             _log_ws_passthrough(
@@ -5932,9 +6063,6 @@ class OpenAIHandlerMixin:
                         _record_ws_compression_overhead(_rewrite_ms)
                         tokens_saved += int(frame_saved)
                         attempted_input_tokens_total += int(frame_attempted_tokens)
-                        for t in frame_transforms:
-                            if t not in transforms_applied:
-                                transforms_applied.append(t)
                         ws_frames_compressed += 1
                         logger.info(
                             "[%s] WS /v1/responses frame compressed "

@@ -33,6 +33,16 @@ from headroom.proxy import (
     wire_debug_format_policy,
     wire_debug_redaction_policy,
 )
+from headroom.proxy.beta_header_merge import (
+    merge_anthropic_beta as merge_anthropic_beta,
+)
+from headroom.proxy.beta_header_merge import (
+    merge_beta_tokens,
+    split_beta_tokens,
+)
+from headroom.proxy.beta_header_merge import (
+    merge_openai_beta as merge_openai_beta,
+)
 from headroom.proxy.beta_header_policy import (
     BETA_HEADER_STICKY_DEFAULT,
     BETA_HEADER_STICKY_ENV,
@@ -1565,79 +1575,10 @@ def get_beta_tracker_max_sessions() -> int:
     return resolve_beta_tracker_max_sessions(os.environ.get(_BETA_TRACKER_MAX_SESSIONS_ENV))
 
 
-def _split_beta_tokens(value: str | None) -> list[str]:
-    """Split a comma-separated beta-header value into trimmed tokens.
-
-    Empty/whitespace-only entries are dropped. Pure function, no regex.
-    """
-    if not value:
-        return []
-    out: list[str] = []
-    for raw in value.split(","):
-        token = raw.strip()
-        if token:
-            out.append(token)
-    return out
+_split_beta_tokens = split_beta_tokens
 
 
-def _merge_beta_tokens(client_value: str | None, headroom_required: list[str]) -> str:
-    """Shared deterministic merge for `anthropic-beta` / `OpenAI-Beta` tokens.
-
-    Rules (per Anthropic guide §6.3 #6 "sticky-on; add but never reorder"):
-
-    * Client tokens come first, in their original order.
-    * Headroom-required tokens append in the order given, skipping any
-      token already present (case-insensitive).
-    * Dedupe is case-insensitive but the FIRST occurrence's casing wins
-      (prevents drift when client uses one casing across turns).
-    * Returns ``""`` when both inputs are empty.
-
-    Pure function. No regex. No global state.
-    """
-    seen_lower: set[str] = set()
-    out: list[str] = []
-    for token in _split_beta_tokens(client_value):
-        lower = token.lower()
-        if lower in seen_lower:
-            continue
-        seen_lower.add(lower)
-        out.append(token)
-    for token in headroom_required:
-        if not token:
-            continue
-        token = token.strip()
-        if not token:
-            continue
-        lower = token.lower()
-        if lower in seen_lower:
-            continue
-        seen_lower.add(lower)
-        out.append(token)
-    return ",".join(out)
-
-
-def merge_anthropic_beta(client_value: str | None, headroom_required: list[str]) -> str:
-    """Merge client `anthropic-beta` value with Headroom-required tokens.
-
-    See `_merge_beta_tokens` for full semantics. Order is deterministic:
-    client tokens first (in their original order), then headroom tokens
-    (in the order passed). No sorting — sticky-on per Anthropic guide
-    §6.3 #6 means we add but never reorder. Dedupe is case-insensitive
-    but preserves the original casing of the first occurrence.
-
-    Returns ``""`` when both inputs are empty.
-    """
-    return _merge_beta_tokens(client_value, headroom_required)
-
-
-def merge_openai_beta(client_value: str | None, headroom_required: list[str]) -> str:
-    """Merge client `OpenAI-Beta` value with Headroom-required tokens.
-
-    Mirror of `merge_anthropic_beta`. Same semantics — the OpenAI header
-    follows the same comma-separated convention and the same cache-stable
-    rules apply.
-    """
-    return _merge_beta_tokens(client_value, headroom_required)
+_merge_beta_tokens = merge_beta_tokens
 
 
 class SessionBetaTracker:

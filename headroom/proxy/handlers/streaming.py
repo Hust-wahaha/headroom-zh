@@ -95,6 +95,27 @@ class StreamingMixin:
         self._mid_turn_queues[session_key].put_nowait(body)
         return {"status": 202, "event": "headroom_queued"}
 
+    def _should_queue_mid_turn(self, session_key: str, explicit_session_header: str | None) -> bool:
+        """Return True only when a follow-up should be queued as a mid-turn message.
+
+        Mid-turn steering is a private Headroom protocol: a queued message is
+        only ever drained back to the client via the custom
+        ``headroom_pending_messages`` SSE event, which a standard Anthropic SDK
+        does not understand. We therefore only engage it for clients that
+        *opt in* by sending an explicit ``x-headroom-session-id`` header.
+
+        Without that header the session identity falls back to
+        ``md5(model + system[:500])`` (see ``_get_session_key`` /
+        ``prefix_tracker.compute_session_id``). That fallback is intentionally
+        coarse and cannot distinguish genuinely concurrent, independent streams
+        that happen to share a model + system prompt (e.g. a main conversation
+        plus its background/parallel requests). Queuing those as mid-turn
+        messages wrongly returns a 202 + JSON body to a caller that issued a
+        *streaming* request, whose stream parser then sees an empty (non-SSE)
+        stream and fails. So only opt-in (header-bearing) callers get queued.
+        """
+        return bool(explicit_session_header) and session_key in self._active_streams
+
     def _cleanup_mid_turn_stream(
         self, session_key: str, *, drain_pending_messages: bool = False
     ) -> list[dict]:

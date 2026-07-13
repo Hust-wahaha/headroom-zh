@@ -42,6 +42,34 @@ class TestMidTurnSteering:
         assert session_key not in mixin._active_streams
         assert session_key not in mixin._mid_turn_queues
 
+    def test_should_queue_only_with_explicit_session_header(self):
+        """Regression: mid-turn queuing must require an explicit session header.
+
+        Without ``x-headroom-session-id`` the session key is a coarse
+        ``md5(model + system[:500])`` shared by concurrent independent streams
+        (e.g. a main conversation plus background/parallel requests). Queuing
+        those wrongly returns a 202 to a streaming caller, whose SDK stream
+        parser then fails on an empty (non-SSE) stream. Only opt-in callers
+        that send the header may be queued.
+        """
+        from headroom.proxy.handlers.streaming import StreamingMixin
+
+        mixin = StreamingMixin()
+        session_key = "shared-md5-key"
+        # An earlier stream on this (fallback) session key is in flight.
+        mixin._active_streams.add(session_key)
+        try:
+            # No explicit header (header-less concurrent stream): must NOT queue,
+            # even though the key collides in _active_streams.
+            assert mixin._should_queue_mid_turn(session_key, None) is False
+            assert mixin._should_queue_mid_turn(session_key, "") is False
+            # Explicit header present: opt-in client, queuing is allowed.
+            assert mixin._should_queue_mid_turn(session_key, session_key) is True
+            # Explicit header but no active stream: nothing to queue behind.
+            assert mixin._should_queue_mid_turn("other-key", "other-key") is False
+        finally:
+            mixin._active_streams.discard(session_key)
+
     def _create_mock_proxy(self):
         proxy = object.__new__(HeadroomProxy)
         proxy.http_client = MagicMock(spec=httpx.AsyncClient)

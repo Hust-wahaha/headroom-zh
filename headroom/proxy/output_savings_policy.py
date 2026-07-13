@@ -130,6 +130,30 @@ def conversation_key_from_body(body: dict[str, Any]) -> str:
     return hashlib.sha256(seed.encode("utf-8", "ignore")).hexdigest()
 
 
+def conversation_key_from_responses_body(body: dict[str, Any]) -> str:
+    """Conversation-stable key for an OpenAI Responses payload."""
+    body = _unwrap_response_create_body(body)
+    model = str(body.get("model", ""))
+    seed = model
+    input_data = body.get("input")
+    if isinstance(input_data, str):
+        seed += "\x00" + input_data[:512]
+    elif isinstance(input_data, list):
+        for item in input_data:
+            if not isinstance(item, dict) or item.get("role") != "user":
+                continue
+            content = item.get("content")
+            if isinstance(content, str):
+                seed += "\x00" + content[:512]
+            elif isinstance(content, list):
+                for part in content:
+                    if isinstance(part, dict) and isinstance(part.get("text"), str):
+                        seed += "\x00" + part["text"][:512]
+                        break
+            break
+    return hashlib.sha256(seed.encode("utf-8", "ignore")).hexdigest()
+
+
 def assign_arm(conversation_key: str, holdout_fraction: float) -> str:
     """Deterministically assign a conversation to ``treatment`` or ``control``."""
     if holdout_fraction <= 0.0:
