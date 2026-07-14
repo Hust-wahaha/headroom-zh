@@ -44,7 +44,7 @@ def test_build_runtime_command_for_docker_includes_deployment_env(
         port=8787,
         host="127.0.0.1",
         backend="anthropic",
-        image="ghcr.io/chopratejas/headroom:latest",
+        image="ghcr.io/headroomlabs-ai/headroom:latest",
         base_env={"HEADROOM_PORT": "8787"},
         proxy_args=["--host", "127.0.0.1", "--port", "8787"],
     )
@@ -56,11 +56,52 @@ def test_build_runtime_command_for_docker_includes_deployment_env(
     assert "HEADROOM_DEPLOYMENT_PROFILE=default" in joined
     assert "HEADROOM_DEPLOYMENT_PRESET=persistent-docker" in joined
     assert "127.0.0.1:8787:8787" in joined
-    assert "ghcr.io/chopratejas/headroom:latest" in command
+    assert "ghcr.io/headroomlabs-ai/headroom:latest" in command
     # Canonical Headroom filesystem contract (issue #175) forwarded into
     # the container.
     assert "HEADROOM_WORKSPACE_DIR=/tmp/headroom-home/.headroom" in command
     assert "HEADROOM_CONFIG_DIR=/tmp/headroom-home/.headroom/config" in command
+
+
+def test_build_runtime_command_docker_manifest_env_beats_host_passthrough(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """A manifest value must win over a conflicting host export.
+
+    The manifest pins ``HEADROOM_BACKEND=anthropic``; the host process has a
+    stale ``HEADROOM_BACKEND=anyllm`` exported. Both start with the
+    ``HEADROOM_`` passthrough prefix, so without the dedupe the command emits
+    ``--env HEADROOM_BACKEND=anthropic`` and then a bare ``--env
+    HEADROOM_BACKEND``. Docker resolves duplicate ``--env`` last-wins, so the
+    bare passthrough reads the host value and silently overrides the manifest,
+    diverging the container from its deployment config.
+    """
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HEADROOM_BACKEND", "anyllm")
+    manifest = DeploymentManifest(
+        profile="default",
+        preset="persistent-docker",
+        runtime_kind="docker",
+        supervisor_kind="none",
+        scope="user",
+        provider_mode="manual",
+        targets=["claude"],
+        port=8787,
+        host="127.0.0.1",
+        backend="anthropic",
+        image="ghcr.io/chopratejas/headroom:latest",
+        base_env={"HEADROOM_PORT": "8787", "HEADROOM_BACKEND": "anthropic"},
+        proxy_args=["--host", "127.0.0.1", "--port", "8787"],
+    )
+
+    command = build_runtime_command(manifest)
+
+    # The manifest value is emitted...
+    assert "HEADROOM_BACKEND=anthropic" in command
+    # ...and no bare `--env HEADROOM_BACKEND` follows it to pull in the host
+    # value. `in` on the list matches the exact token, so the pinned
+    # `HEADROOM_BACKEND=anthropic` element does not count here.
+    assert "HEADROOM_BACKEND" not in command
 
 
 def test_build_runtime_command_for_docker_matches_wrapper_parity(
@@ -80,7 +121,7 @@ def test_build_runtime_command_for_docker_matches_wrapper_parity(
         port=8787,
         host="127.0.0.1",
         backend="anthropic",
-        image="ghcr.io/chopratejas/headroom:latest",
+        image="ghcr.io/headroomlabs-ai/headroom:latest",
         base_env={"HEADROOM_PORT": "8787"},
         proxy_args=["--host", "127.0.0.1", "--port", "8787"],
     )
@@ -116,7 +157,7 @@ def test_build_runtime_command_for_docker_does_not_duplicate_entrypoint(
         port=8787,
         host="127.0.0.1",
         backend="anthropic",
-        image="ghcr.io/chopratejas/headroom:latest",
+        image="ghcr.io/headroomlabs-ai/headroom:latest",
         base_env={"HEADROOM_PORT": "8787"},
         proxy_args=["--host", "127.0.0.1", "--port", "8787", "--backend", "anthropic"],
     )
@@ -225,7 +266,7 @@ def test_build_runtime_command_python_and_docker_user(monkeypatch, tmp_path: Pat
         port=8787,
         host="127.0.0.1",
         backend="anthropic",
-        image="ghcr.io/chopratejas/headroom:latest",
+        image="ghcr.io/headroomlabs-ai/headroom:latest",
         base_env={"HEADROOM_PORT": "8787"},
         proxy_args=["--host", "127.0.0.1", "--port", "8787"],
     )

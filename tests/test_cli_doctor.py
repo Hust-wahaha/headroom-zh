@@ -172,6 +172,138 @@ class TestClaudeRemoteControlGate:
         )
         assert check_claude_remote_control_gate(path, {}) is None
 
+    def test_api_key_auth_suppresses_warning(self, tmp_path):
+        # Issue #1779: a PAYG / API-key session never had Remote Control, so the
+        # gate warning must not fire even behind a custom base URL.
+        path = tmp_path / "settings.json"
+        path.write_text(
+            json.dumps({"env": {"ANTHROPIC_BASE_URL": "http://127.0.0.1:8787"}}),
+            encoding="utf-8",
+        )
+        assert check_claude_remote_control_gate(path, {"ANTHROPIC_API_KEY": "sk-ant-api-x"}) is None
+
+    def test_settings_api_key_suppresses_warning(self, tmp_path):
+        # An API key configured in settings.json (not just the shell) also means
+        # a non-subscription session — stay silent.
+        path = tmp_path / "settings.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "env": {
+                        "ANTHROPIC_BASE_URL": "http://127.0.0.1:8787",
+                        "ANTHROPIC_API_KEY": "sk-ant-api-x",
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        assert check_claude_remote_control_gate(path, {}) is None
+
+    def test_version_resolver_not_called_without_custom_base(self, tmp_path):
+        # The `claude --version` subprocess is expensive (Node CLI cold start);
+        # the check must not invoke the resolver when no custom base URL exists.
+        path = tmp_path / "settings.json"
+        path.write_text(
+            json.dumps({"env": {"ANTHROPIC_BASE_URL": "https://api.anthropic.com"}}),
+            encoding="utf-8",
+        )
+
+        def boom() -> tuple[int, int, int]:
+            raise AssertionError("resolver must not run when no custom base URL")
+
+        assert check_claude_remote_control_gate(path, {}, version_resolver=boom) is None
+
+    def test_version_resolver_not_called_for_api_key_auth(self, tmp_path):
+        # PAYG sessions are suppressed before version matters — no subprocess.
+        path = tmp_path / "settings.json"
+        path.write_text(
+            json.dumps({"env": {"ANTHROPIC_BASE_URL": "http://127.0.0.1:8787"}}),
+            encoding="utf-8",
+        )
+
+        def boom() -> tuple[int, int, int]:
+            raise AssertionError("resolver must not run for API-key auth")
+
+        assert (
+            check_claude_remote_control_gate(
+                path, {"ANTHROPIC_API_KEY": "sk-ant-api-x"}, version_resolver=boom
+            )
+            is None
+        )
+
+    def test_version_resolver_called_once_and_honored(self, tmp_path):
+        path = tmp_path / "settings.json"
+        path.write_text(
+            json.dumps({"env": {"ANTHROPIC_BASE_URL": "http://127.0.0.1:8787"}}),
+            encoding="utf-8",
+        )
+        calls: list[int] = []
+
+        def resolver() -> tuple[int, int, int]:
+            calls.append(1)
+            return (2, 1, 196)
+
+        # Shell env ALSO custom so both loop sources are live — still one call.
+        result = check_claude_remote_control_gate(
+            path,
+            {"ANTHROPIC_BASE_URL": "http://127.0.0.1:9999"},
+            version_resolver=resolver,
+        )
+        assert result is not None
+        assert "2.1.196" in result.summary
+        assert calls == [1]
+
+    def test_version_resolver_pre_gate_version_suppresses(self, tmp_path):
+        path = tmp_path / "settings.json"
+        path.write_text(
+            json.dumps({"env": {"ANTHROPIC_BASE_URL": "http://127.0.0.1:8787"}}),
+            encoding="utf-8",
+        )
+        assert (
+            check_claude_remote_control_gate(path, {}, version_resolver=lambda: (2, 1, 195)) is None
+        )
+
+    def test_malformed_settings_base_url_does_not_crash(self, tmp_path):
+        # Issue #1779: settings.json is user-edited; a typo'd IPv6 literal made
+        # urlparse raise ValueError("Invalid IPv6 URL") and crashed doctor.
+        # Malformed values degrade to "no host" and the check stays silent —
+        # check_claude_routing separately flags unusable URLs.
+        path = tmp_path / "settings.json"
+        path.write_text(
+            json.dumps({"env": {"ANTHROPIC_BASE_URL": "http://[::1:8787"}}),
+            encoding="utf-8",
+        )
+        assert check_claude_remote_control_gate(path, {}) is None
+
+    def test_malformed_shell_base_url_does_not_crash(self, tmp_path):
+        path = tmp_path / "settings.json"
+        path.write_text("{}", encoding="utf-8")
+        assert check_claude_remote_control_gate(path, {"ANTHROPIC_BASE_URL": "http://["}) is None
+
+    def test_pre_gate_version_suppresses_warning(self, tmp_path):
+        # Older Claude Code does not gate RC on the base URL — no false alarm.
+        path = tmp_path / "settings.json"
+        path.write_text(
+            json.dumps({"env": {"ANTHROPIC_BASE_URL": "http://127.0.0.1:8787"}}),
+            encoding="utf-8",
+        )
+        assert check_claude_remote_control_gate(path, {}, version=(2, 1, 195)) is None
+
+    def test_gated_version_warns_with_exact_version(self, tmp_path):
+        path = tmp_path / "settings.json"
+        path.write_text(
+            json.dumps({"env": {"ANTHROPIC_BASE_URL": "http://127.0.0.1:8787"}}),
+            encoding="utf-8",
+        )
+        result = check_claude_remote_control_gate(path, {}, version=(2, 1, 196))
+        assert result is not None
+        assert result.status == WARN
+        assert "2.1.196" in result.summary
+        assert "disables" in result.summary
+        # Sibling gates are co-reported in the hint (#746 / #1158).
+        assert "#746" in (result.hint or "")
+        assert "#1158" in (result.hint or "")
+
     def test_settings_check_still_routes(self, tmp_path):
         path = tmp_path / "settings.json"
         path.write_text(

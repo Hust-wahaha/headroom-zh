@@ -34,7 +34,7 @@ def test_build_manifest_for_persistent_docker_sets_expected_defaults() -> None:
         proxy_mode="token",
         memory_enabled=True,
         telemetry_enabled=False,
-        image="ghcr.io/chopratejas/headroom:latest",
+        image="ghcr.io/headroomlabs-ai/headroom:latest",
     )
 
     assert manifest.supervisor_kind == "none"
@@ -63,7 +63,7 @@ def test_build_manifest_uses_provider_slice_env_builders_for_all_supported_targe
         proxy_mode="token",
         memory_enabled=False,
         telemetry_enabled=True,
-        image="ghcr.io/chopratejas/headroom:latest",
+        image="ghcr.io/headroomlabs-ai/headroom:latest",
     )
 
     # telemetry_enabled=True must write the explicit opt-in value + flag.
@@ -122,7 +122,7 @@ def test_build_manifest_omits_no_http2_by_default() -> None:
         proxy_mode="token",
         memory_enabled=False,
         telemetry_enabled=True,
-        image="ghcr.io/chopratejas/headroom:latest",
+        image="ghcr.io/headroomlabs-ai/headroom:latest",
     )
 
     assert "--no-http2" not in manifest.proxy_args
@@ -143,7 +143,7 @@ def test_build_manifest_persists_no_http2_override() -> None:
         proxy_mode="token",
         memory_enabled=False,
         telemetry_enabled=True,
-        image="ghcr.io/chopratejas/headroom:latest",
+        image="ghcr.io/headroomlabs-ai/headroom:latest",
         no_http2=True,
     )
 

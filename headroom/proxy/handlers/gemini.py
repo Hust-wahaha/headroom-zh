@@ -58,6 +58,8 @@ class GeminiHandlerMixin:
         - fileData: File references (URI + MIME type)
         - functionCall: Function calls from model
         - functionResponse: Responses to function calls
+        - executableCode / codeExecutionResult: Gemini code-execution parts,
+          echoed back in contents[] on later turns
 
         Args:
             content: A single Gemini content entry with 'parts' list.
@@ -69,7 +71,14 @@ class GeminiHandlerMixin:
         for part in parts:
             if any(
                 key in part
-                for key in ("inlineData", "fileData", "functionCall", "functionResponse")
+                for key in (
+                    "inlineData",
+                    "fileData",
+                    "functionCall",
+                    "functionResponse",
+                    "executableCode",
+                    "codeExecutionResult",
+                )
             ):
                 return True
         return False

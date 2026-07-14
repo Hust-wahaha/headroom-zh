@@ -241,6 +241,75 @@ def test_wrap_opencode_injects_rtk_into_agents_md(
     assert wrap_mod._RTK_MARKER in project_agents.read_text(encoding="utf-8")
 
 
+def test_unwrap_opencode_removes_rtk_from_agents_md(
+    runner: CliRunner,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """unwrap opencode removes the rtk block that wrap opencode injected into both
+    the project and global AGENTS.md — mirroring unwrap_codex / unwrap_copilot."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("HEADROOM_CONTEXT_TOOL", raising=False)
+    _set_test_home(monkeypatch, tmp_path)
+
+    with patch.object(wrap_mod.shutil, "which", return_value="opencode"):
+        with patch.object(wrap_mod, "_launch_tool", side_effect=SystemExit(0)):
+            with patch.object(wrap_mod, "_ensure_rtk_binary", return_value=Path("/tmp/rtk")):
+                runner.invoke(main, ["wrap", "opencode", "--port", "9000", "--no-mcp"])
+
+    global_agents = tmp_path / ".config" / "opencode" / "AGENTS.md"
+    project_agents = tmp_path / "AGENTS.md"
+    assert wrap_mod._RTK_MARKER in global_agents.read_text(encoding="utf-8")
+    assert wrap_mod._RTK_MARKER in project_agents.read_text(encoding="utf-8")
+
+    with patch.object(wrap_mod, "_stop_local_proxy_for_unwrap", return_value="stopped"):
+        result = runner.invoke(main, ["unwrap", "opencode"])
+
+    assert result.exit_code == 0, result.output
+
+    # Both rtk blocks are gone after unwrap (previously left behind). A file that
+    # held only the rtk block is removed entirely by _remove_rtk_instructions, so
+    # treat a missing file as "block gone".
+    def _rtk_absent(path: Path) -> bool:
+        return not path.exists() or wrap_mod._RTK_MARKER not in path.read_text(encoding="utf-8")
+
+    assert _rtk_absent(global_agents)
+    assert _rtk_absent(project_agents)
+
+
+def test_wrap_opencode_no_project_rtk_only_skips_project_agents_md(
+    runner: CliRunner,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("HEADROOM_CONTEXT_TOOL", raising=False)
+    _set_test_home(monkeypatch, tmp_path)
+    project_agents = tmp_path / "AGENTS.md"
+    project_agents.write_text("# Team instructions\n", encoding="utf-8")
+
+    with patch.object(wrap_mod.shutil, "which", return_value="opencode"):
+        with patch.object(wrap_mod, "_launch_tool", side_effect=SystemExit(0)):
+            with patch.object(wrap_mod, "_ensure_rtk_binary", return_value=Path("/tmp/rtk")):
+                result = runner.invoke(
+                    main,
+                    [
+                        "wrap",
+                        "opencode",
+                        "--no-project-rtk",
+                        "--no-proxy",
+                        "--port",
+                        "9000",
+                        "--no-mcp",
+                    ],
+                )
+
+    assert result.exit_code == 0, result.output
+    assert project_agents.read_text(encoding="utf-8") == "# Team instructions\n"
+    global_agents = tmp_path / ".config" / "opencode" / "AGENTS.md"
+    assert wrap_mod._RTK_MARKER in global_agents.read_text(encoding="utf-8")
+
+
 def test_wrap_opencode_idempotent_no_duplicate_block(
     runner: CliRunner,
     tmp_path: Path,

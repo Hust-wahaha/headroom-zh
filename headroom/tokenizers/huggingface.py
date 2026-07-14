@@ -204,10 +204,15 @@ def get_tokenizer_name(model: str) -> str:
     if model_lower in MODEL_TO_TOKENIZER:
         return MODEL_TO_TOKENIZER[model_lower]
 
-    # Try prefix matching
-    for key, value in MODEL_TO_TOKENIZER.items():
+    # Try prefix matching, longest (most specific) key first. Scanning in
+    # dict-insertion order is wrong: a short family key like "qwen" precedes
+    # "qwen2"/"qwen2.5", so "qwen2-7b-instruct" would match "qwen" first and
+    # resolve to the Qwen1 tokenizer (a different vocabulary -> wrong counts).
+    # The sibling tiktoken resolver (get_encoding_for_model) documents and
+    # guards this exact order-dependent pitfall.
+    for key in sorted(MODEL_TO_TOKENIZER, key=len, reverse=True):
         if model_lower.startswith(key):
-            return value
+            return MODEL_TO_TOKENIZER[key]
 
     # Assume model name is the tokenizer name
     return model

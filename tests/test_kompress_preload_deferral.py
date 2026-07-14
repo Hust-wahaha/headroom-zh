@@ -1,11 +1,7 @@
-"""Startup eager-preload must be cache-only so a cold cache cannot block or
-crash the proxy before it binds its port.
+"""Startup eager-preload must defer Kompress native loading before binding.
 
-Regression for the production crash where ``eager_load_compressors`` ran a
-network ``hf_hub_download`` of the Kompress ONNX model on the blocking
-startup/lifespan path. On a cold cache that download could hang (300s bind
-timeout) or hit a native ``SIGABRT`` in the download/ML stack, killing the
-interpreter before it ever listened on its port.
+Regression for the production crash where ``eager_load_compressors`` entered
+the cached Kompress native stack on the blocking startup/lifespan path.
 """
 
 from __future__ import annotations
@@ -110,6 +106,12 @@ class _StubCompressor:
         raise KompressModelNotCached("org/model")
 
 
+class _FatalPreloadCompressor(_StubCompressor):
+    def preload(self, *, allow_download: bool = True) -> str:
+        self.preload_calls.append(allow_download)
+        raise SystemExit("native Kompress preload")
+
+
 def _router_kompress_only() -> ContentRouter:
     return ContentRouter(
         ContentRouterConfig(
@@ -120,24 +122,81 @@ def _router_kompress_only() -> ContentRouter:
     )
 
 
-def test_eager_load_defers_when_model_not_cached(monkeypatch):
+@pytest.mark.parametrize("cache_state", ["cached", "uncached"])
+def test_eager_load_defers_kompress_regardless_of_cache_state(monkeypatch, cache_state):
     router = _router_kompress_only()
-    stub = _StubCompressor(cached=False)
+    stub = _StubCompressor(cached=cache_state == "cached")
     monkeypatch.setattr(router, "_get_kompress", lambda: stub)
 
     status = router.eager_load_compressors()
 
     assert status["kompress"] == "deferred"
-    assert stub.preload_calls == [False]  # cache-only preload at startup
+    assert stub.preload_calls == []
 
 
-def test_eager_load_enabled_when_model_cached(monkeypatch):
-    router = _router_kompress_only()
+def test_eager_load_keeps_disabled_kompress_disabled(monkeypatch):
+    router = ContentRouter(
+        ContentRouterConfig(
+            enable_kompress=False,
+            enable_code_aware=False,
+            enable_smart_crusher=False,
+        )
+    )
     stub = _StubCompressor(cached=True)
     monkeypatch.setattr(router, "_get_kompress", lambda: stub)
 
     status = router.eager_load_compressors()
 
-    assert status["kompress"] == "enabled"
-    assert status["kompress_backend"] == "onnx"
-    assert stub.preload_calls == [False]
+    assert "kompress" not in status
+    assert stub.preload_calls == []
+
+
+def test_eager_load_reports_unavailable_kompress(monkeypatch):
+    router = _router_kompress_only()
+    monkeypatch.setattr(router, "_get_kompress", lambda: None)
+
+    status = router.eager_load_compressors()
+
+    assert status["kompress"] == "unavailable"
+
+
+def test_non_kompress_warmups_continue_when_kompress_is_deferred(monkeypatch):
+    router = _router_kompress_only()
+    stub = _StubCompressor(cached=True)
+    monkeypatch.setattr(router, "_get_kompress", lambda: stub)
+    monkeypatch.setattr("headroom.compression.detector._magika_available", lambda: True)
+    monkeypatch.setattr("headroom.compression.detector._get_magika", lambda: object())
+
+    status = router.eager_load_compressors()
+
+    assert status["kompress"] == "deferred"
+    assert status["magika"] == "enabled"
+    assert stub.preload_calls == []
+
+
+@pytest.mark.asyncio
+async def test_proxy_startup_does_not_enter_cached_kompress_native_loader(monkeypatch):
+    pytest.importorskip("httpx")
+    from headroom.proxy.server import HeadroomProxy, ProxyConfig
+
+    proxy = HeadroomProxy(
+        ProxyConfig(
+            optimize=True,
+            cache_enabled=False,
+            rate_limit_enabled=False,
+            cost_tracking_enabled=False,
+            code_aware_enabled=False,
+        )
+    )
+    router = _router_kompress_only()
+    stub = _FatalPreloadCompressor(cached=True)
+    monkeypatch.setattr(router, "_get_kompress", lambda: stub)
+    proxy.anthropic_pipeline.transforms = [router]
+    proxy.openai_pipeline.transforms = [router]
+
+    await proxy.startup()
+    try:
+        assert stub.preload_calls == []
+        assert proxy.warmup.kompress.info["source_status"] == "deferred"
+    finally:
+        await proxy.shutdown()

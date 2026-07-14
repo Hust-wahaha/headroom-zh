@@ -193,6 +193,23 @@ class TestRetryMaxAttemptsValidation:
         assert result.exit_code != 0
 
 
+class TestRetryDelayValidation:
+    def test_retry_delays_are_forwarded(self, runner: CliRunner, mock_run_server: dict) -> None:
+        result = runner.invoke(
+            main,
+            ["proxy", "--retry-base-delay-ms", "250", "--retry-max-delay-ms", "5000"],
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 0, result.output
+        assert mock_run_server["config"].retry_base_delay_ms == 250
+        assert mock_run_server["config"].retry_max_delay_ms == 5000
+
+    @pytest.mark.parametrize("option", ["--retry-base-delay-ms", "--retry-max-delay-ms"])
+    def test_negative_delay_is_rejected(self, runner: CliRunner, option: str) -> None:
+        result = runner.invoke(main, ["proxy", option, "-1"])
+        assert result.exit_code != 0
+
+
 class TestConnectTimeoutSecondsValidation:
     """--connect-timeout-seconds should accept 1-300, reject outside that range."""
 
@@ -349,6 +366,20 @@ class TestNewEnvVarWiring:
         )
         assert result.exit_code == 0, result.output
         assert mock_run_server["config"].retry_max_attempts == 5
+
+    def test_headroom_retry_delays_from_env(self, runner: CliRunner, mock_run_server: dict) -> None:
+        result = runner.invoke(
+            main,
+            ["proxy"],
+            env={
+                "HEADROOM_RETRY_BASE_DELAY_MS": "125",
+                "HEADROOM_RETRY_MAX_DELAY_MS": "8000",
+            },
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 0, result.output
+        assert mock_run_server["config"].retry_base_delay_ms == 125
+        assert mock_run_server["config"].retry_max_delay_ms == 8000
 
     def test_headroom_connect_timeout_from_env(
         self, runner: CliRunner, mock_run_server: dict

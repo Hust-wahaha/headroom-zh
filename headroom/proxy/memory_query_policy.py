@@ -59,6 +59,18 @@ def extract_memory_query_sources(
                     tool_outputs=tool_outputs,
                     lookback_tools=lookback_tools,
                 )
+                if not latest_user:
+                    # Anthropic user turns carry the actual prompt as text blocks
+                    # ({"type":"text","text":...}), not a plain string. Capture it
+                    # so the memory retrieval query keys on the user's question and
+                    # not just any tool_result blocks in the same turn.
+                    user_text = "\n".join(
+                        b.get("text", "")
+                        for b in content
+                        if isinstance(b, dict) and b.get("type") == "text"
+                    ).strip()
+                    if user_text:
+                        latest_user = user_text
             elif isinstance(content, str) and not latest_user:
                 latest_user = content
 

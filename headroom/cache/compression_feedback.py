@@ -273,6 +273,19 @@ class CompressionFeedback:
         if not tool_name:
             return
 
+        # An entry evicted without ever being retrieved is a compression
+        # SUCCESS, not a retrieval: the LLM never needed the original data (see
+        # CompressionStore._record_eviction_success). It arrives here as
+        # retrieval_type="eviction_success"; because that is not "full" it used
+        # to fall into the search_retrievals branch below and inflate
+        # retrieval_rate/search_rate, which drove get_compression_hints toward
+        # LESS aggressive compression -- the inverse of the intended signal. The
+        # compression itself was already counted by record_compression at store
+        # time, so a never-retrieved entry already yields a low retrieval rate;
+        # this event must not be counted as a retrieval.
+        if event.retrieval_type == "eviction_success":
+            return
+
         with self._lock:
             self._total_retrievals += 1
 

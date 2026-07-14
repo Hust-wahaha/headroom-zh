@@ -192,21 +192,26 @@ class SemanticCache:
         """
         self._cleanup_expired()
 
-        # Evict if at capacity
-        while len(self._cache) >= self.config.max_entries:
-            self._evict_oldest()
-
-        # Generate embedding if available
-        embedding: list[float] = []
-        if self._embedding_fn:
-            embedding = self._embedding_fn(query)
-
         # Create cache key. Prefer the full-context hash: two requests that share
         # a trailing user message ("continue", "yes", "run the tests") but differ
         # in earlier context must NOT collide on one query-derived slot and
         # overwrite each other. Fall back to the query hash only when no
         # messages_hash is supplied (e.g. embedding-only usage).
         key = messages_hash or self._generate_key(query)
+
+        # Evict if adding a NEW key would exceed capacity. Overwriting a key that
+        # is already present is an in-place update that does not grow the map, so
+        # it must NOT evict — the old code ran the eviction loop before computing
+        # the key, so re-storing an existing entry at capacity dropped an
+        # unrelated live entry and turned a later lookup for it into a false miss.
+        # (Mirrors CompressionCache.store_compressed, which deletes-then-inserts.)
+        while key not in self._cache and len(self._cache) >= self.config.max_entries:
+            self._evict_oldest()
+
+        # Generate embedding if available
+        embedding: list[float] = []
+        if self._embedding_fn:
+            embedding = self._embedding_fn(query)
 
         now = time.time()
         entry = CacheEntry(

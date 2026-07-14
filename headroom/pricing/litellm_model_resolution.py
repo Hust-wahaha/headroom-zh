@@ -25,8 +25,11 @@ MODEL_ALIASES: dict[str, str] = {
     # Claude 3.5 Sonnet retired Feb 2026, pricing same as claude-sonnet-4-20250514
     "claude-3-5-sonnet-20241022": "claude-sonnet-4-20250514",
     "claude-3-5-sonnet-20240620": "claude-sonnet-4-20250514",
-    # Claude 3 Sonnet retired
-    "claude-3-sonnet-20240229": "claude-3-haiku-20240307",
+    # Claude 3 Sonnet retired. It was a Sonnet-tier model ($3/$15 per 1M
+    # in/out) — same price as claude-sonnet-4-20250514 — so alias it there.
+    # The old target, claude-3-haiku-20240307 ($0.25/$1.25), is a different
+    # (Haiku) tier and underpriced every cost/savings figure ~12x.
+    "claude-3-sonnet-20240229": "claude-sonnet-4-20250514",
 }
 
 

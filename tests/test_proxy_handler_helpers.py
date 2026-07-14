@@ -279,6 +279,17 @@ def test_headroom_bypass_helper_is_transport_neutral() -> None:
     assert OpenAIHandlerMixin._headroom_bypass_enabled({"x-headroom-bypass": "true"}) is True
 
 
+def test_openai_passthrough_without_config_preserves_generic_request() -> None:
+    handler = object.__new__(OpenAIHandlerMixin)
+    handler.http_client = _RecordingHttpClient("h2")
+    request = _PassthroughRequest()
+
+    response = asyncio.run(handler.handle_passthrough(request, "https://api.openai.com"))
+
+    assert response.status_code == 200
+    assert json.loads(response.body)["client"] == "h2"
+
+
 def test_openai_passthrough_connect_timeout_returns_502() -> None:
     handler = object.__new__(OpenAIHandlerMixin)
     handler.http_client = _TimeoutHttpClient()

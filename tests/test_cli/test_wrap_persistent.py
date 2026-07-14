@@ -163,6 +163,32 @@ def test_ensure_proxy_restarts_idle_stale_persistent_deployment(monkeypatch) -> 
     assert calls == ["restart:default:8787"]
 
 
+def test_ensure_proxy_restarts_stale_proxy_from_dev_build(monkeypatch) -> None:
+    """A source (-dev) CLI still restarts a stale proxy: the -dev marker is
+    display-only and must not disable a real version-mismatch restart."""
+    calls: list[str] = []
+    health = {
+        "version": "0.0.1",
+        "runtime": {"websocket_sessions": {"active_sessions": 0, "active_relay_tasks": 0}},
+        "config": {"pid": 12345},
+    }
+    monkeypatch.setattr(wrap_cli, "_HEADROOM_VERSION", "0.32.0-dev")
+    monkeypatch.setattr(wrap_cli, "_find_persistent_manifest", lambda port: _Manifest())
+    monkeypatch.setattr("headroom.install.health.probe_ready", lambda url: True)
+    monkeypatch.setattr(wrap_cli, "_query_proxy_health", lambda port: health)
+    monkeypatch.setattr(
+        wrap_cli,
+        "_restart_persistent_proxy",
+        lambda manifest, port: calls.append(f"restart:{manifest.profile}:{port}") or True,
+    )
+
+    proc, actual_port = wrap_cli._ensure_proxy(8787, False)
+
+    assert proc is None
+    assert actual_port == 8787
+    assert calls == ["restart:default:8787"]
+
+
 def test_ensure_proxy_leaves_active_stale_persistent_deployment_running(monkeypatch) -> None:
     health = {
         "version": "0.0.1",

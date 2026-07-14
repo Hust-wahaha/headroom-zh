@@ -1,10 +1,11 @@
 """Tests for the one-function compress() API and integrations."""
 
 import json
+from dataclasses import replace as _dc_replace
 
 import pytest
 
-from headroom.compress import CompressResult, compress
+from headroom.compress import CompressConfig, CompressResult, compress
 from headroom.hooks import CompressionHooks
 
 try:
@@ -96,6 +97,39 @@ class TestCompressFunction:
         result = compress(messages, optimize=False)
         assert result.messages is messages
         assert result.tokens_saved == 0
+
+    def test_kwargs_do_not_mutate_caller_config(self):
+        """kwargs must not smuggle their values onto the caller's CompressConfig.
+
+        Regression: ``compress`` did ``cfg = config or CompressConfig()`` and
+        then ``setattr(cfg, key, value)`` for every matching kwarg — so a caller
+        who passed ``config=my_cfg, protect_recent=0`` came back to find their
+        long-lived ``my_cfg`` silently rewritten. A shared, per-agent config
+        was corrupted by every request that overrode a single option.
+        """
+
+        big_data = json.dumps([{"id": i, "status": "active"} for i in range(200)])
+        messages = [
+            {"role": "user", "content": "analyze"},
+            {"role": "tool", "content": big_data, "tool_call_id": "c1"},
+        ]
+        cfg = CompressConfig(protect_recent=4, target_ratio=0.8)
+        snapshot = _dc_replace(cfg)
+
+        compress(
+            messages,
+            model="claude-sonnet-4-5-20250929",
+            config=cfg,
+            protect_recent=0,
+            target_ratio=0.2,
+        )
+
+        assert cfg.protect_recent == snapshot.protect_recent, (
+            "compress() mutated caller's config.protect_recent via kwargs"
+        )
+        assert cfg.target_ratio == snapshot.target_ratio, (
+            "compress() mutated caller's config.target_ratio via kwargs"
+        )
 
     def test_with_custom_hooks(self):
         """Hooks are called when provided."""

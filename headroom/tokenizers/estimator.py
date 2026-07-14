@@ -100,9 +100,19 @@ class EstimatingTokenCounter(BaseTokenizer):
         if not text:
             return 0
 
-        # Use fixed ratio if provided
+        # Use fixed ratio if provided. Dense scripts (CJK/Kana/Hangul) still
+        # tokenize at ~1 token per character, so pricing them at the (Latin)
+        # fixed ratio under-counts by 2-4x — the same correction the auto path
+        # below applies. The registry builds every provider-calibrated counter
+        # (Anthropic 3.5, Google 4.0, Cohere 4.0, Moonshot 3.1) with a fixed
+        # ratio, so this is the live proxy count path for those providers.
         if self._fixed_ratio is not None:
-            return max(1, int(len(text) / self._fixed_ratio + 0.5))
+            cjk_chars = self._count_cjk_chars(text)
+            other_chars = len(text) - cjk_chars
+            return max(
+                1,
+                int(other_chars / self._fixed_ratio + cjk_chars / self.CHARS_PER_TOKEN_CJK + 0.5),
+            )
 
         # Auto-detect content type and adjust ratio
         ratio = self._detect_ratio(text)

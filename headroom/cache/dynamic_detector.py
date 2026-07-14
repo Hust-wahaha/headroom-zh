@@ -300,8 +300,15 @@ class RegexDetector:
             DynamicCategory.REQUEST_ID,
             "api_key",
         ),
-        # Common prefixed IDs (req_, sess_, txn_, etc.)
-        (r"\b[a-z]{2,6}_[a-zA-Z0-9]{8,}", DynamicCategory.REQUEST_ID, "prefixed_id"),
+        # Common prefixed IDs (req_, sess_, txn_, etc.). The suffix must
+        # contain at least one digit (lookahead) so genuine generated ids
+        # like "req_a1b2c3d4" match while plain snake_case compound words
+        # like "in_progress" or "is_valid" (all letters, no digit) do not.
+        (
+            r"\b[a-z]{2,6}_(?=[a-zA-Z0-9]*\d)[a-zA-Z0-9]{8,}",
+            DynamicCategory.REQUEST_ID,
+            "prefixed_id",
+        ),
         # Hex strings of common ID lengths (32 = MD5, 40 = SHA1, 64 = SHA256)
         (r"\b[a-fA-F0-9]{32}\b", DynamicCategory.IDENTIFIER, "hex_32"),
         (r"\b[a-fA-F0-9]{40}\b", DynamicCategory.IDENTIFIER, "hex_40"),
@@ -325,10 +332,20 @@ class RegexDetector:
         ]
 
         # Build structural pattern from dynamic labels
-        # Pattern: "label" followed by separator then value
+        # Pattern: "label" followed by an explicit key/value separator then value.
+        #
+        # Two constraints keep this from firing on ordinary prose and code:
+        #   * A word boundary (\b) and a trailing negative-lookahead on word
+        #     characters anchor the label as a whole word. Without them a label
+        #     like "token" or "last" matched as a substring inside unrelated
+        #     identifiers such as "getAuthToken" or "blast".
+        #   * The separator must be an explicit ":" or "=" (optionally spaced).
+        #     A bare-whitespace separator turned any English sentence beginning
+        #     with a label word ("current work is ...", "name of the file ...")
+        #     into a bogus label/value pair that swallowed the rest of the clause.
         labels_pattern = "|".join(re.escape(label) for label in config.dynamic_labels)
         self._structural_pattern = re.compile(
-            rf"(?P<label>(?:{labels_pattern}))(?P<sep>\s*[:=]\s*|\s+)(?P<value>[^\n,;]+)",
+            rf"\b(?P<label>(?:{labels_pattern}))(?!\w)(?P<sep>\s*[:=]\s*)(?P<value>[^\n,;]+)",
             re.IGNORECASE,
         )
 
@@ -459,12 +476,18 @@ class RegexDetector:
             if len(text) < self.config.min_entropy_length:
                 continue
 
-            # Skip if all letters or all numbers (not random-looking)
-            if text.isalpha() or text.isdigit():
+            # Require genuinely id-shaped structure rather than a random-looking
+            # spelling. Generated identifiers (session ids, request ids, hashes,
+            # tokens) essentially always mix in at least one digit, whereas
+            # ordinary words and compound identifiers are letters (plus "-"/"_"
+            # separators) only. Skipping the letters-only case avoids flagging
+            # prose words as well as snake_case / kebab-case vocabulary like
+            # "in_progress", "system-reminder" or "total_tokens" that recurs
+            # identically every turn and must stay in the cacheable prefix.
+            if text.isdigit():
                 continue
-
-            # Skip common words that might look like IDs
-            if text.lower() in {"username", "password", "localhost", "undefined"}:
+            letters_only = text.replace("-", "").replace("_", "")
+            if not letters_only or letters_only.isalpha():
                 continue
 
             # Calculate entropy

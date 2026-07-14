@@ -144,6 +144,50 @@ def test_get_server_robust_to_unparseable_toml(tmp_path: Path) -> None:
     assert _make_registrar(tmp_path).get_server("headroom") is None
 
 
+def test_register_refuses_unparseable_config(tmp_path: Path) -> None:
+    """An unparseable config.toml must not be appended to (that would corrupt it
+    further); refuse and leave it byte-for-byte untouched."""
+    cfg = _config_path(tmp_path)
+    cfg.parent.mkdir()
+    original = "this = is = not = valid\n"
+    cfg.write_text(original)
+
+    result = _make_registrar(tmp_path).register_server(_spec())
+
+    assert result.status == RegisterStatus.FAILED
+    assert "not valid TOML" in result.detail
+    assert cfg.read_text() == original
+
+
+def test_register_refuses_non_table_mcp_servers_entry(tmp_path: Path) -> None:
+    """A valid config whose mcp_servers.headroom is a non-table must not get a
+    duplicate `[mcp_servers.headroom]` table appended (which tomllib rejects)."""
+    cfg = _config_path(tmp_path)
+    cfg.parent.mkdir()
+    original = '[mcp_servers]\nheadroom = "not-a-table"\n'
+    cfg.write_text(original)
+
+    result = _make_registrar(tmp_path).register_server(_spec())
+
+    assert result.status == RegisterStatus.FAILED
+    assert "non-table" in result.detail
+    # Untouched — still the original single (string) definition.
+    assert cfg.read_text() == original
+
+
+def test_register_refuses_non_table_mcp_servers(tmp_path: Path) -> None:
+    """A non-table top-level mcp_servers is also refused, not clobbered."""
+    cfg = _config_path(tmp_path)
+    cfg.parent.mkdir()
+    original = 'mcp_servers = "oops"\n'
+    cfg.write_text(original)
+
+    result = _make_registrar(tmp_path).register_server(_spec())
+
+    assert result.status == RegisterStatus.FAILED
+    assert cfg.read_text() == original
+
+
 # ----------------------------------------------------------------------
 # register_server() — happy paths
 # ----------------------------------------------------------------------

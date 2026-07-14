@@ -140,7 +140,13 @@ def build_runtime_command(manifest: DeploymentManifest) -> list[str]:
     for name, value in runtime_env.items():
         command.extend(["--env", f"{name}={value}"])
     for name in sorted(os.environ):
-        if name.startswith(PASSTHROUGH_ENV_PREFIXES):
+        # Skip any name the manifest already pinned above: Docker resolves
+        # duplicate `--env` last-wins, so a bare `--env HEADROOM_BACKEND`
+        # passthrough (which reads the host process env at
+        # `start_persistent_docker` time) would silently override the manifest's
+        # `--env HEADROOM_BACKEND=<value>`, diverging the container from its
+        # deployment config.
+        if name.startswith(PASSTHROUGH_ENV_PREFIXES) and name not in runtime_env:
             command.extend(["--env", name])
     # The image ENTRYPOINT already runs `headroom proxy` (see Dockerfile), so
     # the args appended after the image name are only the proxy flags — never

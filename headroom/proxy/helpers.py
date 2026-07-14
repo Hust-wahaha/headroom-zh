@@ -2379,6 +2379,61 @@ async def _read_request_body_bytes(request: Request) -> bytes:
     return cast(bytes, raw)
 
 
+# ---------------------------------------------------------------------------
+# Output-only content blocks
+# ---------------------------------------------------------------------------
+# The Anthropic *response* schema can emit signaling blocks that the *request*
+# schema (messages[].content[]) does not accept. The primary case is the
+# server-side refusal fallback notification introduced with the
+# ``server-side-fallback-2026-06-01`` beta::
+#
+#     {"type": "fallback",
+#      "from": {"model": "claude-fable-5"},
+#      "to":   {"model": "claude-opus-4-8"}}
+#
+# The API returns it inside an assistant turn to signal that a refused request
+# was transparently re-served by the fallback model. When a client replays that
+# assistant turn on the next call, the request validator rejects it::
+#
+#     400 invalid_request_error: messages.N.content.0: Input tag 'fallback'
+#     found using 'type' does not match any of the expected tags
+#
+# These blocks are output-only and carry no state the model needs on input, so
+# they are safe to drop before forwarding.
+OUTPUT_ONLY_REQUEST_BLOCK_TYPES: frozenset[str] = frozenset({"fallback"})
+
+
+def strip_output_only_request_blocks(messages: Any) -> bool:
+    """Remove output-only content blocks from request ``messages`` in place.
+
+    Returns ``True`` if any block was removed. If stripping empties a message's
+    ``content`` list it is backfilled with a single benign text block, because
+    the API also rejects an empty ``content`` array. Idempotent.
+    """
+    if not isinstance(messages, list):
+        return False
+    changed = False
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        kept = [
+            block
+            for block in content
+            if not (
+                isinstance(block, dict) and block.get("type") in OUTPUT_ONLY_REQUEST_BLOCK_TYPES
+            )
+        ]
+        if len(kept) != len(content):
+            changed = True
+            if not kept:
+                kept = [{"type": "text", "text": "(model fallback)"}]
+            msg["content"] = kept
+    return changed
+
+
 async def _read_request_json(request: Request) -> dict[str, Any]:
     """Read and parse JSON from a request, handling compressed bodies.
 
@@ -2401,6 +2456,17 @@ async def _read_request_json(request: Request) -> dict[str, Any]:
     result = json.loads(text)
     if not isinstance(result, dict):
         raise ValueError("Request body must be a JSON object, not " + type(result).__name__)
+
+    # Drop output-only blocks the request schema rejects (see
+    # ``strip_output_only_request_blocks``). Callers of this bytes-less reader
+    # (e.g. the Gemini path) re-serialize ``result`` themselves.
+    if strip_output_only_request_blocks(result.get("messages")):
+        logger.warning(
+            "removed output-only content block(s) (%s) from request messages "
+            "before forwarding (not valid on the request path)",
+            ",".join(sorted(OUTPUT_ONLY_REQUEST_BLOCK_TYPES)),
+        )
+
     return result
 
 
@@ -2422,6 +2488,21 @@ async def read_request_json_with_bytes(request: Request) -> tuple[dict[str, Any]
     result = json.loads(text)
     if not isinstance(result, dict):
         raise ValueError("Request body must be a JSON object, not " + type(result).__name__)
+
+    # Drop output-only blocks (see ``strip_output_only_request_blocks``) before
+    # any downstream deepcopy / compression / 400-retry path. This is the shared
+    # reader for the Anthropic, OpenAI, and Bedrock handlers, so one guard here
+    # covers every client that routes through the proxy. When a block is removed
+    # we re-encode ``raw`` so a byte-faithful passthrough forwarder cannot leak
+    # the pre-strip body; unchanged requests keep their exact original bytes.
+    if strip_output_only_request_blocks(result.get("messages")):
+        raw = json.dumps(result, ensure_ascii=False).encode("utf-8")
+        logger.warning(
+            "removed output-only content block(s) (%s) from request messages "
+            "before forwarding (not valid on the request path)",
+            ",".join(sorted(OUTPUT_ONLY_REQUEST_BLOCK_TYPES)),
+        )
+
     return result, raw
 
 

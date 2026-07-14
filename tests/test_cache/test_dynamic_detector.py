@@ -85,10 +85,16 @@ class TestRegexDetector:
         assert spans[0].category == DynamicCategory.VERSION
 
     def test_date_prefix_pattern(self, detector):
-        """Test full date prefix phrase detection."""
-        spans = detector.detect("Today is Monday, January 15, 2024. You are an assistant.")
+        """Test labeled date phrase detection.
+
+        Structural detection requires an explicit ``:``/``=`` separator (a
+        bare-whitespace separator used to swallow ordinary prose such as
+        "Today is Monday..." — see issue #2110). With the label properly
+        delimited, the locale-formatted date value is still extracted.
+        """
+        spans = detector.detect("Today: Monday, January 15, 2024. You are an assistant.")
         assert len(spans) >= 1
-        # Should detect the full phrase
+        # Should detect the labeled value
         date_spans = [s for s in spans if s.category == DynamicCategory.DATE]
         assert len(date_spans) >= 1
 
@@ -285,6 +291,76 @@ class TestEntropyDetection:
         flagged_words = [s.text for s in result.spans]
         assert "username" not in flagged_words
         assert "password" not in flagged_words
+
+
+class TestIssue2110FalsePositives:
+    """Regression tests for issue #2110.
+
+    The detector misclassified ordinary English words and code identifiers
+    (e.g. ``in_progress``, ``is_valid``, ``getAuthToken``) as dynamic content,
+    extracting them from the system prompt and re-appending them as a growing
+    ``[Dynamic Context]`` tail that corrupted the cached prefix. Genuinely
+    dynamic *shapes* (UUIDs, timestamps, hashes, prefixed ids with a digit)
+    must still be detected.
+    """
+
+    @pytest.fixture
+    def detector(self):
+        return DynamicContentDetector(DetectorConfig(tiers=["regex"]))
+
+    # --- must NOT be flagged (the reported false positives) ------------------
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "in_progress",  # snake_case status word (prefixed_id false positive)
+            "is_valid",  # snake_case identifier (entropy false positive)
+            "in_pr",  # ordinary short token
+            "total_tokens",  # snake_case compound word
+            "system-reminder",  # kebab-case tag name
+            "getAuthToken (function - src/services/firebase.ts:92)",  # code identifier + path
+            "DebugModal (function - src/components/layout/DebugModal.tsx:11)",
+            "The current work is being done",  # prose starting with a label word
+            "last updated the file yesterday",  # prose starting with a label word
+            "the user should review this",  # prose containing a label word
+            "the name of the file is unknown",  # prose containing a label word
+        ],
+    )
+    def test_ordinary_words_and_identifiers_not_extracted(self, detector, text):
+        result = detector.detect(text)
+        assert result.spans == [], f"unexpected dynamic spans for {text!r}: {result.spans}"
+        # Nothing extracted -> the static content is preserved verbatim and the
+        # dynamic tail stays empty (so it can't grow over a session).
+        assert result.dynamic_content == ""
+
+    # --- MUST still be flagged (genuinely dynamic shapes) --------------------
+
+    def test_uuid_still_detected(self, detector):
+        text = "550e8400-e29b-41d4-a716-446655440000"
+        spans = detector.detect(text).spans
+        assert any(s.category == DynamicCategory.UUID and s.text == text for s in spans)
+
+    def test_timestamp_still_detected(self, detector):
+        spans = detector.detect("event at 2026-07-12T10:30:00Z happened").spans
+        assert any(s.text == "2026-07-12T10:30:00Z" for s in spans)
+
+    def test_long_hex_hash_still_detected(self, detector):
+        sha1 = "da39a3ee5e6b4b0d3255bfef95601890afd80709"
+        spans = detector.detect(sha1).spans
+        assert any(s.category == DynamicCategory.IDENTIFIER and s.text == sha1 for s in spans)
+
+    def test_prefixed_id_with_digit_still_detected(self, detector):
+        spans = detector.detect("req_a1b2c3d4").spans
+        assert any(s.category == DynamicCategory.REQUEST_ID for s in spans)
+
+    def test_labeled_dynamic_value_still_detected(self, detector):
+        # Explicit "label: value" — the label stays static, the value is dynamic.
+        spans = detector.detect("session_id: 8f3e2a1c9d").spans
+        assert any(s.text == "8f3e2a1c9d" for s in spans)
+
+    def test_high_entropy_id_with_digits_still_detected(self, detector):
+        spans = detector.detect("a1b2c3d4e5f6g7h8").spans
+        assert any(s.category == DynamicCategory.IDENTIFIER for s in spans)
 
 
 class TestEdgeCases:

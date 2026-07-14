@@ -706,6 +706,32 @@ class TestCompressionStoreEviction:
         assert store_with_small_capacity.exists(hashes[2])
         assert store_with_small_capacity.exists(new_hash)
 
+    def test_duplicate_store_at_capacity_does_not_evict(
+        self, store_with_small_capacity: CompressionStore
+    ):
+        """Re-storing an already-present hash at capacity overwrites in place and
+        must NOT evict an unrelated live entry (which would drop below capacity
+        and make that entry's marker unredeemable). The CCR mirror bridge
+        re-stores the same hash on later turns, so this is a common path."""
+        hashes = []
+        for i in range(3):
+            hashes.append(
+                store_with_small_capacity.store(
+                    original=f"content_{i}", compressed=f"compressed_{i}"
+                )
+            )
+            time.sleep(0.01)
+        assert store_with_small_capacity.get_stats()["entry_count"] == 3
+
+        # Re-store the SAME content for the oldest entry (a duplicate -> same hash).
+        dup = store_with_small_capacity.store(original="content_0", compressed="compressed_0")
+        assert dup == hashes[0]
+
+        # No eviction happened: all three entries survive and count stays at 3.
+        for h in hashes:
+            assert store_with_small_capacity.exists(h)
+        assert store_with_small_capacity.get_stats()["entry_count"] == 3
+
     def test_eviction_cleans_expired_first(self):
         """Eviction cleans expired entries before evicting valid ones."""
         store = CompressionStore(max_entries=3, default_ttl=1)

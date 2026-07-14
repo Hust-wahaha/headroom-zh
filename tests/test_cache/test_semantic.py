@@ -96,6 +96,31 @@ class TestSemanticCache:
         assert cache.get("query3", messages_hash="h3") is not None
         assert cache.get("query4", messages_hash="h4") is not None
 
+    def test_update_at_capacity_does_not_evict_unrelated_entry(self):
+        """Re-storing an existing key at capacity must not drop another entry.
+
+        The eviction loop used to run before the cache key was computed, so
+        overwriting a key that was already present (a retried/duplicate store)
+        still evicted the LRU-oldest distinct entry even though the update grows
+        nothing. That silently dropped a live entry and turned a later lookup for
+        it into a false miss.
+        """
+        config = SemanticCacheConfig(max_entries=2)
+        cache = SemanticCache(config)
+
+        cache.put("query1", "response1", messages_hash="h1")
+        cache.put("query2", "response2", messages_hash="h2")
+
+        # Re-store the already-present h2 (e.g. a duplicate/retried request).
+        cache.put("query2", "response2b", messages_hash="h2")
+
+        # h1 must still be there — updating h2 must not evict it.
+        got1 = cache.get("query1", messages_hash="h1")
+        assert got1 is not None and got1.response == "response1"
+        # h2 reflects the update.
+        got2 = cache.get("query2", messages_hash="h2")
+        assert got2 is not None and got2.response == "response2b"
+
     def test_ttl_expiration(self):
         """Test TTL expiration."""
         config = SemanticCacheConfig(ttl_seconds=1)

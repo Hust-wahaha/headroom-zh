@@ -107,7 +107,10 @@ def get_version() -> str:
     if root is not None:
         source_version = _source_tree_version(root)
         if source_version:
-            return source_version
+            # A source checkout sits ahead of the last release tag, so this is
+            # the next version we'd cut, not a shipped one. Tag it -dev so a
+            # dev build is never mistaken for the published release.
+            return f"{source_version}-dev"
 
     build_version = _packaged_build_version()
     if build_version:

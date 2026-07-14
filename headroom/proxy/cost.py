@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import importlib.util
 import logging
+import math
 from collections import deque
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
@@ -139,10 +140,17 @@ def build_prefix_cache_stats(
         read_mult: float = econ["read_multiplier"]  # type: ignore[assignment]
         write_mult: float = econ["write_multiplier"]  # type: ignore[assignment]
 
-        # Get the base input price per token for the most-used model on this provider
+        # Get the base input price per token for the most-used model on this
+        # provider. Pick the provider-matching, priced model with the highest
+        # token volume — not the first one recorded. A Claude Code session sends
+        # both Sonnet (main loop) and Haiku (titles/subagents); breaking on the
+        # first-inserted model would price all cache savings at whichever happened
+        # to be seen first (e.g. Haiku's $0.80/M vs Sonnet's $3/M), skewing the
+        # dashboard's savings figure ~3.75x.
         input_price_per_token = None
         if cost_tracker:
-            for model_name in cost_tracker._tokens_sent_by_model:
+            best_tokens = -1
+            for model_name, tokens_sent in cost_tracker._tokens_sent_by_model.items():
                 # Match model to provider
                 _openai_prefixes = ("gpt", "o1", "o3", "o4")
                 is_match = (
@@ -151,11 +159,11 @@ def build_prefix_cache_stats(
                     or (provider == "gemini" and "gemini" in model_name)
                     or (provider == "bedrock" and "claude" in model_name)
                 )
-                if is_match:
+                if is_match and tokens_sent > best_tokens:
                     price_per_1m = cost_tracker._get_list_price(model_name)
                     if price_per_1m:
                         input_price_per_token = price_per_1m / 1_000_000
-                        break
+                        best_tokens = tokens_sent
 
         # Calculate savings:
         # Cache reads save (1.0 - read_mult) per token vs uncached input price.
@@ -465,23 +473,50 @@ def build_session_summary(
         "too_small": 0,
         "passthrough": 0,
         "no_compressible_content": 0,
+        "unknown_token_accounting": 0,
     }
+
+    def _entry_has_number(entry: Any, attr: str) -> bool:
+        value = getattr(entry, attr, None)
+        return (
+            isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and math.isfinite(float(value))
+        )
+
+    def _entry_number(entry: Any, attr: str) -> int | float:
+        value = getattr(entry, attr, 0)
+        return value if _entry_has_number(entry, attr) else 0
 
     if proxy.logger:
         for entry in proxy.logger._logs:
             if entry.model and "count_tokens" in entry.model:
                 uncompressed_reasons["passthrough"] += 1
                 continue
-            if entry.tokens_saved > 0:
+            tokens_saved = _entry_number(entry, "tokens_saved")
+            input_tokens_original = _entry_number(entry, "input_tokens_original")
+            input_tokens_optimized = _entry_number(entry, "input_tokens_optimized")
+            has_complete_token_accounting = all(
+                _entry_has_number(entry, attr)
+                for attr in (
+                    "input_tokens_original",
+                    "input_tokens_optimized",
+                    "tokens_saved",
+                    "savings_percent",
+                )
+            )
+            if tokens_saved > 0 and has_complete_token_accounting:
                 compressed_requests.append(
                     {
-                        "savings_pct": round(entry.savings_percent, 1),
-                        "tokens_saved": entry.tokens_saved,
-                        "original": entry.input_tokens_original,
-                        "optimized": entry.input_tokens_optimized,
+                        "savings_pct": round(_entry_number(entry, "savings_percent"), 1),
+                        "tokens_saved": tokens_saved,
+                        "original": input_tokens_original,
+                        "optimized": input_tokens_optimized,
                     }
                 )
-            elif entry.input_tokens_original > 0:
+            elif not has_complete_token_accounting:
+                uncompressed_reasons["unknown_token_accounting"] += 1
+            elif input_tokens_original > 0:
                 # Categorize why it wasn't compressed
                 transforms = entry.transforms_applied or []
                 if not transforms:
@@ -489,7 +524,7 @@ def build_session_summary(
                     uncompressed_reasons["prefix_frozen"] += 1
                 elif all("excluded" in t or "protected" in t for t in transforms):
                     uncompressed_reasons["no_compressible_content"] += 1
-                elif entry.input_tokens_original < 500:
+                elif input_tokens_original < 500:
                     uncompressed_reasons["too_small"] += 1
                 else:
                     uncompressed_reasons["prefix_frozen"] += 1

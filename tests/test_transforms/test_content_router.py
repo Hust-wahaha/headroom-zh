@@ -1245,6 +1245,60 @@ class TestExcludeTools:
 
         assert "router:excluded:tool" not in result.transforms_applied
 
+    def test_protect_recent_reads_fraction_zero_overrides_runtime_window(self, tokenizer):
+        """protect_recent_reads_fraction == 0.0 (the --protect-tool-results
+        sentinel) means "protect all excluded-tool output forever". A
+        profile-derived read_protection_window kwarg must not be allowed to
+        shrink that back down -- regression test for the precedence bug
+        where the runtime kwarg unconditionally overrode this config-level
+        guarantee."""
+        config = ContentRouterConfig(
+            min_section_tokens=10,
+            min_chars_for_block_compression=10,
+            exclude_tools={"Glob"},
+            protect_recent_reads_fraction=0.0,
+        )
+        router = ContentRouter(config)
+
+        # Plain unstructured text (not grep/log/json-shaped) so
+        # _lossless_compact_excluded returns None and the router takes the
+        # bare "protect as before" branch, matching the tag this test
+        # asserts on.
+        old_tool_content = "\n".join(
+            f"line {i}: some output from a glob command that is long enough to compress"
+            for i in range(80)
+        )
+        messages = [
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_glob_old",
+                        "name": "Glob",
+                        "input": {"pattern": "*.py"},
+                    }
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "toolu_glob_old",
+                        "content": old_tool_content,
+                    }
+                ],
+            },
+            {"role": "assistant", "content": "ack"},
+            {"role": "user", "content": "continue"},
+            {"role": "assistant", "content": "ack"},
+        ]
+
+        result = router.apply(messages, tokenizer, read_protection_window=2)
+
+        assert "router:excluded:tool" in result.transforms_applied
+
     def test_mixed_excluded_and_non_excluded_tools(self, tokenizer):
         """Multiple tools in same conversation - only excluded ones pass through."""
         config = ContentRouterConfig(

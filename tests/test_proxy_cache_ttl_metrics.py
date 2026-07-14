@@ -110,6 +110,48 @@ def test_prefix_cache_stats_subtracts_write_premium_from_provider_net_savings(
     assert anthropic["net_savings_usd"] == 0.0021
 
 
+def test_prefix_cache_stats_prices_by_most_used_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cache-read savings must be valued with the highest-volume model's price,
+    not whichever model was recorded first. A Claude Code session sends Haiku
+    (titles) and Sonnet (main loop); pricing the savings at Haiku's rate because
+    it was inserted first understates the dashboard figure ~3.75x."""
+    prices = {"claude-haiku-4-5": 0.80, "claude-sonnet-4-5": 3.00}
+    monkeypatch.setattr(CostTracker, "_get_list_price", lambda _self, m: prices.get(m))
+
+    def _savings(tokens_by_model: dict[str, int]) -> float:
+        metrics = PrometheusMetrics()
+        # Use a large read count so the reported savings_usd (rounded to 4 dp)
+        # stays exact and the price ratio is not lost to rounding.
+        metrics.cache_by_provider["anthropic"].update(
+            {
+                "requests": 1,
+                "hit_requests": 1,
+                "cache_read_tokens": 1_000_000,
+                "cache_write_tokens": 0,
+                "cache_write_5m_tokens": 0,
+                "cache_write_1h_tokens": 0,
+                "cache_write_5m_requests": 0,
+                "cache_write_1h_requests": 0,
+            }
+        )
+        tracker = CostTracker()
+        tracker._tokens_sent_by_model.update(tokens_by_model)
+        stats = build_prefix_cache_stats(metrics, tracker)
+        return stats["by_provider"]["anthropic"]["savings_usd"]
+
+    # Haiku recorded first, but Sonnet carries the higher token volume.
+    haiku_first = _savings({"claude-haiku-4-5": 500, "claude-sonnet-4-5": 50_000})
+    sonnet_only = _savings({"claude-sonnet-4-5": 50_000})
+    haiku_only = _savings({"claude-haiku-4-5": 500})
+
+    # Priced by Sonnet regardless of insertion order, not by first-seen Haiku.
+    assert haiku_first == sonnet_only
+    assert haiku_first > haiku_only
+    assert haiku_only == pytest.approx(sonnet_only * 0.80 / 3.00)
+
+
 def test_prefix_cache_stats_subtracts_write_premium_from_total_net_savings(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -1307,12 +1307,12 @@
                                         <div class="px-4 py-3 min-w-0">
                                             <span class="px-2 py-0.5 bg-border rounded text-xs truncate" x-text="truncateModel(req.model)"></span>
                                         </div>
-                                        <div class="px-4 py-3 text-right font-mono tabular-nums" x-text="formatNumber(req.input_tokens_optimized)"></div>
-                                        <div class="px-4 py-3 text-right font-mono tabular-nums" x-text="formatNumber(req.output_tokens || 0)"></div>
+                                        <div class="px-4 py-3 text-right font-mono tabular-nums" x-text="formatOptionalNumber(req.input_tokens_optimized)"></div>
+                                        <div class="px-4 py-3 text-right font-mono tabular-nums" x-text="formatOptionalNumber(req.output_tokens)"></div>
                                         <div class="px-4 py-3 text-right">
-                                            <span class="text-accent font-mono tabular-nums" x-text="req.savings_percent.toFixed(0) + '%'"></span>
+                                            <span class="text-accent font-mono tabular-nums" x-text="formatOptionalPercent(req.savings_percent)"></span>
                                         </div>
-                                        <div class="px-4 py-3 text-right font-mono tabular-nums text-gray-400" x-text="(req.total_latency_ms || 0).toFixed(0) + 'ms'"></div>
+                                        <div class="px-4 py-3 text-right font-mono tabular-nums text-gray-400" x-text="formatOptionalMs(req.total_latency_ms)"></div>
                                     </div>
                                 </div>
                                 <!-- Expanded detail row -->
@@ -1321,19 +1321,19 @@
                                         <div class="grid grid-cols-2 lg:grid-cols-4 gap-4 text-xs">
                                             <div>
                                                 <div class="text-gray-500 uppercase tracking-wide mb-1">Original Tokens</div>
-                                                <div class="font-mono" x-text="formatNumber(req.input_tokens_original)"></div>
+                                                <div class="font-mono" x-text="formatOptionalNumber(req.input_tokens_original)"></div>
                                             </div>
                                             <div>
                                                 <div class="text-gray-500 uppercase tracking-wide mb-1">Compressed Tokens</div>
-                                                <div class="font-mono" x-text="formatNumber(req.input_tokens_optimized)"></div>
+                                                <div class="font-mono" x-text="formatOptionalNumber(req.input_tokens_optimized)"></div>
                                             </div>
                                             <div>
                                                 <div class="text-gray-500 uppercase tracking-wide mb-1">Tokens Removed</div>
-                                                <div class="font-mono text-accent" x-text="formatNumber(req.tokens_saved)"></div>
+                                                <div class="font-mono text-accent" x-text="formatOptionalNumber(req.tokens_saved)"></div>
                                             </div>
                                             <div>
                                                 <div class="text-gray-500 uppercase tracking-wide mb-1">Optimization Time</div>
-                                                <div class="font-mono" x-text="(req.optimization_latency_ms || 0).toFixed(0) + 'ms'"></div>
+                                                <div class="font-mono" x-text="formatOptionalMs(req.optimization_latency_ms)"></div>
                                             </div>
                                         </div>
                                         <!-- Transforms Applied -->
@@ -2054,10 +2054,26 @@
 
                 // --- Formatting ---
 
+                hasNumber(n) {
+                    return typeof n === 'number' && Number.isFinite(n);
+                },
+
                 formatNumber(n) {
                     if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
                     if (n >= 1000) return (n / 1000).toFixed(1) + 'k';
                     return n.toString();
+                },
+
+                formatOptionalNumber(n) {
+                    return this.hasNumber(n) ? this.formatNumber(n) : 'unknown';
+                },
+
+                formatOptionalPercent(n) {
+                    return this.hasNumber(n) ? n.toFixed(0) + '%' : 'unknown';
+                },
+
+                formatOptionalMs(n) {
+                    return this.hasNumber(n) ? n.toFixed(0) + 'ms' : 'unknown';
                 },
 
                 formatCurrency(n) {

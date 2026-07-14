@@ -1577,6 +1577,37 @@ def test_cache_read_savings_accumulate_and_survive_restart(tmp_path, monkeypatch
     assert reloaded.history_response()["lifetime"]["cache_read_tokens"] == 1_600_000
 
 
+def test_by_model_savings_accumulate_and_survive_restart(tmp_path):
+    path = tmp_path / "proxy_savings.json"
+    tracker = SavingsTracker(path=str(path))
+
+    tracker.record_request(
+        model="gpt-4o",
+        input_tokens=100,
+        tokens_saved=40,
+        timestamp="2026-07-01T09:00:00Z",
+    )
+    tracker.record_request(
+        model="claude-sonnet-4-6",
+        input_tokens=300,
+        tokens_saved=60,
+        timestamp="2026-07-01T09:01:00Z",
+    )
+
+    persisted = json.loads(path.read_text(encoding="utf-8"))
+    assert set(persisted["by_model"]) == {"gpt-4o", "claude-sonnet-4-6"}
+    assert persisted["by_model"]["gpt-4o"]["tokens_saved"] == 40
+    assert persisted["by_model"]["gpt-4o"]["total_input_tokens"] == 100
+
+    reloaded = SavingsTracker(path=str(path))
+    stats_by_model = reloaded.stats_preview()["by_model"]
+    assert set(stats_by_model) == {"gpt-4o", "claude-sonnet-4-6"}
+    assert stats_by_model["claude-sonnet-4-6"]["tokens_saved"] == 60
+    assert stats_by_model["claude-sonnet-4-6"]["total_input_tokens"] == 300
+    assert stats_by_model["claude-sonnet-4-6"]["savings_percent"] == 16.67
+    assert reloaded.history_response()["by_model"] == stats_by_model
+
+
 def test_v3_state_without_cache_fields_loads_clean_and_saves_v4(tmp_path):
     path = tmp_path / "proxy_savings.json"
     path.write_text(

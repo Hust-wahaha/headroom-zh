@@ -1081,6 +1081,49 @@ async def test_ws_without_codex_lite_preserves_adjacent_headers_and_api_key_rout
 
 
 @pytest.mark.asyncio
+async def test_ws_first_frame_strips_codex_lite_metadata_mirror():
+    """Codex mirrors the lite header into response.create's client_metadata
+    (regression for #1523): stripping the handshake header alone is not
+    enough, upstream rejects gpt-5.x when the frame-body mirror survives.
+    """
+    upstream_events = [
+        json.dumps({"type": "response.created", "response": {"id": "r_1"}}),
+        json.dumps({"type": "response.completed", "response": {"id": "r_1"}}),
+    ]
+    upstream = _FakeUpstream(upstream_events)
+    fake_ws_mod = _make_fake_websockets_module(upstream)
+
+    first_frame = json.dumps(
+        {
+            "type": "response.create",
+            "response": {
+                "model": "gpt-5.5",
+                "input": "hi",
+                "client_metadata": {
+                    "thread_id": "t_1",
+                    "ws_request_header_x_openai_internal_codex_responses_lite": True,
+                },
+            },
+        }
+    )
+    client_ws = _FakeWebSocket(
+        frames=[first_frame],
+        headers=_codex_lite_headers(chatgpt=True),
+    )
+    handler = _DummyOpenAIHandler()
+
+    with patch.dict(sys.modules, {"websockets": fake_ws_mod}):
+        await handler.handle_openai_responses_ws(client_ws)
+
+    assert len(upstream.sent) == 1
+    sent_body = json.loads(upstream.sent[0])
+    client_metadata = sent_body["response"]["client_metadata"]
+    assert "ws_request_header_x_openai_internal_codex_responses_lite" not in client_metadata
+    # Sibling metadata must survive the strip.
+    assert client_metadata["thread_id"] == "t_1"
+
+
+@pytest.mark.asyncio
 async def test_ws_connect_happens_before_accept():
     """The upstream connect must complete before the client 101 is sent,
     so OpenAI's x-codex-* handshake headers are available to attach.

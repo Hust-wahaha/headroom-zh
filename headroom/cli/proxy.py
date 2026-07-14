@@ -285,6 +285,10 @@ def dashboard(port: int, no_open: bool) -> None:
     help=(
         "Comma-separated tool names whose results are never lossy-compressed, "
         "merged with the built-in defaults (e.g. Bash,WebFetch). "
+        "In token mode, this also resets protect_recent_reads_fraction "
+        "from 0.3 (only recent ~30% of results protected) to 0.0 (all "
+        "results protected indefinitely), which prevents older Read/Glob/"
+        "Grep/Write/Edit tool results from being silently compressed. "
         "Env: HEADROOM_PROTECT_TOOL_RESULTS."
     ),
 )
@@ -371,6 +375,26 @@ def dashboard(port: int, no_open: bool) -> None:
     help=(
         "Maximum upstream retry attempts for connect/read/5xx failures (1–10, default: 3). "
         "Env: HEADROOM_RETRY_MAX_ATTEMPTS."
+    ),
+)
+@click.option(
+    "--retry-base-delay-ms",
+    type=click.IntRange(min=0),
+    default=None,
+    envvar="HEADROOM_RETRY_BASE_DELAY_MS",
+    help=(
+        "Initial upstream retry delay in milliseconds (minimum: 0, default: 1000). "
+        "Env: HEADROOM_RETRY_BASE_DELAY_MS."
+    ),
+)
+@click.option(
+    "--retry-max-delay-ms",
+    type=click.IntRange(min=0),
+    default=None,
+    envvar="HEADROOM_RETRY_MAX_DELAY_MS",
+    help=(
+        "Maximum upstream retry delay in milliseconds (minimum: 0, default: 30000). "
+        "Env: HEADROOM_RETRY_MAX_DELAY_MS."
     ),
 )
 @click.option(
@@ -876,6 +900,8 @@ def proxy(
     no_subscription_tracking: bool,
     subscription_poll_interval: int | None,
     retry_max_attempts: int | None,
+    retry_base_delay_ms: int | None,
+    retry_max_delay_ms: int | None,
     request_timeout_seconds: int | None,
     connect_timeout_seconds: int | None,
     anthropic_buffered_request_timeout_seconds: int | None,
@@ -1129,6 +1155,8 @@ def proxy(
             subscription_poll_interval if subscription_poll_interval is not None else 300
         ),
         retry_max_attempts=retry_max_attempts if retry_max_attempts is not None else 3,
+        retry_base_delay_ms=retry_base_delay_ms if retry_base_delay_ms is not None else 1000,
+        retry_max_delay_ms=retry_max_delay_ms if retry_max_delay_ms is not None else 30000,
         request_timeout_seconds=request_timeout_seconds
         if request_timeout_seconds is not None and request_timeout_seconds > 0
         else 300,

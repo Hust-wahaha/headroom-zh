@@ -241,6 +241,20 @@ class TestSQLiteMemoryStore:
         assert len(results) == 3
 
     @pytest.mark.asyncio
+    async def test_query_offset_without_limit(self, store):
+        """A MemoryFilter with an offset but no limit must not emit `OFFSET`
+        without a `LIMIT` (a SQLite syntax error) — it should skip `offset` rows
+        and return the rest."""
+        await store.save_batch([Memory(content=f"Alice {i}", user_id="alice") for i in range(5)])
+
+        # Before the fix this raised sqlite3.OperationalError: near "OFFSET".
+        results = await store.query(MemoryFilter(user_id="alice", offset=2))
+        assert len(results) == 3
+
+        # offset past the end returns nothing (still no crash).
+        assert await store.query(MemoryFilter(user_id="alice", offset=10)) == []
+
+    @pytest.mark.asyncio
     async def test_query_by_importance_range(self, store):
         """Test querying memories by importance range."""
         memories = [

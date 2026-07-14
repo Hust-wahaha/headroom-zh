@@ -37,6 +37,20 @@ def test_pricing_lookup_candidates_include_provider_prefixes_and_aliases() -> No
     assert candidates[-1] == MODEL_ALIASES["claude-3-5-sonnet-20241022"]
 
 
+def test_retired_claude_3_sonnet_aliases_to_sonnet_tier_not_haiku() -> None:
+    """Retired claude-3-sonnet must map to a Sonnet-tier price, not Haiku.
+
+    claude-3-sonnet-20240229 was a $3/$15-per-1M model; aliasing it to
+    claude-3-haiku-20240307 ($0.25/$1.25) underpriced its cost/savings ~12x.
+    """
+    alias = MODEL_ALIASES["claude-3-sonnet-20240229"]
+
+    assert "haiku" not in alias
+    # Same-tier target as the other retired-Sonnet aliases.
+    assert alias == MODEL_ALIASES["claude-3-5-sonnet-20241022"]
+    assert alias == "claude-sonnet-4-20250514"
+
+
 def test_resolve_litellm_model_name_returns_first_known_candidate() -> None:
     known = {"openai/gpt-4o"}
 

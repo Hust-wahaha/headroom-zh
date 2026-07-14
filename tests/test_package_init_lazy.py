@@ -131,7 +131,9 @@ def test_version_prefers_source_tree_release_history() -> None:
         patch.object(version_module, "_source_tree_version", return_value="0.21.17"),
         patch.object(version_module, "version", return_value="0.9.1") as package_version,
     ):
-        assert version_module.get_version() == "0.21.17"
+        # Source checkouts are marked -dev so a dev build is never mistaken
+        # for the published release.
+        assert version_module.get_version() == "0.21.17-dev"
 
     package_version.assert_not_called()
 

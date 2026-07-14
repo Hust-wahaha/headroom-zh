@@ -347,16 +347,22 @@ class CompressionStore:
             self.process_pending_feedback()
 
         with self._lock:
-            self._evict_if_needed()
-
-            # CRITICAL FIX: Hash collision detection
-            # If hash already exists with DIFFERENT content, log a warning.
-            # This indicates either a hash collision or duplicate store calls.
+            # Decide whether this is a NEW key before evicting. Evicting to make
+            # room only applies to a genuinely new entry; a re-store of an
+            # existing key overwrites in place (no room needed). Evicting first
+            # for a duplicate would needlessly destroy a live, unrelated entry
+            # and drop the store below capacity, making that entry's <<ccr:...>>
+            # marker (still sitting in the conversation) unredeemable — a 404.
+            # The CCR mirror bridge re-stores the same explicit_hash on every
+            # turn a marker is re-encountered, so duplicate stores are common.
             existing = self._backend.get(hash_key)
-            if existing is not None:
+            if existing is None:
+                self._evict_if_needed()
+            else:
+                # Hash already present. Different content means a true (extremely
+                # rare with SHA256[:24]) collision; same content is a duplicate
+                # re-store. Either way we overwrite in place.
                 if existing.original_content != original:
-                    # True hash collision - different content, same hash
-                    # This is extremely rare with SHA256[:24] but should be logged
                     logger.warning(
                         "Hash collision detected: hash=%s tool=%s (existing_len=%d, new_len=%d)",
                         hash_key,
@@ -365,12 +371,11 @@ class CompressionStore:
                         len(original),
                     )
                 else:
-                    # Same content being stored again - this is fine, just update
                     logger.debug(
                         "Duplicate store for hash=%s, updating entry",
                         hash_key,
                     )
-                # Mark old heap entry as stale since we're replacing
+                # Mark old heap entry as stale since we're replacing it.
                 self._stale_heap_entries += 1
 
             self._backend.set(hash_key, entry)

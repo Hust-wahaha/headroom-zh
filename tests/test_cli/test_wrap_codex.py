@@ -10,7 +10,9 @@ way a user would from the shell.
 from __future__ import annotations
 
 import shutil
+import socket
 import sqlite3
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -1079,6 +1081,38 @@ def test_codex_session_home_overlay_seeds_active_home_and_cleans_up(
     assert not session_home.exists()
     assert config_file.read_text(encoding="utf-8") == original_config
     assert auth_file.read_text(encoding="utf-8") == original_auth
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32" or not hasattr(socket, "AF_UNIX"),
+    reason="requires POSIX Unix domain sockets",
+)
+def test_codex_session_home_overlay_skips_unix_sockets(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _set_test_home(monkeypatch, tmp_path)
+    codex_home = tmp_path / "custom-codex-home"
+    socket_dir = codex_home / "vendor_imports" / "skills" / ".git"
+    socket_dir.mkdir(parents=True)
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    monkeypatch.chdir(codex_home)
+
+    head_file = socket_dir / "HEAD"
+    head_file.write_text("ref: refs/heads/main\n", encoding="utf-8")
+    socket_file = socket_dir / "fsmonitor--daemon.ipc"
+    relative_socket_file = socket_file.relative_to(codex_home)
+
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as fsmonitor_socket:
+        fsmonitor_socket.bind(str(relative_socket_file))
+
+        with wrap_mod._codex_session_home_overlay() as session_home:
+            session_socket_dir = session_home / socket_dir.relative_to(codex_home)
+            assert (session_socket_dir / "HEAD").read_text(encoding="utf-8") == (
+                "ref: refs/heads/main\n"
+            )
+            assert not (session_socket_dir / socket_file.name).exists()
+
+        assert socket_file.is_socket()
 
 
 def test_wrap_codex_launch_uses_session_scoped_codex_home(

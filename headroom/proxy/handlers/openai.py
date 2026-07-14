@@ -95,6 +95,33 @@ def _codex_ws_compression_timeout_seconds() -> float:
 _WS_ALLOWED_ORIGINS_ENV = "HEADROOM_WS_ORIGINS"
 _CORS_ALLOWED_ORIGINS_ENV = "HEADROOM_CORS_ORIGINS"
 _CODEX_RESPONSES_LITE_HEADER = "x-openai-internal-codex-responses-lite"
+# Codex mirrors the responses-lite request header into the response.create
+# frame body under client_metadata; upstream rejects gpt-5.x when it is
+# truthy. Stripping the WS handshake header alone is insufficient
+# (headroomlabs-ai/headroom#1523) — the frame-body mirror must be removed too.
+_CODEX_LITE_METADATA_KEY = "ws_request_header_x_openai_internal_codex_responses_lite"
+
+
+def _strip_codex_lite_metadata(raw_msg: str) -> str:
+    """Remove the Codex responses-lite marker mirrored into a response.create
+    frame's client_metadata. Fail-safe: returns raw_msg unchanged on any
+    parse issue or when the marker is absent."""
+    try:
+        frame = json.loads(raw_msg)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return raw_msg
+    if not isinstance(frame, dict):
+        return raw_msg
+    changed = False
+    for container in (frame, frame.get("response")):
+        if isinstance(container, dict):
+            cm = container.get("client_metadata")
+            if isinstance(cm, dict) and _CODEX_LITE_METADATA_KEY in cm:
+                del cm[_CODEX_LITE_METADATA_KEY]
+                changed = True
+    return json.dumps(frame) if changed else raw_msg
+
+
 _OPENAI_CHAT_COMPLETIONS_PATH = "/chat/completions"
 _OPENAI_RESPONSES_PATH = "/responses"
 _OPENAI_ORIGINAL_PATH_HEADER = "x-headroom-original-path"
@@ -190,6 +217,14 @@ def _resolve_openai_upstream_base(request_headers: dict[str, str]) -> str | None
     normalized = _normalize_origin(raw_base_url)
     if normalized is None:
         return None
+
+    # _normalize_origin drops the path; re-attach it so a custom upstream served
+    # from a sub-path (e.g. https://host/api/v1) is preserved rather than routed
+    # to the bare origin.
+    path = (urlparse(raw_base_url.strip()).path or "").rstrip("/")
+    if path:
+        normalized = f"{normalized}{path}"
+
     if urlparse(normalized).scheme not in {"http", "https"}:
         return None
     return normalized
@@ -603,27 +638,17 @@ def _compact_openai_responses_tools(
     return updated, True, before, after
 
 
-def _ensure_responses_store_for_memory_tools(
-    payload: dict[str, Any],
-    *,
-    memory_tools_injected: bool,
-) -> bool:
-    """Keep Responses API memory-tool continuations addressable.
+def _responses_request_allows_memory_tool_continuation(payload: dict[str, Any]) -> bool:
+    """Return whether Responses memory tools may rely on stored continuations.
 
-    Memory tools are transparent to clients: Headroom executes the emitted
-    function_call, then sends function_call_output in a continuation request
-    using previous_response_id. OpenAI only allows that continuation when the
-    previous response was stored. Clients such as pi/Codex can set store=false
-    to avoid retaining ordinary responses, but that makes memory-tool
-    continuations fail with previous_response_not_found.
-
-    Return True when this function changes the payload.
+    Headroom memory tools use ``previous_response_id`` continuations after a
+    tool call. Those continuations require the originating response to be
+    stored. When a client explicitly sends ``store=false``, preserve that
+    contract and skip the Responses memory-tool injection path instead of
+    mutating the request.
     """
 
-    if memory_tools_injected and payload.get("store") is False:
-        payload["store"] = True
-        return True
-    return False
+    return payload.get("store") is not False
 
 
 def _responses_input_item_text_bytes(item: Any) -> int:
@@ -633,6 +658,15 @@ def _responses_input_item_text_bytes(item: Any) -> int:
     output = item.get("output")
     if isinstance(output, str):
         return len(output.encode("utf-8", errors="replace"))
+    if isinstance(output, list):
+        total = 0
+        for part in output:
+            if isinstance(part, str):
+                total += len(part.encode("utf-8", errors="replace"))
+            elif isinstance(part, dict) and isinstance(part.get("text"), str):
+                total += len(part["text"].encode("utf-8", errors="replace"))
+        if total > 0:
+            return total
 
     content = item.get("content")
     if isinstance(content, str):
@@ -1296,9 +1330,9 @@ class OpenAIHandlerMixin:
             # remain as defense-in-depth.
             type_tag = item.get("type")
             if type_tag in self.OPENAI_RESPONSES_OUTPUT_TYPES:
-                output = item.get("output")
-                if isinstance(output, str):
-                    return output, ("output", None)
+                output_text = _responses_part_text(item.get("output"))
+                if output_text:
+                    return output_text, ("output", None)
             return None
 
         def _set_slot_text(
@@ -1396,12 +1430,8 @@ class OpenAIHandlerMixin:
                     # Protected from lossy compression — but grep/log/json output
                     # can still be losslessly compacted. Reuse the router helper
                     # so the Responses path matches the chat/Anthropic behavior.
-                    excl_out = item.get("output")
-                    fold = (
-                        router._lossless_compact_excluded(excl_out)
-                        if isinstance(excl_out, str)
-                        else None
-                    )
+                    excl_out = _responses_part_text(item.get("output"))
+                    fold = router._lossless_compact_excluded(excl_out) if excl_out else None
                     if fold is not None:
                         lossless_excluded.append((idx, ("output", None), fold[0], excl_out))
                     if debug_enabled:
@@ -1511,6 +1541,24 @@ class OpenAIHandlerMixin:
 
         unit_build_started = time.perf_counter()
         unit_debug: list[dict[str, Any]] = []
+        # Aggregate-then-floor: the Responses payload splits each tool output
+        # into its own unit, so a per-item size floor would reject every unit
+        # in a session made of many small tool outputs (e.g. Codex), yielding
+        # 0% savings even when the combined compressible text is large. The
+        # Anthropic path compresses the whole message list as one batch and is
+        # not subject to a per-item floor. Match that: evaluate the floor once
+        # against the *aggregate* compressible bytes of the extracted group. If
+        # the group as a whole clears the threshold, disable the per-unit floor
+        # so small units still reach the router; if the whole group is below
+        # the threshold, keep the floor so trivially small payloads are skipped.
+        aggregate_compressible_bytes = sum(
+            len(text.encode("utf-8", errors="replace")) for _, _, text in candidates
+        )
+        effective_unit_min_bytes = (
+            0
+            if aggregate_compressible_bytes >= self.OPENAI_RESPONSES_ROUTER_MIN_BYTES
+            else self.OPENAI_RESPONSES_ROUTER_MIN_BYTES
+        )
         for item_idx, slot_ref, original_text in candidates:
             item = items[item_idx] if item_idx < len(items) else {}
             item_type = item.get("type", "unknown") if isinstance(item, dict) else "unknown"
@@ -1523,7 +1571,7 @@ class OpenAIHandlerMixin:
                 item_type=str(item_type),
                 cache_zone="live",
                 mutable=True,
-                min_bytes=self.OPENAI_RESPONSES_ROUTER_MIN_BYTES,
+                min_bytes=effective_unit_min_bytes,
             )
             routed_units.append(RoutedCompressionUnit(unit=unit, slot=(item_idx, slot_ref)))
             if debug_enabled:
@@ -4061,28 +4109,27 @@ class OpenAIHandlerMixin:
                     else:
                         memory_tool_defs_responses.append(t)
 
-                resp_tools = body.get("tools") or []
-                resp_tools, mem_tools_injected = _apply_sticky_mem_tools_resp(
-                    provider="openai",
-                    session_id=_responses_session_id,
-                    request_id=request_id,
-                    existing_tools=resp_tools,
-                    memory_tools_to_inject=memory_tool_defs_responses,
-                    inject_this_turn=bool(self.memory_handler.config.inject_tools),
-                )
-                if mem_tools_injected:
-                    body["tools"] = resp_tools
-                    body_mutation_tracker.mark_mutated("responses_memory_tools")
-                    logger.info(f"[{request_id}] Memory: Injected memory tools (openai/responses)")
-
-                    if _ensure_responses_store_for_memory_tools(
-                        body,
-                        memory_tools_injected=True,
-                    ):
-                        body_mutation_tracker.mark_mutated("responses_memory_store")
+                if _responses_request_allows_memory_tool_continuation(body):
+                    resp_tools = body.get("tools") or []
+                    resp_tools, mem_tools_injected = _apply_sticky_mem_tools_resp(
+                        provider="openai",
+                        session_id=_responses_session_id,
+                        request_id=request_id,
+                        existing_tools=resp_tools,
+                        memory_tools_to_inject=memory_tool_defs_responses,
+                        inject_this_turn=bool(self.memory_handler.config.inject_tools),
+                    )
+                    if mem_tools_injected:
+                        body["tools"] = resp_tools
+                        body_mutation_tracker.mark_mutated("responses_memory_tools")
                         logger.info(
-                            f"[{request_id}] Memory: forced store=true for Responses memory tool continuation"
+                            f"[{request_id}] Memory: Injected memory tools (openai/responses)"
                         )
+                elif self.memory_handler.config.inject_tools:
+                    logger.info(
+                        "[%s] Memory: skipped Responses memory tools because client set store=false",
+                        request_id,
+                    )
             except Exception as e:
                 logger.warning(f"[{request_id}] Memory injection failed (responses): {e}")
         elif self.memory_handler and memory_user_id and _bypass:
@@ -5337,39 +5384,37 @@ class OpenAIHandlerMixin:
                     ),
                 )
 
-            # --- Memory: inject context, tools, and instructions ---
-            # Gated on MemoryDecision — uniform bypass-respect across
-            # all five sites. WS sets memory_user_id only on the inject
-            # path (matches pre-PR behaviour); MemoryDecision is the
-            # canonical gate.
             memory_user_id: str | None = None
             memory_request_ctx = None
-            if self.memory_handler and body:
-                _ws_memory_user_id_candidate = ws_headers.get(
-                    "x-headroom-user-id",
-                    os.environ.get("USER", os.environ.get("USERNAME", "default")),
-                )
-            else:
-                _ws_memory_user_id_candidate = None
             from headroom.proxy.helpers import get_memory_injection_mode
             from headroom.proxy.memory_decision import MemoryDecision
             from headroom.proxy.memory_query import MemoryQuery
 
-            ws_memory_decision = MemoryDecision.decide(
-                headers=ws_headers,
-                memory_handler=self.memory_handler if body else None,
-                memory_user_id=_ws_memory_user_id_candidate,
-                mode_name=get_memory_injection_mode(),
-            )
-            # ws_tags was extracted at handler entry (L3028); applying
-            # the memory skip reason here so per-turn RequestOutcomes
-            # carry it for dashboard slicing.
-            ws_memory_decision.apply_to_tags(ws_tags)
-            if ws_memory_decision.inject:
-                memory_user_id = _ws_memory_user_id_candidate
+            async def _prepare_memory_frame(frame_body: dict[str, Any], frame_raw: str) -> str:
+                nonlocal memory_user_id, memory_request_ctx
+
+                memory_user_id_candidate = (
+                    ws_headers.get(
+                        "x-headroom-user-id",
+                        os.environ.get("USER", os.environ.get("USERNAME", "default")),
+                    )
+                    if self.memory_handler
+                    else None
+                )
+                memory_decision = MemoryDecision.decide(
+                    headers=ws_headers,
+                    memory_handler=self.memory_handler,
+                    memory_user_id=memory_user_id_candidate,
+                    mode_name=get_memory_injection_mode(),
+                )
+                memory_decision.apply_to_tags(ws_tags)
+                if not memory_decision.inject:
+                    return frame_raw
+
+                memory_user_id = memory_user_id_candidate
                 try:
                     # Unwrap response.create envelope to access the response body
-                    ws_response_body = body.get("response", body)
+                    ws_response_body = frame_body.get("response", frame_body)
 
                     # Per-project memory routing (GH #462). For WS,
                     # ``ws_response_body`` carries ``instructions`` —
@@ -5531,19 +5576,20 @@ class OpenAIHandlerMixin:
                         )
 
                     # Write back into envelope if it was wrapped
-                    if "response" in body and isinstance(body["response"], dict):
-                        body["response"] = ws_response_body
+                    if "response" in frame_body and isinstance(frame_body["response"], dict):
+                        frame_body["response"] = ws_response_body
                     else:
-                        body = ws_response_body
+                        frame_body = ws_response_body
 
-                    first_msg_raw = json.dumps(body)
+                    return json.dumps(frame_body)
                 except Exception as e:
                     logger.warning(f"[{request_id}] WS Memory injection failed: {e}")
-            elif self.memory_handler and body and _ws_bypass:
-                logger.info(
-                    "[%s] WS memory passthrough reason=bypass_header",
-                    request_id,
-                )
+                    return frame_raw
+
+            if isinstance(body, dict) and (
+                body.get("type") == "response.create" or ("type" not in body and "input" in body)
+            ):
+                first_msg_raw = await _prepare_memory_frame(body, first_msg_raw)
 
             # Hot-fix follow-up to PR #406 — inline Rust compression on the
             # WS first frame before forwarding upstream. PR #406 enabled
@@ -5819,7 +5865,7 @@ class OpenAIHandlerMixin:
 
             if ws_connected:
                 async with upstream:
-                    await upstream.send(first_msg_raw)
+                    await upstream.send(_strip_codex_lite_metadata(first_msg_raw))
 
                     # Unit 3: flag the upstream side flips on seeing
                     # ``response.completed`` so the outer cause
@@ -6134,6 +6180,7 @@ class OpenAIHandlerMixin:
                                     and _inbound_frame_body.get("type") == "response.create"
                                 ):
                                     ws_response_create_frames += 1
+                                    msg = await _prepare_memory_frame(_inbound_frame_body, msg)
                                 (
                                     msg,
                                     _frame_modified,
@@ -6191,7 +6238,7 @@ class OpenAIHandlerMixin:
                                         "transforms_applied": transforms_applied,
                                     },
                                 )
-                                await upstream.send(msg)
+                                await upstream.send(_strip_codex_lite_metadata(msg))
                         except asyncio.CancelledError:
                             # Explicit cancel from the outer
                             # orchestrator — re-raise so
@@ -7481,6 +7528,21 @@ class OpenAIHandlerMixin:
         except ClientDisconnect:
             logger.debug("Client disconnected during body read for passthrough")
             return Response(status_code=204)
+
+        # Hermes owns its scoped coding-agent protocols; keep that adapter out of
+        # the generic OpenAI passthrough handler.
+        from headroom.providers.hermes import compress_scoped_passthrough_body
+
+        optimize_enabled = bool(getattr(getattr(self, "config", None), "optimize", False))
+        original_body = body
+        body = compress_scoped_passthrough_body(
+            path,
+            body,
+            optimize=optimize_enabled,
+            bypass=_headroom_bypass_enabled(request.headers),
+        )
+        if body is not original_body:
+            headers["content-length"] = str(len(body))
 
         headers = await apply_copilot_api_auth(headers, url=url)
         # Cloudflare bot-management challenges our HTTP/2 fingerprint on

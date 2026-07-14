@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-IMAGE_DEFAULT="ghcr.io/chopratejas/headroom:latest"
+IMAGE_DEFAULT="ghcr.io/headroomlabs-ai/headroom:latest"
 INSTALL_IMAGE="${HEADROOM_DOCKER_IMAGE:-${IMAGE_DEFAULT}}"
 INSTALL_DIR="${HOME}/.local/bin"
 if [[ ! -d "${HOME}/.local" ]]; then
@@ -602,7 +602,7 @@ Options:
   --mode TEXT                   Proxy optimization mode.  [default: token]
   --memory                      Enable persistent memory in the runtime.
   --no-telemetry                Disable anonymous telemetry in the runtime.
-  --image TEXT                  Docker image to use.  [default: HEADROOM_DOCKER_IMAGE or ghcr.io/chopratejas/headroom:latest]
+  --image TEXT                  Docker image to use.  [default: HEADROOM_DOCKER_IMAGE or ghcr.io/headroomlabs-ai/headroom:latest]
   -?, --help                    Show this message and exit.
 EOF
 }

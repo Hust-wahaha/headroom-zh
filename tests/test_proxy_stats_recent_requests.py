@@ -85,6 +85,85 @@ def test_stats_refreshes_recent_requests_when_cached() -> None:
     assert second_payload["request_logs"][-1]["model"] == "claude-sonnet"
 
 
+def test_stats_recent_requests_includes_token_incomplete_requests() -> None:
+    app = create_app(
+        ProxyConfig(
+            optimize=False,
+            cache_enabled=False,
+            rate_limit_enabled=False,
+            cost_tracking_enabled=False,
+            log_requests=False,
+            ccr_inject_tool=False,
+            ccr_handle_responses=False,
+            ccr_context_tracking=False,
+            http2=False,
+        )
+    )
+    logger = FakeRequestLogger()
+    app.state.proxy.logger = logger
+
+    logger.logs = [
+        FakeLogEntry(
+            {
+                "request_id": "req-haiku-1",
+                "timestamp": "2026-07-09T10:00:00Z",
+                "provider": "anthropic",
+                "model": "claude-haiku",
+                "transforms_applied": [],
+            }
+        ),
+        FakeLogEntry(
+            {
+                "request_id": "req-haiku-2",
+                "timestamp": "2026-07-09T10:01:00Z",
+                "provider": "anthropic",
+                "model": "claude-haiku",
+                "input_tokens_original": None,
+                "input_tokens_optimized": None,
+                "output_tokens": None,
+                "tokens_saved": 0,
+                "savings_percent": 0.0,
+                "transforms_applied": [],
+            }
+        ),
+        FakeLogEntry(
+            {
+                "request_id": "req-sonnet-1",
+                "timestamp": "2026-07-09T10:02:00Z",
+                "provider": "anthropic",
+                "model": "claude-sonnet",
+                "input_tokens_original": 200,
+                "input_tokens_optimized": 120,
+                "output_tokens": 40,
+                "tokens_saved": 80,
+                "savings_percent": 40.0,
+                "transforms_applied": ["smart_crusher"],
+            }
+        ),
+    ]
+
+    with TestClient(app, base_url="http://127.0.0.1", client=("127.0.0.1", 12345)) as client:
+        response = client.get("/stats")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert [req["model"] for req in payload["recent_requests"]] == [
+        "claude-haiku",
+        "claude-haiku",
+        "claude-sonnet",
+    ]
+    assert payload["recent_requests"][0]["input_tokens_optimized"] is None
+    assert payload["recent_requests"][0]["token_accounting_status"] == "missing"
+    assert payload["recent_requests"][0]["has_exact_tokens"] is False
+    assert payload["recent_requests"][1]["output_tokens"] is None
+    assert payload["recent_requests"][1]["token_accounting_status"] == "partial"
+    assert payload["recent_requests"][1]["tokens_saved"] == 0
+    assert payload["recent_requests"][2]["token_accounting_status"] == "complete"
+    assert payload["recent_requests"][2]["has_exact_tokens"] is True
+    assert payload["summary"]["uncompressed_requests"]["unknown_token_accounting"] == 2
+    assert payload["request_logs"][-1]["model"] == "claude-sonnet"
+
+
 def test_agent_usage_totals_use_proxy_only_savings(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("HEADROOM_REQUIRE_RUST_CORE", "false")
     monkeypatch.setattr(

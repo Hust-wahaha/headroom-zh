@@ -22,6 +22,8 @@ SYS_PLATFORM_MARKER = "sys_platform"
 PLATFORM_MACHINE_MARKER = "platform_machine"
 TORCH_PACKAGE_NAME = "torch"
 TORCH_TRANSITIVE_PACKAGE_NAMES = frozenset({"sentence-transformers"})
+ORJSON_PACKAGE_NAME = "orjson"
+PROXY_EXTRA = "proxy"
 UV_LOCK_FILE = "uv.lock"
 
 
@@ -103,3 +105,25 @@ def test_all_extra_does_not_require_torch_on_macos_x86_64() -> None:
     assert locked_torch_transitive_dependency_names
     assert TORCH_PACKAGE_NAME not in selected_all_dependency_names
     assert selected_all_dependency_names.isdisjoint(locked_torch_transitive_dependency_names)
+
+
+def test_proxy_extra_includes_orjson_for_litellm_backends() -> None:
+    """`headroom-ai[all]` must ship orjson for LiteLLM provider backends (GH #2056)."""
+
+    pyproject = tomllib.loads((ROOT / PYPROJECT_FILE).read_text(encoding="utf-8"))
+    optional_deps = pyproject["project"]["optional-dependencies"]
+    environment = default_environment()
+
+    selected_proxy_dependency_names = _selected_dependency_names_for_extra(
+        optional_deps,
+        PROXY_EXTRA,
+        environment,
+    )
+    selected_all_dependency_names = _selected_dependency_names_for_extra(
+        optional_deps,
+        ALL_EXTRA,
+        environment,
+    )
+
+    assert ORJSON_PACKAGE_NAME in selected_proxy_dependency_names
+    assert ORJSON_PACKAGE_NAME in selected_all_dependency_names

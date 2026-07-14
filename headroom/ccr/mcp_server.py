@@ -130,6 +130,7 @@ def _format_session_summary(
             "too_small": "Too small (< 500 tokens)",
             "passthrough": "Passthrough (token counting)",
             "no_compressible_content": "No compressible content (user/assistant only)",
+            "unknown_token_accounting": "Unknown token accounting",
         }
         for key, count in uncomp.items():
             label = reason_labels.get(key, key)

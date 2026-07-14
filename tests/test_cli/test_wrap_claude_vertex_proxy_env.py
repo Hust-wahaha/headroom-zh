@@ -41,6 +41,16 @@ def _clear_claude_mode_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "CLAUDE_CODE_USE_VERTEX",
         "CLAUDE_CODE_USE_FOUNDRY",
         "VERTEX_TARGET_API_URL",
+        # Issue #1779: these put Claude Code on a non-subscription auth path, so
+        # the Remote Control gate warning must not fire. Clear them so the
+        # plain-mode RC-warning assertion is deterministic regardless of the
+        # ambient environment the test runs in.
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_AUTH_TOKEN",
+        "CLAUDE_CODE_USE_BEDROCK",
+        # The RC sibling note reflects the resolved ENABLE_TOOL_SEARCH mode;
+        # clear any ambient value so the default-session assertions hold.
+        "ENABLE_TOOL_SEARCH",
     ):
         monkeypatch.delenv(key, raising=False)
 
@@ -50,6 +60,7 @@ def _invoke_wrap_claude(
     monkeypatch: pytest.MonkeyPatch,
     *,
     env: dict[str, str],
+    extra_args: tuple[str, ...] = (),
 ) -> tuple[dict[str, Any], str]:
     captured: dict[str, Any] = {}
 
@@ -80,6 +91,10 @@ def _invoke_wrap_claude(
         return _Completed()
 
     monkeypatch.setattr(wrap_mod, "_ensure_proxy", fake_ensure_proxy)
+    # Issue #1779: pin the detected Claude Code version to the gated release so
+    # the plain-mode RC warning is deterministic without shelling out to a real
+    # `claude --version` (which would otherwise hit the child-launch fake_run).
+    monkeypatch.setattr(wrap_mod, "detect_claude_code_version", lambda *_a, **_k: (2, 1, 196))
     monkeypatch.setattr(wrap_mod.subprocess, "run", fake_run)
 
     result = runner.invoke(
@@ -91,6 +106,7 @@ def _invoke_wrap_claude(
             "--no-mcp",
             "--no-tokensave",
             "--no-serena",
+            *extra_args,
         ],
         env=env,
     )
@@ -107,6 +123,53 @@ def test_wrap_claude_plain_mode_warns_about_remote_control_gate(
     assert captured["child_cmd"] == ["/usr/bin/claude"]
     assert "Remote Control" in output
     assert "wrapped Claude session's ANTHROPIC_BASE_URL" in output
+    # Issue #1779: the warning is accurate (deterministic, names /rc) and
+    # co-reports the sibling base-URL gates (#746 / #1158).
+    assert "2.1.196" in output
+    assert "/rc" in output
+    assert "may hide" not in output
+    assert "#746" in output and "#1158" in output
+
+
+def test_wrap_claude_plain_mode_api_key_auth_skips_remote_control_warning(
+    runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Issue #1779: an API-key (PAYG) session never had Remote Control, so the
+    # gate warning must not fire even in plain proxy mode.
+    _captured, output = _invoke_wrap_claude(
+        runner, monkeypatch, env={"ANTHROPIC_API_KEY": "sk-ant-api-xxx"}
+    )
+    assert "Remote Control" not in output
+
+
+def test_wrap_claude_sibling_note_accurate_under_1m_and_tool_search_optouts(
+    runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Issue #1779 accuracy under opt-ins: with --1m the note must not advise
+    # adding --1m again, and with --tool-search false it must not claim
+    # deferral is kept on — nor may the #746 banner line say "kept on".
+    _captured, output = _invoke_wrap_claude(
+        runner,
+        monkeypatch,
+        env={},
+        extra_args=("--1m", "--tool-search", "false"),
+    )
+    assert "already restored via --1m" in output
+    assert "restore with `headroom wrap claude --1m`" not in output
+    assert "OFF for this session" in output
+    assert "DISABLED per your setting" in output
+    assert "kept on" not in output
+
+
+def test_wrap_claude_tool_search_banner_line_still_accurate_when_active(
+    runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Default session: deferral is on, and both the #746 banner line and the
+    # RC sibling note say so.
+    _captured, output = _invoke_wrap_claude(runner, monkeypatch, env={})
+    assert "on-demand tool loading kept on" in output
+    assert "keeps it on for this session" in output
+    assert "DISABLED per your setting" not in output
 
 
 def test_wrap_claude_vertex_passes_custom_base_url_to_proxy_before_child_redirect(
@@ -114,7 +177,7 @@ def test_wrap_claude_vertex_passes_custom_base_url_to_proxy_before_child_redirec
 ) -> None:
     custom_vertex_url = "https://vertex-gateway.internal/custom/v1"
 
-    captured, _output = _invoke_wrap_claude(
+    captured, output = _invoke_wrap_claude(
         runner,
         monkeypatch,
         env={
@@ -122,6 +185,10 @@ def test_wrap_claude_vertex_passes_custom_base_url_to_proxy_before_child_redirec
             "ANTHROPIC_VERTEX_BASE_URL": custom_vertex_url,
         },
     )
+
+    # Issue #1779: Vertex sessions authenticate with cloud IAM and never had
+    # Remote Control — the RC gate warning must not fire in this mode.
+    assert "Remote Control" not in output
 
     ensure_kwargs = captured["ensure_kwargs"]
     child_env = captured["child_env"]
@@ -189,7 +256,7 @@ def test_wrap_claude_foundry_proxy_env_behavior_is_unchanged(
 ) -> None:
     foundry_url = "https://my-resource.services.ai.azure.com/anthropic"
 
-    captured, _output = _invoke_wrap_claude(
+    captured, output = _invoke_wrap_claude(
         runner,
         monkeypatch,
         env={
@@ -197,6 +264,10 @@ def test_wrap_claude_foundry_proxy_env_behavior_is_unchanged(
             "ANTHROPIC_FOUNDRY_BASE_URL": foundry_url,
         },
     )
+
+    # Issue #1779: Foundry sessions authenticate with Azure credentials and
+    # never had Remote Control — the RC gate warning must not fire.
+    assert "Remote Control" not in output
 
     ensure_kwargs = captured["ensure_kwargs"]
     child_env = captured["child_env"]

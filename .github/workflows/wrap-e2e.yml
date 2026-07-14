@@ -3,8 +3,13 @@ name: Wrap E2E
 on:
   pull_request:
     branches: [main]
+    # Scoped to what the `headroom wrap` flow actually exercises (mirrors
+    # wrap-native-e2e), not all of headroom/** — a pure-Python logic change
+    # elsewhere shouldn't spin up a docker wrap E2E.
     paths:
-      - 'headroom/**'
+      - 'headroom/cli/**'
+      - 'headroom/providers/**'
+      - 'headroom/rtk/**'
       - 'crates/**'
       - 'docker/**'
       - 'Dockerfile'

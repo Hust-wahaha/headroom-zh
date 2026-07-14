@@ -21,11 +21,13 @@ Covers:
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import logging
 import os
 import time
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import MagicMock
 
 import anyio
@@ -74,8 +76,8 @@ class _DummyMetrics:
 
 
 class _ResponseStub:
-    def __init__(self) -> None:
-        self.status_code = 200
+    def __init__(self, status_code: int = 200) -> None:
+        self.status_code = status_code
         self.headers = {"content-type": "application/json"}
         self._text = json.dumps(
             {
@@ -115,6 +117,8 @@ class _DummyAnthropicHandler(AnthropicHandlerMixin):
         anthropic_pre_upstream_sem: asyncio.Semaphore | None = None,
         upstream_delay_s: float = 0.0,
         raise_during_critical: bool = False,
+        security: Any = None,
+        upstream_status: int = 200,
     ) -> None:
         self.rate_limiter = None
         self.metrics = _DummyMetrics()
@@ -140,7 +144,8 @@ class _DummyAnthropicHandler(AnthropicHandlerMixin):
         self.cost_tracker = None
         self.memory_handler = None
         self.cache = None
-        self.security = None
+        self.security = security
+        self._upstream_status = upstream_status
         self.ccr_context_tracker = None
         self.ccr_injector = None
         self.ccr_response_handler = None
@@ -258,7 +263,7 @@ class _DummyAnthropicHandler(AnthropicHandlerMixin):
         if self._upstream_delay_s > 0:
             await asyncio.sleep(self._upstream_delay_s)
         self.upstream_exit_times.append(time.perf_counter())
-        return _ResponseStub()
+        return _ResponseStub(status_code=self._upstream_status)
 
     def _get_compression_cache(self, session_id):
         return SimpleNamespace(
@@ -931,3 +936,138 @@ def test_early_exit_paths_release_semaphore_under_contention(scenario):
 
     with _tokenizer_patch():
         anyio.run(_run)
+
+
+# --------------------------------------------------------------------------- #
+# Enterprise security response scan must not launder a non-2xx upstream        #
+# --------------------------------------------------------------------------- #
+
+
+class _PassthroughSecurity:
+    """Minimal enterprise-security stub: scan_request returns a truthy context
+    (so the response-scan branch is armed) and scan_response leaves the body
+    unchanged."""
+
+    def scan_request(self, messages, ctx):
+        return messages, {"anonymization": {}}
+
+    def scan_response(self, resp_json, ctx):
+        return resp_json
+
+
+@pytest.mark.parametrize("upstream_status", [429, 529, 400])
+def test_security_scan_preserves_non_200_upstream_status(upstream_status):
+    """A non-2xx upstream must reach the client with its real status even when
+    enterprise security is scanning responses.
+
+    The response-scan branch rebuilt the reply as httpx.Response(status_code=200)
+    and returned it without checking the upstream status, so a rate-limit (429),
+    overloaded (529), or 4xx error was laundered into an HTTP 200 and the
+    client's retry/backoff never fired. The branch is now gated on a 200 upstream
+    like the sibling CCR/cache blocks.
+    """
+    sem = asyncio.Semaphore(2)
+    handler = _DummyAnthropicHandler(
+        anthropic_pre_upstream_sem=sem,
+        security=_PassthroughSecurity(),
+        upstream_status=upstream_status,
+    )
+    request = _build_request(
+        {
+            "model": "claude-3-5-sonnet-latest",
+            "messages": [{"role": "user", "content": "hello"}],
+        },
+        {"authorization": "Bearer sk-ant-api-test"},
+    )
+
+    with _tokenizer_patch():
+        response = anyio.run(handler.handle_anthropic_messages, request)
+
+    assert response.status_code == upstream_status
+
+
+def test_security_scan_still_returns_200_for_ok_upstream():
+    """Guard the positive case: a 200 upstream is still scanned and returned 200."""
+    sem = asyncio.Semaphore(2)
+    handler = _DummyAnthropicHandler(
+        anthropic_pre_upstream_sem=sem,
+        security=_PassthroughSecurity(),
+        upstream_status=200,
+    )
+    request = _build_request(
+        {
+            "model": "claude-3-5-sonnet-latest",
+            "messages": [{"role": "user", "content": "hello"}],
+        },
+        {"authorization": "Bearer sk-ant-api-test"},
+    )
+
+    with _tokenizer_patch():
+        response = anyio.run(handler.handle_anthropic_messages, request)
+
+    assert response.status_code == 200
+
+
+# --------------------------------------------------------------------------- #
+# Response cache must key on the looked-up messages, not the mutated ones      #
+# --------------------------------------------------------------------------- #
+
+
+class _RecordingCache:
+    """Records the messages passed to get() and set() so the test can assert the
+    response is cached under the same key it was looked up by."""
+
+    def __init__(self) -> None:
+        self.get_messages = None
+        self.set_messages = None
+
+    async def get(self, messages, model, **fields):
+        self.get_messages = copy.deepcopy(messages)
+        return None  # force a miss so the upstream response gets cached
+
+    async def set(self, messages, model, content, headers, **kwargs):
+        self.set_messages = copy.deepcopy(messages)
+
+
+class _MutatingSecurity:
+    """Stands in for an enterprise-security scanner that rewrites (anonymizes)
+    the request messages, reproducing the get -> mutate -> set hazard."""
+
+    def scan_request(self, messages, ctx):
+        mutated = [dict(m, content="MUTATED") for m in messages]
+        return mutated, {"anonymization": {}}
+
+    def scan_response(self, resp_json, ctx):
+        return resp_json
+
+
+def test_response_cache_keys_on_lookup_messages_not_mutated():
+    """The response must be cached under the same messages it was looked up by.
+
+    `messages` is reassigned after the cache.get (here by the security scan), so
+    caching under the live `messages` stores the entry under a different key than
+    it was read by -- the cache never hits and fills with unreachable entries.
+    """
+    sem = asyncio.Semaphore(2)
+    handler = _DummyAnthropicHandler(anthropic_pre_upstream_sem=sem)
+    cache = _RecordingCache()
+    handler.cache = cache
+    handler.security = _MutatingSecurity()
+
+    request = _build_request(
+        {
+            "model": "claude-3-5-sonnet-latest",
+            "messages": [{"role": "user", "content": "hello"}],
+        },
+        {"authorization": "Bearer sk-ant-api-test"},
+    )
+
+    with _tokenizer_patch():
+        anyio.run(handler.handle_anthropic_messages, request)
+
+    assert cache.get_messages is not None, "cache.get was not called"
+    assert cache.set_messages is not None, "cache.set was not called"
+    # Same messages at get and set -> same key -> the cache can actually hit.
+    assert cache.set_messages == cache.get_messages
+    # And specifically the raw lookup messages, not the scanner's rewrite.
+    assert cache.set_messages == [{"role": "user", "content": "hello"}]

@@ -159,6 +159,13 @@ class BaseTokenizer(ABC):
                     content = part.get("content", "")
                     if isinstance(content, str):
                         total += self.count_text(content)
+                    elif isinstance(content, list):
+                        # Recurse into nested blocks (matching the Strands
+                        # toolResult branch below). A tool that returns an image
+                        # nests a base64 block here; serializing it would price
+                        # the ~KB/MB base64 string as text — a 50-200x overcount
+                        # (a screenshot reads as tens of thousands of tokens).
+                        total += self._count_content_parts(content)
                     else:
                         total += self._count_serialized(content)
                 elif part_type == "tool_use":

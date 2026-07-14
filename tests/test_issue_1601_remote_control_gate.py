@@ -22,4 +22,7 @@ def test_remote_control_gate_message_mentions_warning_and_source() -> None:
     message = remote_control_gate_message(source=REMOTE_CONTROL_BASE_URL_ENV)
     assert "Remote Control" in message
     assert REMOTE_CONTROL_BASE_URL_ENV in message
-    assert "launch Claude without Headroom for sessions that need this feature" in message
+    # Issue #1779: the wording must be accurate — name the /rc command and tell
+    # the user how to regain it, without the old hedged "may hide the menu".
+    assert "/rc" in message
+    assert "run Claude without Headroom for sessions that need Remote Control" in message

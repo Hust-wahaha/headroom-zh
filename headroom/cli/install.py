@@ -213,7 +213,7 @@ def _reject_task_lifecycle(manifest: DeploymentManifest, action: str) -> None:
 )
 @click.option(
     "--image",
-    default="ghcr.io/chopratejas/headroom:latest",
+    default="ghcr.io/headroomlabs-ai/headroom:latest",
     show_default=True,
     help="Docker image to use when runtime=docker or preset=persistent-docker.",
 )

@@ -1716,6 +1716,16 @@ class StreamingMixin:
                         usage = event.data.get("usage", {})
                         if "output_tokens" in usage:
                             stream_state["output_tokens"] = usage["output_tokens"]
+                        if "input_tokens" in usage:
+                            stream_state["input_tokens"] = usage["input_tokens"]
+                        if "cache_read_input_tokens" in usage:
+                            stream_state["cache_read_input_tokens"] = usage[
+                                "cache_read_input_tokens"
+                            ]
+                        if "cache_creation_input_tokens" in usage:
+                            stream_state["cache_creation_input_tokens"] = usage[
+                                "cache_creation_input_tokens"
+                            ]
 
                     # Handle errors
                     if event.event_type == "error":

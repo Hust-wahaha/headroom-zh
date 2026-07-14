@@ -66,6 +66,28 @@ class TestCCRToolInjector:
         assert "abc123def456abc123def456" in hashes
         assert injector.has_compressed_content
 
+    def test_scan_detects_read_lifecycle_stale_marker(self):
+        """A read_lifecycle STALE marker carries a retrievable CCR hash via the
+        'Retrieve original: hash=' phrase but never says 'compressed', so the
+        other patterns miss it. The injector must still detect it, or the
+        retrieve tool is not offered and the marker is unredeemable (#1006)."""
+        ccr_hash = "a1b2c3d4e5f6a1b2c3d4e5f6"  # 24 hex chars (SHA-256[:24])
+        messages = [
+            {
+                "role": "tool",
+                "content": (
+                    "[Read content stale: app.py was modified after this read — "
+                    f"re-read the file for current content. Retrieve original: hash={ccr_hash}]"
+                ),
+            },
+        ]
+
+        injector = CCRToolInjector()
+        hashes = injector.scan_for_markers(messages)
+
+        assert ccr_hash in hashes
+        assert injector.has_compressed_content
+
     def test_scan_for_markers_multiple_hashes(self):
         """Scanner finds multiple distinct hashes."""
         messages = [

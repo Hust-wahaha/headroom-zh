@@ -225,10 +225,17 @@ class BatchHandlerMixin:
                     optimized_messages
                 )
 
-                # Restore preserved content entries that had non-text parts
-                for orig_idx, original_content in preserved_contents.items():
-                    if orig_idx < len(optimized_contents):
-                        optimized_contents[orig_idx] = original_content
+                # Restore preserved (non-text) entries at their ORIGINAL positions.
+                # preserved_indices are indices into the original contents[], but
+                # optimized_contents lives in a shorter index space (text-less
+                # entries produced no message), so indexing it by orig_idx
+                # overwrites the wrong entry and drops any preserved entry whose
+                # original index is >= len(optimized_contents). Use the shared
+                # interleaving helper the non-batch Gemini handlers already use
+                # (#836).
+                optimized_contents = self._rebuild_gemini_contents(
+                    contents, preserved_indices, preserved_contents, optimized_contents
+                )
 
                 # Create compressed batch request
                 compressed_req_content = {**req_content, "contents": optimized_contents}

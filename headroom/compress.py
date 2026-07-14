@@ -207,14 +207,17 @@ def compress(
     if not messages or not optimize:
         return CompressResult(messages=messages)
 
-    # Build config from explicit config + kwargs
-    cfg = config or CompressConfig()
+    # Build config from explicit config + kwargs. ``replace(config)`` up front
+    # so kwargs overrides and any savings-profile pass never mutate the
+    # caller's long-lived ``CompressConfig`` — a shared per-agent config being
+    # silently rewritten by every request that overrode a single option is the
+    # scenario this guards against.
+    cfg = replace(config) if config is not None else CompressConfig()
     config_fields = {f.name for f in cfg.__dataclass_fields__.values()}
     for key, value in kwargs.items():
         if key in config_fields:
             setattr(cfg, key, value)
     if cfg.savings_profile:
-        cfg = replace(cfg)
         apply_agent_savings_profile(cfg, cfg.savings_profile)
 
     pipeline = _get_pipeline()

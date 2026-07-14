@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 import os
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
@@ -29,7 +29,11 @@ from headroom.install.state import list_manifests
 from headroom.paths import savings_path
 from headroom.providers.claude import (
     REMOTE_CONTROL_BASE_URL_ENV,
+    REMOTE_CONTROL_SIBLING_GATE_NOTE,
+    detect_claude_code_version,
     is_custom_anthropic_base_url,
+    remote_control_applies_to_auth,
+    remote_control_gate_active,
     remote_control_gate_message,
 )
 
@@ -168,37 +172,71 @@ def check_claude_routing(settings_path: Path, port: int) -> CheckResult:
 
 
 def check_claude_remote_control_gate(
-    settings_path: Path, environ: Mapping[str, str]
+    settings_path: Path,
+    environ: Mapping[str, str],
+    *,
+    version: tuple[int, int, int] | None = None,
+    version_resolver: Callable[[], tuple[int, int, int] | None] | None = None,
 ) -> CheckResult | None:
-    """Warn once when Claude custom-base routing hides Remote Control."""
+    """Warn once when Claude custom-base routing hides Remote Control (issue #1779).
+
+    Fires only for a session that could ever have had Remote Control — a
+    subscription auth mode (not API-key/cloud IAM) on a Claude Code build at/after
+    the gate version, or an unknown version. Auth signals are read from the shell
+    ``environ`` overlaid on the settings-file ``env`` block, so an API key
+    configured in either place suppresses the warning.
+
+    ``version`` is the detected Claude Code version (``None`` = unknown); tests
+    pass it directly so the check stays pure. ``version_resolver`` lets the
+    ``doctor`` entrypoint defer the ``claude --version`` subprocess until the
+    cheap gates (custom base URL + subscription auth) have passed — most doctor
+    runs never pay it. An explicit ``version`` wins over the resolver; the
+    resolver is called at most once.
+    """
     name = "claude remote control"
+    settings_env: dict[str, object] = {}
     settings_base_url = ""
     if settings_path.exists():
         try:
             payload = json.loads(settings_path.read_text(encoding="utf-8"))
             env_block = payload.get("env")
             if isinstance(env_block, dict):
+                settings_env = env_block
                 settings_base_url = str(env_block.get("ANTHROPIC_BASE_URL", "") or "")
         except (OSError, ValueError):
+            settings_env = {}
             settings_base_url = ""
-    if is_custom_anthropic_base_url(settings_base_url):
-        remote_message = remote_control_gate_message(f"{REMOTE_CONTROL_BASE_URL_ENV} from settings")
-        return CheckResult(
-            name=name,
-            status=WARN,
-            summary=remote_message,
-            hint=remote_message,
-        )
 
+    # Shell env wins over settings env, matching Claude Code's own precedence.
+    effective_env: dict[str, object] = {**settings_env, **dict(environ)}
     env_base_url = environ.get("ANTHROPIC_BASE_URL", "")
-    if is_custom_anthropic_base_url(env_base_url):
-        remote_message = remote_control_gate_message(f"{REMOTE_CONTROL_BASE_URL_ENV} in shell")
-        return CheckResult(
-            name=name,
-            status=WARN,
-            summary=remote_message,
-            hint=remote_message,
-        )
+
+    resolved_version = version
+    version_resolved = version is not None or version_resolver is None
+
+    for base_url, source in (
+        (settings_base_url, "from settings"),
+        (env_base_url, "in shell"),
+    ):
+        # Cheap gates first so the version subprocess only runs when a warning
+        # is actually plausible for this environment.
+        if not is_custom_anthropic_base_url(base_url):
+            continue
+        if not remote_control_applies_to_auth(effective_env):
+            return None
+        if not version_resolved and version_resolver is not None:
+            resolved_version = version_resolver()
+            version_resolved = True
+        if remote_control_gate_active(base_url, effective_env, resolved_version):
+            remote_message = remote_control_gate_message(
+                f"{REMOTE_CONTROL_BASE_URL_ENV} {source}", version=resolved_version
+            )
+            return CheckResult(
+                name=name,
+                status=WARN,
+                summary=remote_message,
+                hint=REMOTE_CONTROL_SIBLING_GATE_NOTE,
+            )
     return None
 
 
@@ -473,7 +511,12 @@ def doctor(port: int, emit_json: bool) -> None:
         check_savings(stats, savings_path()),
         check_budget(stats),
     ]
-    remote_control_gate_check = check_claude_remote_control_gate(claude_settings_path(), os.environ)
+    # Lazy resolver: `claude --version` is a Node CLI subprocess (seconds of
+    # cold start, 10s worst-case timeout) — only pay for it when the RC gate
+    # is actually plausible (custom base URL + subscription auth).
+    remote_control_gate_check = check_claude_remote_control_gate(
+        claude_settings_path(), os.environ, version_resolver=detect_claude_code_version
+    )
     if remote_control_gate_check is not None:
         checks.append(remote_control_gate_check)
     deployments = check_deployments(list_manifests())

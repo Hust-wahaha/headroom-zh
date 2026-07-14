@@ -471,12 +471,28 @@ def test_plugin_workspace_dir_namespaced(fake_home: Path) -> None:
     assert b == fake_home / ".headroom" / "plugins" / "beta"
 
 
-@pytest.mark.parametrize("bad_name", ["", "foo/bar", "foo\\bar"])
+@pytest.mark.parametrize("bad_name", ["", "foo/bar", "foo\\bar", "..", ".", "\x00"])
 def test_plugin_dirs_reject_bad_names(fake_home: Path, bad_name: str) -> None:
     with pytest.raises(ValueError):
         paths.plugin_config_dir(bad_name)
     with pytest.raises(ValueError):
         paths.plugin_workspace_dir(bad_name)
+
+
+def test_plugin_dirs_reject_traversal_escapes_sandbox(fake_home: Path) -> None:
+    """A plugin name of ``..`` must not resolve outside ``plugins/``.
+
+    Without this guard, ``plugin_config_dir("..") == config_dir()`` — a plugin
+    can read/write the entire config root (models catalog, other plugins'
+    settings), and ``plugin_workspace_dir("..") == workspace_dir()`` exposes
+    the license cache, savings ledger, memory DB, and logs.
+    """
+
+    for name in ("..", "."):
+        with pytest.raises(ValueError):
+            paths.plugin_config_dir(name)
+        with pytest.raises(ValueError):
+            paths.plugin_workspace_dir(name)
 
 
 def test_plugin_config_dir_follows_config_env(

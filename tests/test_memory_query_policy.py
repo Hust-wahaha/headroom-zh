@@ -54,3 +54,35 @@ def test_extract_sources_handles_anthropic_tool_result_without_user_text() -> No
     assert user_text == "real user"
     assert tool_outputs == ("nested",)
     assert assistant_turns == ()
+
+
+def test_extract_sources_captures_anthropic_user_text_blocks() -> None:
+    """Anthropic user turns carry the prompt as text blocks (the standard Claude
+    Code shape). The user's question must be captured — not dropped — so memory
+    retrieval keys on it."""
+    messages = [
+        {"role": "user", "content": [{"type": "text", "text": "help me refactor auth"}]},
+    ]
+
+    user_text, _tool_outputs, _assistant_turns = extract_memory_query_sources(messages)
+
+    assert user_text == "help me refactor auth"
+
+
+def test_extract_sources_captures_user_text_alongside_tool_result() -> None:
+    """A user turn mixing a tool_result and a text block yields both: the text as
+    the user query and the tool output as context."""
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "content": "exit 0"},
+                {"type": "text", "text": "did the tests pass?"},
+            ],
+        },
+    ]
+
+    user_text, tool_outputs, _assistant_turns = extract_memory_query_sources(messages)
+
+    assert user_text == "did the tests pass?"
+    assert tool_outputs == ("exit 0",)
