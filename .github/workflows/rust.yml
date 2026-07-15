@@ -54,6 +54,19 @@ jobs:
           components: rustfmt, clippy
       - name: Cache cargo registry + build
         uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - name: Provide ONNX Runtime dylib
+        # headroom-core is built with `ort-load-dynamic` (see its
+        # Cargo.toml): the ONNX Runtime shared library is dlopen'd at
+        # runtime instead of statically linked, so the magika/detection
+        # tests need a real libonnxruntime.so and ORT_DYLIB_PATH pointing
+        # at it — same contract `headroom/_ort.py` fulfills for Python
+        # users via the pip `onnxruntime` package.
+        run: |
+          pip install 'onnxruntime>=1.16.0'
+          echo "ORT_DYLIB_PATH=$(python -c "import onnxruntime, pathlib; p = pathlib.Path(onnxruntime.__file__).parent / 'capi'; print(next(iter(sorted(p.glob('libonnxruntime.so*')))))")" >> "$GITHUB_ENV"
       - name: cargo fmt --check
         run: cargo fmt --all -- --check
       - name: cargo clippy

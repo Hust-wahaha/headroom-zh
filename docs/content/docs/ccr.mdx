@@ -71,7 +71,16 @@ When the LLM calls `headroom_retrieve`:
 3. The result is added to the conversation
 4. The API call continues automatically
 
-The client never sees CCR tool calls -- they are handled transparently by Headroom.
+The client never sees CCR tool calls on the Anthropic and OpenAI proxy paths; Headroom resolves them transparently there.
+
+<Callout type="warning" title="Current Gemini limitation">
+  Native Gemini requests do not yet run the server-side CCR response handler, so
+  `headroom_retrieve` is not resolved transparently on that path today. Google's
+  OpenAI-compatible Gemini endpoint can also return
+  `finish_reason=MALFORMED_FUNCTION_CALL` on large function-response continuations
+  after CCR retrieval. If you need fully transparent CCR resolution today, use the
+  Anthropic or OpenAI proxy paths. See [issue #2041](https://github.com/headroomlabs-ai/headroom/issues/2041).
+</Callout>
 
 ## Phase 4: Context Tracker
 
@@ -94,7 +103,7 @@ Turn 5: User asks "What about the auth middleware?"
 
 ## Retrieving originals
 
-CCR works automatically through the proxy, but you can also retrieve cached data programmatically:
+CCR works automatically on the Anthropic and OpenAI proxy paths, but you can also retrieve cached data programmatically:
 
 <Tabs groupId="lang" items={['TypeScript', 'Python']}>
 <Tab value="TypeScript">

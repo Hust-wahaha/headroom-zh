@@ -30,6 +30,25 @@ from .tool_injection import CCR_TOOL_NAME
 
 logger = logging.getLogger(__name__)
 
+# Residual-CCR status signals (provider-generic).
+#
+# ``handle_response`` may return a response that still contains
+# ``headroom_retrieve`` tool calls. Callers need to know *why* so they can
+# decide whether that is a safe passthrough or a genuine failure:
+#
+# - RESIDUAL_CCR_RESOLVED:       no CCR tool calls remain — fully handled.
+# - RESIDUAL_CCR_SKIPPED_MIXED:  CCR was intentionally skipped because the model
+#                                emitted headroom_retrieve alongside a non-CCR
+#                                client tool (#839). The client must resolve both
+#                                tool calls; the proxy must pass the turn through
+#                                unchanged (200), not fail closed.
+# - RESIDUAL_CCR_ERROR:          CCR tool calls remain with no accompanying client
+#                                tool — i.e. a real conversion/handling failure the
+#                                proxy could not resolve. Callers should fail closed.
+RESIDUAL_CCR_RESOLVED = "resolved"
+RESIDUAL_CCR_SKIPPED_MIXED = "skipped_mixed_tools"
+RESIDUAL_CCR_ERROR = "error"
+
 
 @dataclass
 class CCRToolResult:
@@ -109,6 +128,33 @@ class CCRResponseHandler:
             True if response contains headroom_retrieve tool calls.
         """
         return has_ccr_tool_calls(response, provider)
+
+    def residual_ccr_status(
+        self,
+        response: dict[str, Any],
+        provider: str = "anthropic",
+    ) -> str:
+        """Classify why (if at all) CCR tool calls remain in a handled response.
+
+        This is a stateless, provider-generic signal derived from the same
+        parsing ``handle_response`` uses, so it stays correct under concurrency
+        and works identically for every provider/harness.
+
+        Returns one of:
+        - ``RESIDUAL_CCR_RESOLVED``: no headroom_retrieve tool calls remain.
+        - ``RESIDUAL_CCR_SKIPPED_MIXED``: headroom_retrieve remains *alongside*
+          a non-CCR client tool call. This is an intentional skip (#839) — the
+          proxy cannot synthesize the client tool_result, so the turn must be
+          handed back to the client unchanged rather than failed closed.
+        - ``RESIDUAL_CCR_ERROR``: headroom_retrieve remains with no accompanying
+          client tool call — a genuine handling/conversion failure.
+        """
+        ccr_calls, other_calls = self._parse_ccr_tool_calls(response, provider)
+        if not ccr_calls:
+            return RESIDUAL_CCR_RESOLVED
+        if other_calls:
+            return RESIDUAL_CCR_SKIPPED_MIXED
+        return RESIDUAL_CCR_ERROR
 
     def _extract_tool_calls(
         self,

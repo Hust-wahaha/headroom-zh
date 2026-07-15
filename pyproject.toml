@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "headroom-ai"
-version = "0.31.0"
+version = "0.32.0"
 description = "The Context Optimization Layer for LLM Applications - Cut costs by 50-90%"
 readme = "README.md"
 license = "Apache-2.0"
@@ -214,6 +214,8 @@ strands = [
 mcp = [
     "mcp>=1.0.0",
     "httpx>=0.24.0",
+    "starlette>=0.27.0",
+    "uvicorn>=0.23.0,<1.0",
 ]
 # Voice filler detection
 voice = [
@@ -250,12 +252,6 @@ bedrock = [
 html = [
     "trafilatura>=1.6.0",
 ]
-# Comprehensive LLM benchmarks
-benchmark = [
-    "lm-eval[api]>=0.4.0",
-    "openai>=1.0.0",
-    "anthropic>=0.18.0",
-]
 # Development dependencies
 dev = [
     "pytest>=7.0.0",
@@ -282,18 +278,36 @@ dev = [
     "openpyxl>=3.1.0",  # exercises spreadsheet_ingest (.xlsx) in the test suite
     "respx>=0.20.0",    # HTTP mock transport for passthrough handler tests
 ]
-# All optional dependencies (everything you need)
+# All optional dependencies (everything you need).
 #
-# `benchmark` is deliberately EXCLUDED from `[all]`. It installs the
-# EleutherAI lm-evaluation-harness (lm-eval), which headroom invokes as an
-# external subprocess (`python -m lm_eval`) — it is never imported as a
-# library, so it is not a true runtime dependency. lm-eval pulls sqlitedict
-# CVE-2024-35515, which has no upstream fix. Keeping `benchmark` out of
-# `[all]` means `pip install headroom-ai[all]` is CVE-free; researchers who
-# need the accuracy harness opt in explicitly with `pip install
-# headroom-ai[benchmark]`.
+# The EleutherAI lm-evaluation-harness is intentionally not exposed as a
+# project extra. Headroom invokes it as an external subprocess
+# (`python -m lm_eval`), and the harness currently pulls sqlitedict
+# CVE-2024-35515 with no upstream fix. Keeping it out of locked project extras
+# prevents repository scanners from flagging production installs; researchers
+# who need standard accuracy benchmarks can install `lm-eval[api]` in their
+# benchmark environment separately.
 all = [
     "headroom-ai[proxy,code,ml,memory,relevance,image,reports,otel,evals,voice,html,mcp,spreadsheet]",
+]
+# Sandbox: a lean proxy with ALL torch-free capability — for running Headroom in
+# a locked-down/low-resource sandbox and offloading heavy ML elsewhere.
+#
+# = [all] MINUS:
+#   - image  (SigLIP/OCR — excluded by request)
+#   - ml     (torch — the PyTorch Kompress backend; ONNX path in [proxy] still
+#             runs Kompress locally with no torch, or offload it entirely via
+#             HEADROOM_KOMPRESS_ENDPOINT)
+#   - voice  (excluded by request)
+#   - memory + evals  (both pull sentence-transformers -> torch, i.e. the very
+#             ML weight a sandbox avoids; evals is a dev/test harness, not a
+#             runtime feature). Opt back in explicitly if you accept torch:
+#             pip install headroom-ai[sandbox,memory]
+#
+# Everything kept here is torch-free: code-aware compression (tree-sitter),
+# embedding relevance (fastembed), HTML/spreadsheet ingestion, reports, OTel.
+sandbox = [
+    "headroom-ai[proxy,code,relevance,reports,otel,html,mcp,spreadsheet]",
 ]
 
 [project.scripts]
@@ -326,16 +340,16 @@ constraint-dependencies = [
     "pygments>=2.20.0",
     # GHSA-4xgf-cpjx-pc3j (Medium) — transitive via mcp; fix at 2.14.2
     "pydantic-settings>=2.14.2",
-    # GHSA-mv93-w799-cj2w + 4 others (High) — transitive via lm-eval; fix at 3.1.50
+    # GHSA-mv93-w799-cj2w + 4 others (High) — transitive via agno; fix at 3.1.50
     "gitpython>=3.1.50",
     # GHSA-f4xh-w4cj-qxq8 (High) — transitive via langchain-core; fix at 0.8.18
     "langsmith>=0.9.0",
     # CVE-2026-49825 (High, XSS) — transitive via lxml[html-clean]; fix at 0.4.5
     "lxml-html-clean>=0.4.5",
-    # CVE-2026-54293 (High) — transitive via rouge-score/lm-eval; fix at 3.10.0
-    "nltk>=3.10.0",
     # CVE-2026-5241 (High) — direct optional dep for proxy/ml/voice; fix at 5.5.0
     "transformers>=5.5.0",
+    # PYSEC-2026-3447 — transitive dependency; fix at 83.0.0
+    "setuptools>=83.0.0",
 ]
 
 # Pin the project's package index to public PyPI. Without this, `uv lock`

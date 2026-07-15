@@ -25,6 +25,8 @@
   <a href="https://headroom-docs.vercel.app/docs"><img src="https://img.shields.io/badge/docs-upstream-blue.svg" alt="Docs: upstream"></a>
 </p>
 
+<!-- mcp-name: io.github.headroomlabs-ai/headroom -->
+
 <p align="center">
   <a href="#why-headroom-zh-exists">Why</a> ·
   <a href="#what-makes-headroom-zh-different">What is unique</a> ·
@@ -185,7 +187,7 @@ long Chinese context that still has to remain actionable after compression.
 
 - **Library** — `compress(messages)` in Python or TypeScript, inline in any app
 - **Proxy** — `headroom proxy --port 8787`, zero code changes, any language
-- **Agent wrap** — `headroom wrap claude|codex|copilot|cursor|aider|opencode|cline|continue|goose|openhands|openclaw|vibe` in one command; undo durable wrapping with `headroom unwrap <tool>`
+- **Agent wrap** — `headroom wrap claude|codex|copilot|cursor|aider|opencode|cline|continue|goose|openhands|openclaw|vibe|zcode` in one command; undo durable wrapping with `headroom unwrap <tool>`
 - **MCP server** — `headroom_compress`, `headroom_retrieve`, `headroom_stats` for any MCP client
 - **Cross-agent memory** — shared store across Claude, Codex, Gemini, auto-dedup
 - **`headroom learn`** — mines failed sessions, writes corrections to `CLAUDE.local.md` by default, or to `CLAUDE.md` / `AGENTS.md` / `GEMINI.md` when requested
@@ -329,6 +331,12 @@ code.
 - **Effort routing** lowers thinking effort when a turn is just routine
   tool-followup, while new questions and errors keep full effort.
 
+Applies to Anthropic `/v1/messages` **and** OpenAI-compatible endpoints
+(`/v1/chat/completions`, `/v1/responses`). Effort routing uses
+`reasoning_effort` on OpenAI, `thinking.budget_tokens` /
+`output_config.effort` on Anthropic — same clamp-only invariant on both
+paths, same `output_shaper:*` label vocabulary.
+
 Turn it on:
 
 ```bash
@@ -375,10 +383,13 @@ or estimated with a confidence band.
 | OpenHands    | ✅              | starts proxy + launches          |
 | Mistral Vibe | ✅              | starts proxy + launches          |
 | Cortex Code  | Library only    | 60–65% savings (library mode; no `wrap`) |
+| ZCode        | ✅              | starts proxy and prints base URLs for ZCode settings |
 
 Any OpenAI-compatible client works via `headroom proxy`. MCP-native:
 `headroom mcp install`. Undo durable wrapping with `headroom unwrap <tool>`
-for supported tools.
+for supported tools (supports: `claude`, `copilot`, `codex`, `opencode`,
+`openclaw`, `zcode`).
+Registry authors can use the canonical [`server.json`](server.json) in the repo root instead of reconstructing the `headroom mcp serve` contract from prose.
 
 ### GitHub Copilot CLI subscription mode
 
@@ -400,12 +411,17 @@ This avoids relying on generic GitHub or Copilot CLI tokens that can read
 Copilot account metadata but may still be rejected by Copilot's token-exchange
 endpoint.
 
-For GitHub Enterprise Server or custom-domain Copilot deployments, set the
-deployment domain before launching:
+For GitHub Enterprise Server or custom-domain Copilot deployments, set one of
+these before launching:
 
 ```bash
 export GITHUB_COPILOT_ENTERPRISE_DOMAIN=ghe.example.com
+# or
+export GITHUB_COPILOT_ENTERPRISE_URL=https://ghe.example.com
 ```
+
+Both variables are supported. If both are set,
+`GITHUB_COPILOT_ENTERPRISE_URL` takes precedence.
 
 For GitHub.com Enterprise Cloud URLs such as
 `github.com/enterprises/your-enterprise`, do not set an enterprise-domain
@@ -580,6 +596,28 @@ Two runtime assets may also need corporate CA trust via `REQUESTS_CA_BUNDLE`,
 
 Running with compression disabled as a pure gateway requires neither asset.
 
+#### Intel macOS (x86_64-apple-darwin): no prebuilt ONNX Runtime binary (#941)
+
+`ort-sys` ships no prebuilt ONNX Runtime binary for Intel macOS, so a source
+build fails by default even outside a corporate-proxy environment. The same
+`ORT_STRATEGY=system` mechanism above fixes it — point it at a system ONNX
+Runtime instead:
+
+```bash
+brew install onnxruntime
+ORT_STRATEGY=system \
+ORT_LIB_LOCATION="$(brew --prefix onnxruntime)/lib" \
+ORT_PREFER_DYNAMIC_LINK=1 \
+  pip install "headroom-ai[all]"
+
+# ORT is dlopen'd at runtime too:
+export ORT_DYLIB_PATH="$(brew --prefix onnxruntime)/lib/libonnxruntime.dylib"
+```
+
+`ORT_LIB_LOCATION` must point at `lib/` (not the bare prefix) and
+`ORT_PREFER_DYNAMIC_LINK=1` is required, or `ORT_STRATEGY=system` still
+attempts static linking, which the Homebrew keg doesn't provide.
+
 #### "Basic Constraints of CA cert not marked critical" (Python 3.13+ strict mode)
 
 This is a different TLS failure. If Python 3.13+ rejects a corporate CA with
@@ -665,6 +703,10 @@ Devcontainers in `.devcontainer/` (default + `memory-stack` with Qdrant & Neo4j)
 - **[Upstream Headroom docs](https://headroom-docs.vercel.app/docs)** — core architecture, proxy, MCP, and benchmark documentation.
 - **[Kompress-v2-base on HuggingFace](https://huggingface.co/chopratejas/kompress-v2-base)** — the default English/plain-text compression model.
 - **[kompress_zh-baseline-v1-lora on HuggingFace](https://huggingface.co/Deserveall/kompress_zh-baseline-v1-lora)** — the Chinese plain-text compression branch.
+
+### Community projects
+
+- **[Claude Code status-line indicator](https://github.com/Ship-Wright/headroom-plugin)** — a Claude Code plugin that shows live Headroom usage in your status line: idle until `headroom_compress` fires, then the running total of tokens saved.
 
 ## License
 

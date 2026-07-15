@@ -562,6 +562,16 @@ class HierarchicalMemory:
         # Perform supersession in store
         new_memory = await self._store.supersede(old_memory_id, new_memory, supersede_time)
 
+        # Drop the OLD entry from the search indexes. The store keeps its row
+        # (valid_until is now set) so get_history still works, but the vector and
+        # text indexes hold a cached metadata copy with valid_until=None, and
+        # default search filters superseded rows off that cached copy. Without
+        # this, the superseded (stale) version keeps resurfacing from search
+        # alongside the new one, so contradictory/outdated facts get recalled
+        # together. Mirrors delete()'s index removal.
+        await self._vector_index.remove(old_memory_id)
+        await self._text_index.remove(old_memory_id)
+
         # Update indexes
         if new_memory.embedding is not None:
             await self._vector_index.index(new_memory)

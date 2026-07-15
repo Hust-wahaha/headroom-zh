@@ -37,7 +37,7 @@ Telemetry is **off by default** (opt-in). Opt in with `HEADROOM_TELEMETRY=on` or
 | `--max-connections` | `500` | Maximum upstream HTTP connections |
 | `--max-keepalive` | `100` | Maximum upstream keep-alive connections |
 | `--http-proxy` | None | HTTP proxy URL for upstream provider requests only; HTTPS provider APIs use CONNECT |
-| `--mode` | `token` | Optimization mode: `token` prioritizes compression, `cache` preserves provider prefix-cache stability |
+| `--mode` | `cache` | Optimization mode: `token` prioritizes compression, `cache` preserves provider prefix-cache stability. Default is `cache` (see [Savings profiles](#savings-profiles)) |
 | `--no-optimize` | `false` | Disable optimization (passthrough mode) |
 | `--no-cache` | `false` | Disable semantic caching |
 | `--no-rate-limit` | `false` | Disable rate limiting |
@@ -65,8 +65,8 @@ Avoid setting process-wide variables such as `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_P
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--mode token` | `token` | Prioritize token compression. This is the default. |
-| `--mode cache` | `token` | Preserve prior turns to maximize provider prefix-cache hit rate. |
+| `--mode token` | | Prioritize token compression; prior turns may be rewritten for maximum savings. |
+| `--mode cache` | default | Freeze prior turns to maximize provider prefix-cache hit rate. This is the effective default (see [Savings profiles](#savings-profiles)). |
 | `--intercept-tool-results` | `false` | Opt into tool-result interceptors such as ast-grep Read outlining. |
 | `--no-read-lifecycle` | `false` | Disable stale/superseded Read-output compression. |
 | `--code-aware` / `--no-code-aware` | disabled | Enable or disable AST-based code compression. Requires `headroom-ai[code]`. |
@@ -88,6 +88,26 @@ headroom proxy --mode token
 
 # Preserve provider prefix cache stability
 headroom proxy --mode cache
+```
+
+### Savings profiles
+
+`HEADROOM_SAVINGS_PROFILE` selects a named profile that seeds Headroom's whole compression posture — proxy mode, keep-ratio, which messages are compressed, and `force_kompress` — at proxy startup. It is read by `headroom proxy` and by the `headroom wrap` subprocesses. When unset, the default profile is `coding`.
+
+| Profile | Target savings | Mode | Notes |
+|---------|----------------|------|-------|
+| `coding` | emergent (~50%) | `cache` | **Default.** Delta-only compression at ~0 prefix-cache busts; never lossy-compresses file reads. |
+| `balanced` | ~70% | `token` | Moderate compression with structural compaction. Also the fallback for an unknown profile name. |
+| `agent-90` | ~90% | `token` | Aggressive; pins a `0.10` keep-ratio and forces Kompress. |
+| `general` | emergent (~60%) | `token` | Non-coding workloads. |
+
+An unrecognized `HEADROOM_SAVINGS_PROFILE` value logs a warning and falls back to `balanced` — the proxy never fails to start over a bad profile name. See `headroom/agent_savings.py` for each profile's full set of knobs.
+
+Because the default `coding` profile uses **cache** mode (and the proxy's own default mode is also `cache`), Headroom runs in cache mode out of the box. Mode precedence: an explicit `--mode` wins, otherwise `HEADROOM_MODE` (which a profile seeds), otherwise the `cache` default. To run token mode, pass `--mode token` or choose a token-mode profile:
+
+```bash
+# Aggressive ~90% token-savings profile
+HEADROOM_SAVINGS_PROFILE=agent-90 headroom proxy --port 8787
 ```
 
 ### Optional features
@@ -113,6 +133,64 @@ headroom proxy --codex-wire-debug
 <Callout type="info" title="LLMLingua removed from the proxy CLI">
 The old LLMLingua proxy toggles are no longer part of the CLI. Headroom's proxy compression path uses ContentRouter plus the current built-in compressors, including Kompress where applicable.
 </Callout>
+
+## Savings profiles
+
+The proxy uses a **savings profile** to control compression behavior — which messages get compressed, how aggressively, and whether to prioritize provider prefix-cache stability or raw savings. Only the env var survives across related tools (`headroom wrap` passes it to the proxy it launches).
+
+```bash
+# Switch to a different profile
+HEADROOM_SAVINGS_PROFILE=agent-90 headroom proxy
+```
+
+### Built-in profiles
+
+| Profile | Target savings | proxy_mode | force_kompress | Best for |
+|---------|---------------|------------|---------------|----------|
+| `coding` (default) | ~50% (emergent) | `cache` | No | Coding agents — preserves Anthropic prefix-cache stability |
+| `agent-90` | 90% | `token` | Yes | Non-coding, cost-sensitive, or high-volume workloads |
+| `balanced` | 70% | `token` | No | General-purpose moderate compression |
+| `general` | ~60% (emergent) | `token` | No | Non-coding chat, little code in context |
+
+**`coding` (default)** — Optimizes for coding-agent workloads with Anthropic. Uses **cache mode** (`proxy_mode="cache"`): compresses only the newest delta in each turn so the provider's prefix-cache is never busted. User messages are compressed, system prompts preserved (hottest cache). Protects the 2 most recent turns verbatim. Lossless-first with lossy fallback; tool search and cross-turn dedup enabled. This is the profile that `headroom wrap` uses.
+
+**`agent-90`** — Forces ML-based (Kompress) compression with a 10% keep-ratio, ignoring the lossless path. Compresses both user and system messages. Designed for non-coding or cost-sensitive workloads where maximum compression is the goal.
+
+**`balanced`** — Token-mode compression with a 30% keep-ratio. Uses the standard lossless pipeline (does not force Kompress). Protects 4 recent turns. A safe general-purpose profile.
+
+**`general`** — Token-mode compression for non-coding conversations. No turn protection (`protect_recent=0` — nothing code-positional to preserve) and does not compress user or system messages. Uses the standard lossless pipeline.
+
+### Profiles override CLI flags
+
+A profile's `proxy_mode` setting overrides the `--mode` flag. The `coding` profile sets `proxy_mode="cache"`, so `--mode token` has **no effect** when coding is active:
+
+```bash
+# These are equivalent — coding's cache mode always wins
+headroom proxy
+headroom proxy --mode token          # --mode token is silently overridden
+```
+
+To run in token mode, switch to a profile that uses it:
+
+```bash
+HEADROOM_SAVINGS_PROFILE=agent-90 headroom proxy --mode token
+```
+
+### Extending a profile with env overrides
+
+Profile defaults are applied only when the corresponding env var is not already set. You can start from a named profile and override individual settings:
+
+```bash
+# Start from coding but force Kompress on
+HEADROOM_SAVINGS_PROFILE=coding HEADROOM_FORCE_KOMPRESS=1 headroom proxy
+
+# Start from balanced but lower the keep-ratio
+HEADROOM_SAVINGS_PROFILE=balanced HEADROOM_TARGET_RATIO=0.15 headroom proxy
+```
+
+### Custom profiles
+
+For permanent custom profiles, see the profile definitions in `headroom/agent_savings.py`. Each profile is an `AgentSavingsProfile` dataclass with fields for compression mode, target ratio, turn protection, and pipeline toggles.
 
 ## API endpoints
 

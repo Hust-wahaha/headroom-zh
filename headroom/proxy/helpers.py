@@ -620,6 +620,20 @@ try:
 except ValueError:
     COMPRESSION_TIMEOUT_SECONDS = 30.0
 
+# Cold-start fast-pass timeout in seconds. When background compression defers
+# a cold-start-large request, the handler still runs the pipeline synchronously
+# with skip_kompress=True (everything except the ML stage) under this budget so
+# the FORWARDED — and therefore provider-cached and byte-identically frozen —
+# form carries the cheap savings instead of the raw transcript. Without the ML
+# stage the pass is bounded by routing + statistical crushers (seconds, not the
+# 30s Kompress budget). Fail-open: on timeout the request forwards as before.
+try:
+    COLD_START_FAST_PASS_TIMEOUT_SECONDS = float(
+        os.environ.get("HEADROOM_COLD_START_FAST_PASS_TIMEOUT_SECONDS", "10")
+    )
+except ValueError:
+    COLD_START_FAST_PASS_TIMEOUT_SECONDS = 10.0
+
 # Eager startup preload timeout in seconds. The preload (compressor/parser models,
 # cache-only, allow_download=False) runs off the event loop during startup; this
 # bound only fires on a true hang or an uncatchable native stall so the proxy still

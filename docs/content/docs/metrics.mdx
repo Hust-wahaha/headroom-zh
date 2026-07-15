@@ -265,7 +265,14 @@ When the budget is exceeded, requests return a budget exceeded error, the `/stat
 
 ## Grafana Dashboard
 
-Example Prometheus queries for a Grafana dashboard:
+A ready-to-import dashboard ships in
+[`examples/grafana/headroom-dashboard.json`](https://github.com/headroomlabs-ai/headroom/blob/main/examples/grafana/headroom-dashboard.json).
+Import it in Grafana (**Dashboards → New → Import → Upload**) and pick your Prometheus
+datasource — it renders tokens saved, request throughput, and processing overhead
+(`headroom_overhead_ms_sum` / `headroom_overhead_ms_count`) straight from the metrics
+the `/metrics` endpoint exposes.
+
+Example ad-hoc queries against the same metric family:
 
 | Panel | PromQL |
 |-------|--------|

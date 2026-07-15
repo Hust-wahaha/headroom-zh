@@ -21,7 +21,8 @@ permissions:
   contents: read
 
 jobs:
-  validate:
+  validate-mkdocs:
+    name: Validate mkdocs build
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -46,7 +47,31 @@ jobs:
       - name: Build docs
         run: mkdocs build
 
-  deploy:
+  validate-nextjs:
+    name: Validate Next.js build
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: docs/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+        working-directory: docs
+
+      - name: Build docs
+        run: npm run build
+        working-directory: docs
+
+  deploy-github-pages:
+    name: Deploy GitHub Pages
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     permissions:
@@ -73,3 +98,33 @@ jobs:
 
       - name: Build and deploy
         run: mkdocs gh-deploy --force
+
+  deploy-vercel:
+    name: Deploy Vercel Docs
+    if: >-
+      github.event_name != 'pull_request'
+      && github.ref == 'refs/heads/main'
+      && github.repository_owner == 'headroomlabs-ai'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: docs/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+        working-directory: docs
+
+      - name: Deploy to Vercel
+        run: npx vercel deploy --prod --token=${{ secrets.VERCEL_TOKEN }}
+        working-directory: docs
+        env:
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}

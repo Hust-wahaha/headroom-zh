@@ -417,10 +417,18 @@ class HeadroomContribution:
         return self.tokens_submitted + self.tokens_saved_compression + self.cli_filtering_saved()
 
     def efficiency_pct(self) -> float:
+        # Fraction of the pre-Headroom input that compression + CLI filtering
+        # removed. Use compression_saved() (which excludes cache reads) as the
+        # numerator: raw_without_headroom() also excludes cache reads, so mixing
+        # total_saved() (which adds tokens_saved_cache_reads) into this ratio
+        # made it inconsistent with its own denominator and let efficiency exceed
+        # 100% (e.g. submitted=100, cache_reads=1000 -> 1000%). Cache reads are a
+        # provider-side discount on tokens that were still forwarded, not tokens
+        # Headroom removed, so they do not belong in a removal-efficiency ratio.
         raw = self.raw_without_headroom()
         if raw == 0:
             return 0.0
-        return round(self.total_saved() / raw * 100, 1)
+        return round(self.compression_saved() / raw * 100, 1)
 
     def to_dict(self) -> dict[str, Any]:
         return {

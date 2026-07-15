@@ -38,6 +38,23 @@ def test_estimate_cost_unknown_short_circuits_to_fallback():
     assert L.estimate_cost_usd(L.UNKNOWN, 0) == 0.0
 
 
+def test_free_model_is_not_billed_at_fallback(monkeypatch):
+    """A known but 0-priced (free) model must cost $0, not the $3/M fallback.
+
+    _estimate_compression_savings_usd returns a legitimate 0.0 for free models;
+    the ledger must trust that rather than re-billing it at the blended rate.
+    """
+    monkeypatch.setattr(L, "_estimate_compression_savings_usd", lambda model, tokens: 0.0)
+
+    assert L.estimate_cost_usd("free-local-model", 1_000_000) == 0.0
+
+
+def test_priced_model_uses_litellm_estimate(monkeypatch):
+    monkeypatch.setattr(L, "_estimate_compression_savings_usd", lambda model, tokens: tokens * 2e-6)
+
+    assert L.estimate_cost_usd("some-model", 1_000_000) == pytest.approx(2.0)
+
+
 def test_explicit_cost_is_honored(monkeypatch, tmp_path):
     _events_env(monkeypatch, tmp_path)
     L.record_savings_event(tokens_before=100, tokens_after=10, model="x", client="c", cost_usd=1.25)

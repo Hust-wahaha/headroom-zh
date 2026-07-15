@@ -294,9 +294,21 @@ def _ordered_events(path: Path) -> list[tuple[float | None, str, _Response | _Hu
         except json.JSONDecodeError:
             continue
         ltype = d.get("type")
-        if ltype == "assistant" and ri < len(responses):
-            out.append((responses[ri].ts, "assistant", responses[ri]))
-            ri += 1
+        if ltype == "assistant":
+            # Mirror the _parse_session filter (a _Response is only created when
+            # `words > 0 or out_tok > 0`). Without the same guard here, an empty
+            # assistant line (e.g. a pure tool_use turn with no usage) consumes a
+            # response slot that belongs to a later real response, desyncing the
+            # two lists so a following human reply is paired with the wrong
+            # (future-timestamped) response -> a negative gap -> a spurious
+            # fast_skip.
+            msg = d.get("message", {}) if isinstance(d.get("message"), dict) else {}
+            words, _ = _assistant_words_and_text(msg.get("content", []))
+            usage = msg.get("usage", {}) if isinstance(msg.get("usage"), dict) else {}
+            out_tok = usage.get("output_tokens", 0)
+            if (words > 0 or out_tok > 0) and ri < len(responses):
+                out.append((responses[ri].ts, "assistant", responses[ri]))
+                ri += 1
         elif ltype == "user":
             msg = d.get("message", {}) if isinstance(d.get("message"), dict) else {}
             text = _human_text(msg.get("content"))

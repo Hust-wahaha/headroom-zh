@@ -183,6 +183,15 @@ When deferral is off, the proxy log also prints a one-time hint naming the fix.
 
 See [issue #746](https://github.com/chopratejas/headroom/issues/746) for the full analysis.
 
+<Callout type="warning" title="Claude Code VSCode extension caveat">
+  Anthropic's VSCode extension webview does not currently render the deferred-tool
+  content blocks that `ENABLE_TOOL_SEARCH=true` enables through Headroom. Tool
+  results can show up as `unsupported content type` in the extension even though
+  the standalone `claude` CLI works correctly. If you use Claude Code inside
+  VSCode, set `ENABLE_TOOL_SEARCH=false` for that target and restart the Headroom
+  deployment. See [issue #2028](https://github.com/headroomlabs-ai/headroom/issues/2028).
+</Callout>
+
 ## Remote Control unavailable through custom ANTHROPIC_BASE_URL
 
 **Symptom**: When Claude Code runs with `ANTHROPIC_BASE_URL` set to a custom host (for example, Headroom), the Remote Control menu is absent.

@@ -15,6 +15,7 @@ from headroom.transforms.content_router import (
     CompressionStrategy,
     ContentRouter,
     ContentRouterConfig,
+    _estimate_tokens,
 )
 from headroom.transforms.lossless_compaction import search_unheading
 
@@ -148,7 +149,10 @@ def test_lossy_gate_boundary_default(monkeypatch):
     block = _grep_block()
     r, _ = _router(lossless_then_lossy=True)
     assert abs(r._lossy_min_extra_savings - 0.05) < 1e-9  # default: require >=5% extra
-    fold_tok = len(r._lossless_first(block, CompressionStrategy.SEARCH)[0].split())
+    # Measure the fold with the SAME estimator the router's gate uses
+    # (_estimate_tokens), not len(split()) — the two diverge, and the gate at
+    # content_router.py compares _komp_tokens against _estimate_tokens(fold).
+    fold_tok = _estimate_tokens(r._lossless_first(block, CompressionStrategy.SEARCH)[0])
     # Kompress that keeps 94% of fold tokens -> saves 6% >= the 5% floor -> chained.
     keep = int(fold_tok * 0.94)
     r._try_ml_compressor = lambda c, ctx, q=None: (" ".join(["w"] * keep), keep)  # type: ignore
@@ -161,7 +165,8 @@ def test_lossy_gate_env_override(monkeypatch):
     r, _ = _router(lossless_then_lossy=True)
     assert abs(r._lossy_min_extra_savings - 0.20) < 1e-9  # env override wins
     block = _grep_block()
-    fold_tok = len(r._lossless_first(block, CompressionStrategy.SEARCH)[0].split())
+    # Same estimator as the router gate (_estimate_tokens), not len(split()).
+    fold_tok = _estimate_tokens(r._lossless_first(block, CompressionStrategy.SEARCH)[0])
     keep = int(fold_tok * 0.90)  # saves 10%: passes the 5% default but FAILS the 20% override
     r._try_ml_compressor = lambda c, ctx, q=None: (" ".join(["w"] * keep), keep)  # type: ignore
     _, was, tr, rc = _run(r, block)

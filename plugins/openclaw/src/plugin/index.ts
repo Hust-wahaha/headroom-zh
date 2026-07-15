@@ -29,10 +29,10 @@ import { createHeadroomRetrieveTool } from "../tools/headroom-retrieve.js";
  * See: https://github.com/chopratejas/headroom/issues/XXX
  */
 export default {
-  register: headroomPlugin,
+  register: registerHeadroomPlugin,
 };
 
-function headroomPlugin(api: any) {
+export function registerHeadroomPlugin(api: any) {
   const config = api.config?.plugins?.entries?.headroom?.config ?? {};
   const logger = api.logger ?? console;
   const rawProxyUrl = config.proxyUrl;

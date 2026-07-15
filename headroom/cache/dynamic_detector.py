@@ -742,10 +742,18 @@ class SemanticDetector:
             from headroom.models.ml_models import MLModelRegistry
 
             self._model = MLModelRegistry.get_sentence_transformer(config.embedding_model)
-            # Pre-compute exemplar embeddings
+            # Pre-compute exemplar embeddings. normalize_embeddings=True is
+            # required: detect() scores sentences with np.dot against these and
+            # compares to semantic_threshold (a 0-1 cosine value). Without
+            # normalization sentence_transformers returns raw vectors (norm
+            # ~5-15), so the dot product is an unbounded inner product, not a
+            # cosine similarity — nearly every sentence would clear the 0.7
+            # threshold and be misflagged as dynamic. Matches the siblings in
+            # prediction/feature_extractor.py and memory/adapters/embedders.py.
             self._exemplar_embeddings = self._model.encode(
                 self.DYNAMIC_EXEMPLARS,
                 convert_to_numpy=True,
+                normalize_embeddings=True,
             )
         except ImportError:
             self._load_error = (
@@ -812,9 +820,13 @@ class SemanticDetector:
         if self._exemplar_embeddings is None:
             return [], "exemplar embeddings not initialized"
 
+        # normalize_embeddings=True so np.dot below is a true cosine similarity
+        # in [-1, 1], comparable to semantic_threshold; must match the exemplar
+        # encoding above (both normalized or the dot product is meaningless).
         sentence_embeddings = self._model.encode(
             sentence_texts,
             convert_to_numpy=True,
+            normalize_embeddings=True,
         )
 
         similarities = np.dot(sentence_embeddings, self._exemplar_embeddings.T)

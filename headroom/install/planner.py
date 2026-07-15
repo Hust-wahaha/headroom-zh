@@ -125,6 +125,11 @@ def build_manifest(
     telemetry_enabled: bool,
     image: str,
     no_http2: bool = False,
+    code_aware: bool | None = None,
+    intercept_tool_results: bool = False,
+    protect_tool_results: str | None = None,
+    bedrock_profile: str | None = None,
+    extra_env: dict[str, str] | None = None,
 ) -> DeploymentManifest:
     """Create a normalized deployment manifest."""
 
@@ -154,6 +159,10 @@ def build_manifest(
     base_env["HEADROOM_TELEMETRY"] = "on" if telemetry_enabled else "off"
     if memory_enabled:
         base_env["HEADROOM_MEMORY_ENABLED"] = "1"
+    # Applied last so explicit --env overrides win over the auto-derived
+    # defaults above (e.g. a custom HEADROOM_WORKSPACE_DIR).
+    if extra_env:
+        base_env.update(extra_env)
 
     proxy_args = [
         "--host",
@@ -174,6 +183,14 @@ def build_manifest(
         proxy_args.extend(["--region", region])
     if no_http2:
         proxy_args.append("--no-http2")
+    if code_aware is not None:
+        proxy_args.append("--code-aware" if code_aware else "--no-code-aware")
+    if intercept_tool_results:
+        proxy_args.append("--intercept-tool-results")
+    if protect_tool_results:
+        proxy_args.extend(["--protect-tool-results", protect_tool_results])
+    if bedrock_profile:
+        proxy_args.extend(["--bedrock-profile", bedrock_profile])
 
     container_name = f"headroom-{normalized_profile}"
     return DeploymentManifest(

@@ -324,6 +324,8 @@ def _normalize_history_entry(entry: Any) -> dict[str, Any] | None:
     timestamp: datetime | None = None
     total_tokens_saved = 0
     compression_savings_usd = 0.0
+    cache_read_tokens = 0
+    cache_savings_usd = 0.0
     total_input_tokens = 0
     total_input_cost_usd = 0.0
     provider = PROVIDER_UNKNOWN
@@ -333,6 +335,11 @@ def _normalize_history_entry(entry: Any) -> dict[str, Any] | None:
         timestamp = _parse_timestamp(entry.get("timestamp"))
         total_tokens_saved = _coerce_int(entry.get("total_tokens_saved"))
         compression_savings_usd = _coerce_float(entry.get("compression_savings_usd"))
+        # Older history points predate cache-savings tracking and omit these
+        # keys entirely; default to 0/0.0 rather than raising or dropping the
+        # entry, matching how every other field here handles legacy shapes.
+        cache_read_tokens = _coerce_int(entry.get("cache_read_tokens"))
+        cache_savings_usd = _coerce_float(entry.get("cache_savings_usd"))
         total_input_tokens = _coerce_int(entry.get("total_input_tokens"))
         total_input_cost_usd = _coerce_float(entry.get("total_input_cost_usd"))
         provider = _normalize_provider(entry.get("provider"))
@@ -358,6 +365,8 @@ def _normalize_history_entry(entry: Any) -> dict[str, Any] | None:
         "model": model,
         "total_tokens_saved": total_tokens_saved,
         "compression_savings_usd": round(compression_savings_usd, 6),
+        "cache_read_tokens": cache_read_tokens,
+        "cache_savings_usd": round(cache_savings_usd, 6),
         "total_input_tokens": total_input_tokens,
         "total_input_cost_usd": round(total_input_cost_usd, 6),
     }
@@ -750,7 +759,13 @@ class SavingsTracker:
                 input_cost_usd_delta=delta_input_cost_usd,
             )
 
-            if delta_tokens_saved > 0:
+            # In --mode cache, headroom's own compression (tokens_saved) is
+            # near-always 0 by design — the frozen prefix is byte-replayed,
+            # not lossy-compressed, to keep Bedrock's prompt cache warm. Gating
+            # on tokens_saved alone silently dropped every history point on
+            # those requests even though real cache-read savings occurred.
+            # Append whenever either mechanism produced a saving.
+            if delta_tokens_saved > 0 or delta_cache_read_tokens > 0:
                 self._state["history"].append(
                     {
                         "timestamp": _to_utc_iso(timestamp_dt),
@@ -758,6 +773,8 @@ class SavingsTracker:
                         "model": _normalize_model(model),
                         "total_tokens_saved": lifetime["tokens_saved"],
                         "compression_savings_usd": lifetime["compression_savings_usd"],
+                        "cache_read_tokens": lifetime["cache_read_tokens"],
+                        "cache_savings_usd": lifetime["cache_savings_usd"],
                         "total_input_tokens": lifetime["total_input_tokens"],
                         "total_input_cost_usd": lifetime["total_input_cost_usd"],
                     }

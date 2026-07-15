@@ -10,9 +10,9 @@ use axum::http::{HeaderMap, HeaderName, Request, Response, StatusCode, Uri};
 use axum::response::IntoResponse;
 use axum::routing::{any, get, post};
 use axum::Router;
-use futures_util::{StreamExt as _, TryStreamExt};
 #[cfg(test)]
 use bytes::Bytes;
+use futures_util::{StreamExt as _, TryStreamExt};
 #[cfg(test)]
 use http_body_util::BodyExt;
 

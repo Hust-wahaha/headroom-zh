@@ -8,7 +8,7 @@ These are real tests that:
 
 import json
 import sys
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from click.testing import CliRunner
@@ -240,8 +240,63 @@ class TestMCPServeCommand:
         result = runner.invoke(main, ["mcp", "serve", "--help"])
 
         assert result.exit_code == 0
+        assert "transport" in result.output
+        assert "host" in result.output
+        assert "port" in result.output
+        assert "path" in result.output
         assert "proxy-url" in result.output
         assert "debug" in result.output
+
+    def test_serve_defaults_to_stdio(self):
+        """Serve command defaults to stdio transport."""
+        fake_server = MagicMock()
+        fake_server.run_stdio = AsyncMock()
+        fake_server.run_streamable_http = AsyncMock()
+        fake_server.cleanup = AsyncMock()
+
+        runner = CliRunner()
+        with patch("headroom.ccr.mcp_server.create_ccr_mcp_server", return_value=fake_server):
+            result = runner.invoke(main, ["mcp", "serve"])
+
+        assert result.exit_code == 0
+        fake_server.run_stdio.assert_awaited_once()
+        fake_server.run_streamable_http.assert_not_awaited()
+        fake_server.cleanup.assert_awaited_once()
+
+    def test_serve_http_transport_uses_http_settings(self):
+        """Serve command uses HTTP transport when requested with mixed-case input."""
+        fake_server = MagicMock()
+        fake_server.run_stdio = AsyncMock()
+        fake_server.run_streamable_http = AsyncMock()
+        fake_server.cleanup = AsyncMock()
+
+        runner = CliRunner()
+        with patch("headroom.ccr.mcp_server.create_ccr_mcp_server", return_value=fake_server):
+            result = runner.invoke(
+                main,
+                [
+                    "mcp",
+                    "serve",
+                    "--transport",
+                    "HTTP",
+                    "--host",
+                    "0.0.0.0",
+                    "--port",
+                    "9191",
+                    "--path",
+                    "/mcp",
+                ],
+            )
+
+        assert result.exit_code == 0
+        fake_server.run_stdio.assert_not_awaited()
+        fake_server.run_streamable_http.assert_awaited_once_with(
+            host="0.0.0.0",
+            port=9191,
+            path="/mcp",
+            debug=False,
+        )
+        fake_server.cleanup.assert_awaited_once()
 
 
 @pytest.mark.skipif(not MCP_AVAILABLE, reason="MCP SDK not installed")

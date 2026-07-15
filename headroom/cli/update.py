@@ -133,6 +133,18 @@ def _format_cmd(argv: list[str]) -> str:
     return shlex.join(argv)
 
 
+def _windows_pip_update_needs_handoff(method: InstallMethod) -> bool:
+    return sys.platform.startswith("win") and method.kind in {"pip", "pip-user"}
+
+
+def _build_windows_handoff_argv(argv: list[str]) -> list[str]:
+    helper = (
+        "import subprocess,sys,time; time.sleep(1); "
+        "raise SystemExit(subprocess.run([sys.executable,*sys.argv[1:]], check=False).returncode)"
+    )
+    return [sys.executable, "-c", helper, *argv[1:]]
+
+
 def _is_externally_managed() -> bool:
     """Detect a PEP 668 ``EXTERNALLY-MANAGED`` marker (Homebrew, Debian, etc.)."""
     try:
@@ -466,6 +478,18 @@ def update(check_only: bool, assume_yes: bool, allow_pre: bool, extras: str | No
         return
 
     click.echo(f"Running: {cmd_str}")
+    if _windows_pip_update_needs_handoff(method):
+        handoff_argv = _build_windows_handoff_argv(method.argv)
+        try:
+            subprocess.Popen(handoff_argv)  # noqa: S603 - fixed allowlist plus helper argv
+        except FileNotFoundError:
+            raise click.ClickException(
+                f"`{handoff_argv[0]}` was not found on PATH. Upgrade manually: {cmd_str}"
+            ) from None
+        click.echo("Upgrade started in a child process so pip can replace headroom.exe.")
+        click.echo("Wait for the pip output to finish, then rerun `headroom --version`.")
+        return
+
     try:
         returncode = safe_update(method.argv)
     except FileNotFoundError:
@@ -481,4 +505,10 @@ def update(check_only: bool, assume_yes: bool, allow_pre: bool, extras: str | No
     click.echo("Restart any running `headroom proxy` to pick up the new version.")
 
 
-__all__ = ["InstallMethod", "detect_install_method", "update"]
+__all__ = [
+    "InstallMethod",
+    "_build_windows_handoff_argv",
+    "_windows_pip_update_needs_handoff",
+    "detect_install_method",
+    "update",
+]

@@ -4,7 +4,7 @@ LogCompressor (which yields ~0 on prose) or ModernBERT (slow)."""
 
 from __future__ import annotations
 
-from headroom.transforms.content_router import ContentRouter
+from headroom.transforms.content_router import ContentRouter, _estimate_tokens
 
 
 def _prose() -> str:
@@ -28,7 +28,10 @@ def test_gate_routes_to_text_crusher_when_enabled(monkeypatch):
     out, ntok = router._try_ml_compressor(prose, "authentication tokens")
 
     assert router._kompress_gate_fires == 1
-    assert ntok < len(prose.split())  # TextCrusher actually compressed (LogCompressor ~0)
+    # TextCrusher actually compressed (LogCompressor ~0). Compare like-for-like
+    # against the same token estimator the compressor reports in, not a raw
+    # word count, so the assertion tracks real token reduction.
+    assert ntok < _estimate_tokens(prose)
     assert set(out.split()) <= set(prose.split())  # extractive: no invented words
 
 

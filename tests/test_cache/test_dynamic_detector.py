@@ -631,3 +631,62 @@ class TestSemanticDetectorGuards:
 
         assert spans == []
         assert warning == "exemplar embeddings not initialized"
+
+
+class _RecordingEncoder:
+    """A stand-in sentence-transformers model that records encode kwargs and
+    returns unit vectors (so the detector's np.dot math still runs)."""
+
+    def __init__(self) -> None:
+        self.encode_calls: list[dict] = []
+
+    def encode(self, texts, **kwargs):
+        import numpy as np
+
+        self.encode_calls.append(kwargs)
+        n = len(texts) if isinstance(texts, list) else 1
+        return np.tile(np.array([1.0, 0.0, 0.0]), (n, 1))
+
+
+class TestSemanticDetectorNormalization:
+    """Embeddings must be L2-normalized before the np.dot cosine comparison."""
+
+    def test_detect_normalizes_sentence_embeddings(self):
+        """The sentence encode in detect() must pass normalize_embeddings=True.
+
+        Without it np.dot is an unbounded inner product (vector norms ~5-15),
+        not a cosine similarity, so nearly every sentence clears the 0.7
+        threshold and static content is wrongly flagged dynamic.
+        """
+        np = pytest.importorskip("numpy")
+
+        from headroom.cache.dynamic_detector import SemanticDetector
+
+        det = object.__new__(SemanticDetector)
+        det.config = DetectorConfig(tiers=["semantic"])
+        model = _RecordingEncoder()
+        det._model = model
+        det._exemplar_embeddings = np.array([[1.0, 0.0, 0.0]])
+        det._load_error = None
+
+        det.detect("The current stock price changes every minute.")
+
+        assert model.encode_calls, "encode was never called"
+        assert all(c.get("normalize_embeddings") is True for c in model.encode_calls)
+
+    def test_init_normalizes_exemplar_embeddings(self, monkeypatch):
+        """The exemplar encode in __init__ must also pass normalize_embeddings=True
+        (both sides of the dot product must be normalized to be comparable)."""
+        pytest.importorskip("numpy")
+
+        import headroom.cache.dynamic_detector as dd
+        from headroom.models.ml_models import MLModelRegistry
+
+        model = _RecordingEncoder()
+        monkeypatch.setattr(dd, "_SENTENCE_TRANSFORMERS_AVAILABLE", True)
+        monkeypatch.setattr(MLModelRegistry, "get_sentence_transformer", lambda *a, **k: model)
+
+        dd.SemanticDetector(DetectorConfig(tiers=["semantic"]))
+
+        assert model.encode_calls, "exemplar encode was never called"
+        assert model.encode_calls[0].get("normalize_embeddings") is True

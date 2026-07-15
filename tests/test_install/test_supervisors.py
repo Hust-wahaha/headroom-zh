@@ -22,7 +22,11 @@ from headroom.install.supervisors import (
 
 
 def _manifest(
-    *, profile: str = "default", scope: str = "user", supervisor: str = "service"
+    *,
+    profile: str = "default",
+    scope: str = "user",
+    supervisor: str = "service",
+    base_env: dict[str, str] | None = None,
 ) -> DeploymentManifest:
     return DeploymentManifest(
         profile=profile,
@@ -36,6 +40,7 @@ def _manifest(
         host="127.0.0.1",
         backend="anthropic",
         service_name=f"headroom-{profile}",
+        base_env=base_env or {},
     )
 
 
@@ -72,6 +77,36 @@ def test_command_for_script_and_unix_runner(monkeypatch, tmp_path: Path) -> None
     content = Path(record.path).read_text(encoding="utf-8")
     assert content.startswith("#!/usr/bin/env bash")
     assert "exec headroom run --flag" in content
+
+
+def test_render_unix_runner_exports_env_before_exec(tmp_path: Path) -> None:
+    record = _render_unix_runner(
+        tmp_path / "run-headroom.sh",
+        ["headroom", "run"],
+        {"HEADROOM_WORKSPACE_DIR": "/Users/x/.headroom-workspace", "AWS_PROFILE": "sso-bedrock"},
+    )
+
+    content = Path(record.path).read_text(encoding="utf-8")
+    export_index = content.index("export HEADROOM_WORKSPACE_DIR=")
+    exec_index = content.index("exec headroom run")
+
+    assert "export HEADROOM_WORKSPACE_DIR=/Users/x/.headroom-workspace" in content
+    assert "export AWS_PROFILE=sso-bedrock" in content
+    assert export_index < exec_index
+
+
+def test_render_unix_runner_rejects_invalid_env_name(tmp_path: Path) -> None:
+    with pytest.raises(click.ClickException, match="Invalid environment variable name"):
+        _render_unix_runner(tmp_path / "run-headroom.sh", ["headroom", "run"], {"BAD-NAME": "x"})
+
+
+def test_render_unix_runner_omits_export_block_without_env(tmp_path: Path) -> None:
+    record = _render_unix_runner(tmp_path / "run-headroom.sh", ["headroom", "run"])
+
+    content = Path(record.path).read_text(encoding="utf-8")
+
+    assert "export" not in content
+    assert content == "#!/usr/bin/env bash\nset -euo pipefail\nexec headroom run\n"
 
 
 def test_linux_task_spec_for_user_scope_includes_crontab_markers(tmp_path: Path) -> None:
@@ -128,6 +163,16 @@ def test_render_windows_runner_writes_ps1_and_cmd_wrappers(tmp_path: Path) -> No
     )
 
 
+def test_render_windows_runner_rejects_invalid_env_name(tmp_path: Path) -> None:
+    with pytest.raises(click.ClickException, match="Invalid environment variable name"):
+        _render_windows_runner(
+            tmp_path / "run-headroom.ps1",
+            tmp_path / "run-headroom.cmd",
+            ["headroom", "run"],
+            {"BAD-NAME": "x"},
+        )
+
+
 def test_render_runner_scripts_writes_unix_scripts(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr("headroom.install.supervisors.sys.platform", "linux")
     monkeypatch.setattr(
@@ -142,6 +187,23 @@ def test_render_runner_scripts_writes_unix_scripts(monkeypatch, tmp_path: Path) 
         "run-headroom.sh",
         "ensure-headroom.sh",
     }
+
+
+def test_render_runner_scripts_threads_base_env_into_both_scripts(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr("headroom.install.supervisors.sys.platform", "linux")
+    monkeypatch.setattr(
+        "headroom.install.supervisors.resolve_headroom_command", lambda: ["headroom"]
+    )
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    manifest = _manifest(base_env={"HEADROOM_WORKSPACE_DIR": "/custom/workspace"})
+
+    records = render_runner_scripts(manifest)
+
+    for record in records:
+        content = Path(record.path).read_text(encoding="utf-8")
+        assert "export HEADROOM_WORKSPACE_DIR=/custom/workspace" in content
 
 
 def test_render_runner_scripts_writes_windows_scripts(monkeypatch, tmp_path: Path) -> None:
@@ -276,7 +338,7 @@ def test_install_supervisor_darwin_windows_and_unsupported(monkeypatch, tmp_path
     calls: list[list[str]] = []
     monkeypatch.setattr(
         "headroom.install.supervisors.subprocess.run",
-        lambda command, **kwargs: calls.append(command),
+        lambda command, **kwargs: calls.append(command) or _LaunchctlResult(0),
     )
     monkeypatch.setattr("headroom.install.supervisors.os.getuid", lambda: 123, raising=False)
 
@@ -332,6 +394,75 @@ def test_install_supervisor_darwin_windows_and_unsupported(monkeypatch, tmp_path
     monkeypatch.setattr("headroom.install.supervisors.sys.platform", "plan9")
     monkeypatch.setattr("headroom.install.supervisors.sys.platform", "plan9")
     with pytest.raises(click.ClickException, match="not supported"):
+        install_supervisor(_manifest(supervisor=SupervisorKind.SERVICE.value))
+
+
+def test_install_supervisor_retries_bootstrap_until_launchd_settles(
+    monkeypatch, tmp_path: Path
+) -> None:
+    # Same EIO-after-bootout race start_supervisor already rides out, but hit
+    # via install_supervisor's own unconditional bootout+bootstrap sequence on
+    # every apply (issue: this call site had no retry at all before).
+    run_script = tmp_path / "run-headroom.sh"
+    monkeypatch.setattr(
+        "headroom.install.supervisors.render_runner_scripts",
+        lambda manifest: [
+            type("Record", (), {"kind": "script", "path": run_script.as_posix()})(),
+        ],
+    )
+    plist_path = tmp_path / "com.headroom.default.plist"
+    monkeypatch.setattr(
+        "headroom.install.supervisors._macos_launchd_plist",
+        lambda manifest, script, interval=None: (plist_path, "plist"),
+    )
+    monkeypatch.setattr("headroom.install.supervisors.sys.platform", "darwin")
+    monkeypatch.setattr("headroom.install.supervisors.os.getuid", lambda: 123, raising=False)
+    monkeypatch.setattr("headroom.install.supervisors.time.sleep", lambda _s: None)
+    bootstrap_attempts = 0
+
+    def fake_run(command, **kwargs):
+        nonlocal bootstrap_attempts
+        if command[1] == "bootout":
+            return _LaunchctlResult(0)
+        bootstrap_attempts += 1
+        if bootstrap_attempts < 3:
+            return _LaunchctlResult(5, stderr="Bootstrap failed: 5: Input/output error")
+        return _LaunchctlResult(0)
+
+    monkeypatch.setattr("headroom.install.supervisors.subprocess.run", fake_run)
+
+    install_supervisor(_manifest(supervisor=SupervisorKind.SERVICE.value))
+    assert bootstrap_attempts == 3
+
+
+def test_install_supervisor_raises_after_bootstrap_keeps_failing(
+    monkeypatch, tmp_path: Path
+) -> None:
+    run_script = tmp_path / "run-headroom.sh"
+    monkeypatch.setattr(
+        "headroom.install.supervisors.render_runner_scripts",
+        lambda manifest: [
+            type("Record", (), {"kind": "script", "path": run_script.as_posix()})(),
+        ],
+    )
+    plist_path = tmp_path / "com.headroom.default.plist"
+    monkeypatch.setattr(
+        "headroom.install.supervisors._macos_launchd_plist",
+        lambda manifest, script, interval=None: (plist_path, "plist"),
+    )
+    monkeypatch.setattr("headroom.install.supervisors.sys.platform", "darwin")
+    monkeypatch.setattr("headroom.install.supervisors.os.getuid", lambda: 123, raising=False)
+    monkeypatch.setattr("headroom.install.supervisors.time.sleep", lambda _s: None)
+    monkeypatch.setattr("headroom.install.supervisors._MACOS_BOOTSTRAP_RETRIES", 3)
+
+    def fake_run(command, **kwargs):
+        if command[1] == "bootout":
+            return _LaunchctlResult(0)
+        return _LaunchctlResult(5, stderr="Bootstrap failed: 5: Input/output error")
+
+    monkeypatch.setattr("headroom.install.supervisors.subprocess.run", fake_run)
+
+    with pytest.raises(click.ClickException, match="could not bootstrap"):
         install_supervisor(_manifest(supervisor=SupervisorKind.SERVICE.value))
 
 

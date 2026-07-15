@@ -209,6 +209,7 @@ class AnchorConfig:
 # Tool outputs that are reference data and must NOT be compressed.
 # Read/Glob/Grep contain exact file contents/search results the agent needs for edits.
 # Write/Edit record what changes were made — compressing them causes duplicate/conflicting edits.
+# WebSearch/WebFetch results are large reference payloads that must remain verbatim.
 # Bash is NOT excluded — its outputs (build logs, test output) are ideal compression targets.
 # To protect Bash or other non-excluded tools from lossy compression, use
 # HEADROOM_PROTECT_TOOL_RESULTS=Bash or --protect-tool-results Bash.
@@ -219,12 +220,27 @@ DEFAULT_EXCLUDE_TOOLS: frozenset[str] = frozenset(
         "Grep",
         "Write",
         "Edit",
+        "WebSearch",
+        "WebFetch",
         # Lowercase variants for case-insensitive matching
         "read",
         "glob",
         "grep",
         "write",
         "edit",
+        "web_search",
+        "web_fetch",
+    }
+)
+
+# These excluded web-tool results must remain byte-faithful. Even the
+# excluded-tool lossless fold rewrites formatted JSON.
+DEFAULT_VERBATIM_EXCLUDE_TOOLS: frozenset[str] = frozenset(
+    {
+        "WebSearch",
+        "WebFetch",
+        "web_search",
+        "web_fetch",
     }
 )
 

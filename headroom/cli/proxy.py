@@ -247,7 +247,7 @@ def dashboard(port: int, no_open: bool) -> None:
         case_sensitive=False,
     ),
     help=(
-        "Optimization mode (default: token).\n"
+        "Optimization mode (default: cache).\n"
         "  token  — prioritize compression; prior turns may be rewritten for max savings.\n"
         "  cache  — freeze prior turns to maximise provider prefix-cache hit rate.\n"
         "Legacy aliases (token_mode, token_savings, token_headroom, cache_mode, "

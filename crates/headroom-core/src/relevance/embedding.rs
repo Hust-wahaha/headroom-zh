@@ -102,6 +102,12 @@ impl EmbeddingScorer {
                  this x86 CPU; embedding relevance disabled (falling back to BM25)"
                 .to_string());
         }
+        // The crate loads ONNX Runtime dynamically (`ort-load-dynamic`);
+        // resolve and commit the dylib before fastembed touches ort — a
+        // failed in-ort load deadlocks instead of erroring (see
+        // `dynamic_ort_loader_ready`).
+        crate::transforms::magika_detector::dynamic_ort_loader_ready()
+            .map_err(|e| format!("EmbeddingScorer: ONNX Runtime unavailable: {e}"))?;
         let name = format!("{:?}", model_kind);
         let model = TextEmbedding::try_new(InitOptions::new(model_kind))
             .map_err(|e| format!("EmbeddingScorer model load failed: {}", e))?;

@@ -100,6 +100,54 @@ def test_apply_codex_provider_scope_emits_flag_for_chatgpt_auth(
     assert "requires_openai_auth = true" in config_path.read_text()
 
 
+def test_apply_codex_provider_scope_lands_model_provider_at_root(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """model_provider must sit above the first [table] and override any prior value.
+
+    Codex scopes bare keys under the preceding table header, so appending the
+    provider block after an existing [table] (e.g. [features]) leaves
+    model_provider ignored and routing never switches (#260).
+    """
+    config_path = tmp_path / "config.toml"
+    config_path.write_text('model_provider = "openai"\n\n[features]\nweb_search = true\n')
+    monkeypatch.setattr("headroom.providers.codex.install.codex_config_path", lambda: config_path)
+    manifest = _manifest(tmp_path)
+
+    apply_codex_provider_scope(manifest)
+
+    content = config_path.read_text()
+    # Prior "openai" assignment is overridden, not duplicated.
+    assert content.count("model_provider =") == 1
+    assert 'model_provider = "headroom"' in content
+    # The managed key must land before the first table header.
+    assert content.index('model_provider = "headroom"') < content.index("[features]")
+    # The user's own table survives.
+    assert "web_search = true" in content
+
+
+def test_apply_codex_provider_scope_preserves_table_scoped_provider_keys(
+    monkeypatch, tmp_path: Path
+) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        'model_provider = "openai"\n\n'
+        "[profiles.work]\n"
+        'model_provider = "native"\n'
+        'openai_base_url = "https://example.invalid/v1"\n'
+    )
+    monkeypatch.setattr("headroom.providers.codex.install.codex_config_path", lambda: config_path)
+    manifest = _manifest(tmp_path)
+
+    apply_codex_provider_scope(manifest)
+
+    content = config_path.read_text()
+    assert content.count('model_provider = "headroom"') == 1
+    assert 'model_provider = "openai"' not in content
+    assert 'model_provider = "native"' in content
+    assert 'openai_base_url = "https://example.invalid/v1"' in content
+
+
 def test_codex_build_install_env_returns_proxy_base_url() -> None:
     env = build_codex_install_env(port=5566, backend="ignored")
 

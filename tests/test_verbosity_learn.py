@@ -55,6 +55,22 @@ def _tool_result(*, ts: str, content: str = "ok") -> dict:
     }
 
 
+def _empty_assistant(*, ts: str) -> dict:
+    """A pure tool_use assistant turn with no text and no output tokens.
+
+    `_parse_session` creates no `_Response` for it (words == 0 and out_tok == 0).
+    """
+    return {
+        "type": "assistant",
+        "timestamp": ts,
+        "message": {
+            "model": "claude-opus-4-8",
+            "content": [{"type": "tool_use", "id": "t1", "name": "Bash", "input": {}}],
+            "usage": {"input_tokens": 100, "output_tokens": 0},
+        },
+    }
+
+
 LONG = " ".join(["word"] * 400)  # well above the long-output floor
 
 
@@ -101,6 +117,28 @@ class TestSignalExtraction:
         )
         sig, _ = extract_signals([p])
         assert sig.skip_eligible == 1
+        assert sig.fast_skips == 0
+
+    def test_empty_assistant_message_does_not_desync_fast_skip(self, tmp_path):
+        # An empty assistant turn (pure tool_use, no output) creates no response
+        # at parse time, so _ordered_events must not consume a response slot for
+        # it. Otherwise a later real answer's slot is consumed early, the slow
+        # reply below is paired with a future-timestamped response, the gap goes
+        # negative, and a spurious fast_skip is recorded.
+        p = _write_session(
+            tmp_path,
+            "s",
+            [
+                _user("explain", ts="2026-01-01T00:00:00Z"),
+                _empty_assistant(ts="2026-01-01T00:00:00Z"),
+                _assistant(LONG, ts="2026-01-01T00:00:01Z"),  # real answer #1
+                # +199s: a slow, considered reply — NOT a fast skip.
+                _user("here is my careful follow-up", ts="2026-01-01T00:03:20Z"),
+                _assistant(LONG, ts="2026-01-01T00:03:21Z"),  # real answer #2
+                _user("thanks", ts="2026-01-01T00:07:00Z"),
+            ],
+        )
+        sig, _ = extract_signals([p])
         assert sig.fast_skips == 0
 
     def test_short_answer_not_skip_eligible(self, tmp_path):

@@ -620,6 +620,47 @@ def test_openai_responses_adapter_excludes_tool_case_insensitively_with_debug(mo
     assert new_payload == payload
 
 
+def test_openai_responses_adapter_keeps_websearch_output_verbatim():
+    """Default-excluded web tools must bypass both lossy and lossless rewrites."""
+    router = ContentRouter()
+
+    def compress(self, content: str, **_kwargs):
+        return RouterCompressionResult(
+            compressed="should not be used",
+            original=content,
+            strategy_used=CompressionStrategy.KOMPRESS,
+        )
+
+    router.compress = MethodType(compress, router)
+    handler = _handler_with_router(router)
+    output = (
+        "{\n"
+        '  "results": [\n'
+        '    {"title": "Headroom", "snippet": "structured web payload with spacing that must remain verbatim"}\n'
+        "  ]\n"
+        "}"
+    )
+    payload = {
+        "model": "gpt-5",
+        "input": [
+            {"type": "function_call", "call_id": "call_1", "name": "WebSearch", "arguments": "{}"},
+            {"type": "function_call_output", "call_id": "call_1", "output": output},
+        ],
+    }
+
+    new_payload, modified, saved, *_ = (
+        handler._compress_openai_responses_live_text_units_with_router(
+            payload,
+            model="gpt-5",
+            request_id="req_test",
+        )
+    )
+
+    assert modified is False
+    assert saved == 0
+    assert new_payload == payload
+
+
 def test_openai_responses_adapter_compresses_non_excluded_tool_outputs():
     """Only excluded tools are protected; other tool outputs still compress."""
     router = ContentRouter()

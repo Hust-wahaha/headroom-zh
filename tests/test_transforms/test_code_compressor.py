@@ -14,6 +14,7 @@ from unittest.mock import patch
 
 import pytest
 
+import headroom.transforms.code_compressor as cc
 from headroom.transforms.code_compressor import (
     CodeAwareCompressor,
     CodeCompressionResult,
@@ -1535,6 +1536,38 @@ class TestRealASTRuns:
             )
         )
 
+    def _recovery_compressor(self, **overrides):
+        defaults = {
+            "min_tokens_for_compression": 1,
+            "max_body_lines": 2,
+            "enable_ccr": False,
+            "semantic_analysis": False,
+        }
+        defaults.update(overrides)
+        return CodeAwareCompressor(CodeCompressorConfig(**defaults))
+
+    def _python_recovery_fixture(self) -> str:
+        return textwrap.dedent(
+            """\
+            from pathlib import Path
+
+            def expand_search_roots(user_root: str) -> list[Path]:
+                root = Path(user_root)
+                candidates = [root]
+                for child in root.iterdir():
+                    candidates.append(child.resolve())
+                return candidates
+
+            def load_user_overrides(config_path: str) -> dict[str, str]:
+                config: dict[str, str] = {}
+                for line in Path(config_path).read_text().splitlines():
+                    if "=" in line:
+                        key, value = line.split("=", 1)
+                        config[key.strip()] = value.strip()
+                return config
+            """
+        )
+
     def test_get_parser_returns_stock_node_api(self):
         """The parser must yield nodes with the stock tree_sitter property API
         that the tree-walking code relies on (``.type``/``.children``/...)."""
@@ -1610,6 +1643,101 @@ class TestRealASTRuns:
         assert "import math" in result.compressed
         assert "def compute(values):" in result.compressed
         # Output is still valid Python.
+        compile(result.compressed, "<test>", "exec")
+
+    def test_python_invalid_node_falls_back_locally(self):
+        """One invalid Python rewrite must preserve only that definition."""
+        compressor = self._recovery_compressor()
+        code = self._python_recovery_fixture()
+        original_compress_function_ast = compressor._compress_function_ast
+
+        def _patched(node, code_text, language, lang_config, body_limits, analysis):
+            name = cc._get_definition_name(node)
+            if name == "expand_search_roots":
+                return "def expand_search_roots(user_root: str) -> list[Path]:\n    if True\n"
+            if name == "load_user_overrides":
+                return (
+                    "def load_user_overrides(config_path: str) -> dict[str, str]:\n"
+                    "    config: dict[str, str] = {}\n"
+                    "    # [4 lines omitted]\n"
+                    "    return config"
+                )
+            return original_compress_function_ast(
+                node,
+                code_text,
+                language,
+                lang_config,
+                body_limits,
+                analysis,
+            )
+
+        with patch.object(compressor, "_compress_function_ast", side_effect=_patched):
+            result = compressor.compress(code, language="python")
+
+        assert result.syntax_valid is True
+        assert result.compression_ratio < 1.0
+        assert result.compressed != code
+        assert "if True" not in result.compressed
+        assert "for child in root.iterdir():" in result.compressed
+        assert "# [4 lines omitted]" in result.compressed
+        compile(result.compressed, "<test>", "exec")
+
+    def test_python_recovery_does_not_block_valid_modern_syntax(self):
+        """Valid decorators, nested defs, and match syntax still compress."""
+        compressor = self._recovery_compressor(max_body_lines=4)
+        code = textwrap.dedent(
+            """\
+            from dataclasses import dataclass
+
+            def traced(fn):
+                return fn
+
+            @dataclass
+            class Command:
+                name: str
+                payload: dict[str, int]
+
+            @traced
+            def route_command(command: Command) -> str:
+                def normalize(value: str) -> str:
+                    return value.strip().lower()
+
+                match normalize(command.name):
+                    case "ping":
+                        return "pong"
+                    case "echo":
+                        return str(command.payload)
+                    case _:
+                        return "unknown"
+            """
+        )
+
+        result = compressor.compress(code, language="python")
+
+        assert result.syntax_valid is True
+        assert result.compression_ratio < 1.0
+        assert "@traced" in result.compressed
+        assert "class Command:" in result.compressed
+        assert "def route_command(command: Command) -> str:" in result.compressed
+        compile(result.compressed, "<test>", "exec")
+
+    def test_python_recovery_still_returns_original_when_all_candidates_invalid(self):
+        """Recovery keeps the terminal whole-file fail-safe."""
+        compressor = self._recovery_compressor()
+        code = self._python_recovery_fixture()
+
+        def _patched(node, _code_text, _language, _lang_config, _body_limits, _analysis):
+            name = cc._get_definition_name(node) or "broken"
+            return f"def {name}(:\n    pass"
+
+        with patch.object(compressor, "_compress_function_ast", side_effect=_patched):
+            result = compressor.compress(code, language="python")
+
+        assert result.syntax_valid is True
+        assert result.compression_ratio == 1.0
+        assert "(:\n" not in result.compressed
+        assert "for child in root.iterdir():" in result.compressed
+        assert 'key, value = line.split("=", 1)' in result.compressed
         compile(result.compressed, "<test>", "exec")
 
     def test_get_node_text_uses_utf8_byte_offsets(self):

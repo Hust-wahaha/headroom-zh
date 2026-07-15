@@ -184,41 +184,36 @@ def test_no_native_tls_in_wheel_build_tree() -> None:
 def test_fastembed_uses_rustls_features() -> None:
     """The mechanism that keeps openssl-sys out of the build is
     fastembed's explicit rustls feature selection in headroom-core.
-    fastembed's default features include `hf-hub-native-tls` and
-    `ort-download-binaries-native-tls` — both pull openssl-sys.
-    Disabling defaults and enabling the rustls equivalents removes
-    the OpenSSL surface entirely.
+    fastembed's default features include `hf-hub-native-tls` (pulls
+    openssl-sys). Disabling defaults and enabling the rustls
+    equivalent removes the OpenSSL surface entirely.
     """
     cargo = (ROOT / "crates" / "headroom-core" / "Cargo.toml").read_text(encoding="utf-8")
 
     assert "default-features = false" in cargo
     assert '"hf-hub-rustls-tls"' in cargo
-    assert '"ort-download-binaries-rustls-tls"' in cargo
     # `image-models` is in default; we re-enable it explicitly so we
     # don't lose the image-embedding capability when defaults are off.
     assert '"image-models"' in cargo
 
 
-def test_fastembed_uses_dynamic_ort_on_windows() -> None:
-    """Windows and Intel macOS sdist builds must not link Pyke's ORT binaries.
+def test_fastembed_uses_dynamic_ort_everywhere() -> None:
+    """No build may statically link Pyke's prebuilt ORT binaries.
 
     `ort-download-binaries-*` emits platform SDK link libs (DirectML on
-    Windows; unavailable prebuilts on `x86_64-apple-darwin`). Those targets
-    must use ORT dynamic loading instead.
+    Windows; no prebuilts for `x86_64-apple-darwin`) and its Linux/macOS
+    binaries require AVX2 at load time, SIGILLing `import headroom._core`
+    on pre-AVX2 x86-64 CPUs (#1278). Every platform loads ORT dynamically
+    (`ort-load-dynamic`), resolved at runtime from the pip `onnxruntime`
+    package by `headroom/_ort.py` / the crate's loader guard.
     """
 
     cargo = (ROOT / "crates" / "headroom-core" / "Cargo.toml").read_text(encoding="utf-8")
-    for section_marker in (
-        "[target.'cfg(windows)'.dependencies]",
-        '[target.\'cfg(all(target_os = "macos", target_arch = "x86_64"))\'.dependencies]',
-    ):
-        assert section_marker in cargo, f"missing Cargo target section: {section_marker}"
-        section = cargo.split(section_marker, 1)[1].split("\n[", 1)[0]
-        dependency_lines = "\n".join(
-            line for line in section.splitlines() if not line.lstrip().startswith("#")
-        )
-        assert '"ort-load-dynamic"' in section
-        assert "ort-download-binaries" not in dependency_lines
+    dependency_lines = "\n".join(
+        line for line in cargo.splitlines() if not line.lstrip().startswith("#")
+    )
+    assert '"ort-load-dynamic"' in dependency_lines
+    assert "ort-download-binaries" not in dependency_lines
 
 
 def test_dockerfiles_no_longer_install_openssl_devel() -> None:
@@ -560,6 +555,100 @@ def test_release_workflow_verifies_versions_before_build_outputs() -> None:
     assert second_sync < second_verify < build_wheels
 
 
+def test_release_workflow_uses_local_npm_asset_builder() -> None:
+    """npm tarball metadata must be built and verified by the reusable local gate."""
+    content = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+    builder = (ROOT / "scripts" / "build_npm_release_assets.mjs").read_text(encoding="utf-8")
+    verifier = (ROOT / "scripts" / "verify_npm_release_assets.mjs").read_text(encoding="utf-8")
+
+    assert (
+        'node scripts/build_npm_release_assets.mjs "${{ needs.detect-version.outputs.npm_version }}" release-assets'
+        in content
+    )
+    build_start = content.index("name: Build npm release packages")
+    upload_start = content.index("name: Upload release assets artifact", build_start)
+    build_block = content[build_start:upload_start]
+    assert "npm pack" not in build_block, (
+        "release.yml must not reimplement npm packing inline; the script "
+        "regenerates OpenClaw dist metadata and runs install/import smoke checks."
+    )
+
+    assert "scripts/build_npm_release_assets.mjs" in content
+    assert "scripts/verify_npm_release_assets.mjs" in content
+    assert "scripts/verify_npm_release_assets.mjs" in builder
+    assert "registerHeadroomPlugin" in verifier
+
+
+def test_npm_release_builder_regenerates_openclaw_dist_metadata_after_rewrite() -> None:
+    """OpenClaw's packed dist/package.json must see the release dependency."""
+    builder = (ROOT / "scripts" / "build_npm_release_assets.mjs").read_text(encoding="utf-8")
+
+    rewrite = builder.index("rewriteOpenClawReleaseDependency();")
+    prepare_dist = builder.index('runNode(["prepare-dist.mjs"], openClawDir);', rewrite)
+    pack = builder.index(
+        'runNpm(["pack", "--pack-destination", assetsDir], openClawDir);', prepare_dist
+    )
+    verify = builder.index(
+        'runNode(["scripts/verify_npm_release_assets.mjs", assetsDir, version], rootDir)', pack
+    )
+
+    assert rewrite < prepare_dist < pack < verify
+
+
+def test_npm_release_builder_installs_openclaw_against_local_sdk_tarball() -> None:
+    """The OpenClaw build must not require the release SDK to exist on npm."""
+    builder = (ROOT / "scripts" / "build_npm_release_assets.mjs").read_text(encoding="utf-8")
+
+    local_dependency = builder.index("rewriteOpenClawLocalDependency(sdkTarballPath);")
+    install = builder.index(
+        '["install", "--package-lock=false", "--no-audit", "--no-fund", "--ignore-scripts"]',
+        local_dependency,
+    )
+    build = builder.index('runNpm(["run", "build"], openClawDir);', install)
+    release_dependency = builder.index("rewriteOpenClawReleaseDependency();", build)
+
+    assert local_dependency < install < build < release_dependency
+    assert 'runNpm(["ci"], openClawDir)' not in builder
+
+
+def test_openclaw_source_dependency_matches_lockfile_registry_range() -> None:
+    """The source checkout must remain npm-ci installable before a release exists."""
+    import json
+
+    package_json = json.loads((ROOT / "plugins" / "openclaw" / "package.json").read_text())
+    package_lock = json.loads((ROOT / "plugins" / "openclaw" / "package-lock.json").read_text())
+
+    source_range = package_json["dependencies"]["headroom-ai"]
+    lock_range = package_lock["packages"][""]["dependencies"]["headroom-ai"]
+
+    assert source_range == lock_range == "^0.22.3"
+
+
+def test_python_release_smoke_imports_installed_wheel_outside_source_tree() -> None:
+    """The wheel smoke must not import the checkout package by accident."""
+    script = (ROOT / "scripts" / "build_python_release_smoke.py").read_text(encoding="utf-8")
+
+    assert "cwd: Path = ROOT" in script
+    assert 'import_cwd = Path(tmp) / "import-cwd"' in script
+    assert 'run([smoke_python, "-c", smoke_code], cwd=import_cwd)' in script
+
+
+def test_publish_npm_regenerates_openclaw_dist_metadata_after_version_and_dependency() -> None:
+    """The direct npm publish path must not ship stale OpenClaw dist metadata."""
+    content = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+
+    start = content.index("name: Publish ${{ env.NPM_OPENCLAW_PACKAGE }} to npmjs.org")
+    end = content.index("continue-on-error: true", start)
+    block = content[start:end]
+
+    version = block.index('npm version "$version"')
+    dependency = block.index('pkg.dependencies["headroom-ai"]')
+    prepare_dist = block.index("node prepare-dist.mjs")
+    publish = block.index("npm publish --access public")
+
+    assert version < dependency < prepare_dist < publish
+
+
 def test_sdist_license_is_packaged_and_verified_before_upload() -> None:
     """STRUCTURAL INVARIANT: the sdist tarball must physically contain
     every license file PEP 639 declares in PKG-INFO, and the release
@@ -833,6 +922,25 @@ def test_npm_publish_jobs_do_not_download_dist_artifact() -> None:
             f"its own tarball and the speculative download fails when "
             f"collect-dist hasn't run."
         )
+
+
+def test_smoke_import_ubuntu_apt_installs_are_retried() -> None:
+    """Ubuntu smoke-import containers must tolerate stale package mirrors.
+
+    The ARM Ubuntu ports mirror can briefly serve indexes that point at a
+    package version which has just been removed, causing apt install to fail
+    with a 404 even after an update. Keep the smoke gate strict, but retry the
+    package operations and use --fix-missing so transient mirror skew does not
+    make unrelated PRs red.
+    """
+    content = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+    smoke_start = content.index("\n  smoke-import-wheels:")
+    smoke_end = content.index("\n  publish-pypi:", smoke_start)
+    smoke_body = content[smoke_start:smoke_end]
+
+    assert "apt_retry()" in smoke_body
+    assert "apt_retry update -qq" in smoke_body
+    assert "apt_retry install -y -qq --fix-missing --no-install-recommends" in smoke_body
 
 
 def test_release_workflow_runs_dry_run_on_pull_request() -> None:

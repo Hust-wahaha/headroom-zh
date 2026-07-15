@@ -18,6 +18,11 @@ scripts/*
 !scripts/changelog-gen.py
 !scripts/verify-versions.py
 !scripts/pr-governance.py
+!scripts/bootstrap-windows-dev.ps1
+!scripts/build_npm_release_assets.mjs
+!scripts/build_python_release_smoke.py
+!scripts/release_smoke_all.py
+!scripts/verify_npm_release_assets.mjs
 !scripts/tests/
 !scripts/README.md
 !scripts/repro_codex_replay.py
@@ -120,6 +125,9 @@ venv.bak/
 
 # Node.js dependencies (never commit vendored deps)
 node_modules/
+
+# Local release smoke outputs
+release-assets-local/
 
 # Secrets and API keys - NEVER commit these
 *.pem

@@ -133,6 +133,20 @@ The Python-native `headroom wrap ...` flow checks for a matching persistent depl
 
 The Docker-native host wrapper does **not** yet reuse or recover persistent profiles automatically; it still starts a fresh proxy container unless you opt into `--no-proxy`.
 
+## Claude Code VSCode extension caveat
+
+Persistent Claude deployments default to `ENABLE_TOOL_SEARCH=true` because the
+standalone Claude CLI benefits from deferred tool schemas.
+
+Anthropic's VSCode extension currently does not render those deferred-tool content
+blocks correctly through Headroom and can show `unsupported content type` in the
+webview. If your persistent install targets Claude Code inside VSCode, edit
+`~/.headroom/deploy/<profile>/manifest.json`, set
+`tool_envs.claude.ENABLE_TOOL_SEARCH` to `"false"`, then restart the deployment.
+
+Keep `ENABLE_TOOL_SEARCH=true` for the standalone `claude` CLI unless you hit the
+same renderer limitation there.
+
 ## Docker-native relationship
 
 The Docker-native host wrapper and the Python install CLI solve different layers of the runtime story:

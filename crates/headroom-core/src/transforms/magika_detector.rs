@@ -35,10 +35,6 @@
 //!   error early instead of crashing with SIGILL; the detection chain then
 //!   falls through to Tier 2 and Tier 3 normally.
 
-#[cfg(any(
-    target_os = "windows",
-    all(target_os = "macos", target_arch = "x86_64")
-))]
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::sync::{Mutex, OnceLock};
@@ -85,17 +81,18 @@ pub(crate) fn magika_runtime_available_for_session_init() -> Result<(), String> 
     dynamic_ort_loader_ready()
 }
 
-#[cfg(any(
-    target_os = "windows",
-    all(target_os = "macos", target_arch = "x86_64")
-))]
 static DYNAMIC_ORT_INIT: OnceLock<Result<PathBuf, String>> = OnceLock::new();
 
-#[cfg(any(
-    target_os = "windows",
-    all(target_os = "macos", target_arch = "x86_64")
-))]
-fn dynamic_ort_loader_ready() -> Result<(), String> {
+/// Ensure the ONNX Runtime shared library is resolved and committed to
+/// `ort` before any `ort` API is touched.
+///
+/// With `ort-load-dynamic` (every platform, see Cargo.toml) this MUST
+/// run before any code path that can construct an `ort` session
+/// (magika, fastembed): if the dylib cannot be loaded, `ort`
+/// 2.0.0-rc.12 deadlocks inside its API-setup error path (recursive
+/// `OnceLock` init), and the stuck thread then wedges process exit in
+/// `ort`'s `dl_fini` environment teardown (#1715 CI hang).
+pub(crate) fn dynamic_ort_loader_ready() -> Result<(), String> {
     DYNAMIC_ORT_INIT
         .get_or_init(initialize_dynamic_ort)
         .as_ref()
@@ -103,10 +100,6 @@ fn dynamic_ort_loader_ready() -> Result<(), String> {
         .map_err(Clone::clone)
 }
 
-#[cfg(any(
-    target_os = "windows",
-    all(target_os = "macos", target_arch = "x86_64")
-))]
 fn initialize_dynamic_ort() -> Result<PathBuf, String> {
     let explicit = std::env::var("ORT_DYLIB_PATH")
         .ok()
@@ -154,10 +147,6 @@ fn initialize_dynamic_ort() -> Result<PathBuf, String> {
     }
 }
 
-#[cfg(any(
-    target_os = "windows",
-    all(target_os = "macos", target_arch = "x86_64")
-))]
 fn init_ort_from_path(path: &Path) -> Result<(), String> {
     let builder = ort::init_from(path).map_err(|error| {
         format!(
@@ -169,10 +158,6 @@ fn init_ort_from_path(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(any(
-    target_os = "windows",
-    all(target_os = "macos", target_arch = "x86_64")
-))]
 fn discover_onnxruntime_libraries() -> Vec<PathBuf> {
     let mut roots = Vec::new();
 
@@ -218,20 +203,12 @@ fn discover_onnxruntime_libraries() -> Vec<PathBuf> {
     dedup_existing_files(candidates)
 }
 
-#[cfg(any(
-    target_os = "windows",
-    all(target_os = "macos", target_arch = "x86_64")
-))]
 fn env_path(name: &str) -> Option<PathBuf> {
     std::env::var_os(name)
         .map(PathBuf::from)
         .filter(|path| !path.as_os_str().is_empty())
 }
 
-#[cfg(any(
-    target_os = "windows",
-    all(target_os = "macos", target_arch = "x86_64")
-))]
 fn versioned_children(root: PathBuf) -> Vec<PathBuf> {
     let mut children = std::fs::read_dir(root)
         .ok()
@@ -244,10 +221,6 @@ fn versioned_children(root: PathBuf) -> Vec<PathBuf> {
     children
 }
 
-#[cfg(any(
-    target_os = "windows",
-    all(target_os = "macos", target_arch = "x86_64")
-))]
 fn onnxruntime_candidates_under(root: &Path) -> Vec<PathBuf> {
     #[cfg(target_os = "windows")]
     {
@@ -264,7 +237,7 @@ fn onnxruntime_candidates_under(root: &Path) -> Vec<PathBuf> {
         ]
     }
 
-    #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+    #[cfg(not(target_os = "windows"))]
     {
         let mut candidates = Vec::new();
         for site_packages in python_site_packages_dirs(root) {
@@ -275,7 +248,7 @@ fn onnxruntime_candidates_under(root: &Path) -> Vec<PathBuf> {
     }
 }
 
-#[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+#[cfg(not(target_os = "windows"))]
 fn python_site_packages_dirs(root: &Path) -> Vec<PathBuf> {
     let mut dirs = vec![root.join("lib").join("site-packages")];
     let lib = root.join("lib");
@@ -297,7 +270,7 @@ fn python_site_packages_dirs(root: &Path) -> Vec<PathBuf> {
     dirs
 }
 
-#[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+#[cfg(not(target_os = "windows"))]
 fn onnxruntime_dylibs_in(capi: &Path) -> Vec<PathBuf> {
     let mut dylibs = std::fs::read_dir(capi)
         .ok()
@@ -307,17 +280,16 @@ fn onnxruntime_dylibs_in(capi: &Path) -> Vec<PathBuf> {
         .filter(|path| {
             path.file_name()
                 .and_then(|name| name.to_str())
-                .is_some_and(|name| name.starts_with("libonnxruntime") && name.ends_with(".dylib"))
+                .is_some_and(|name| {
+                    name.starts_with("libonnxruntime")
+                        && (name.ends_with(".dylib") || name.contains(".so"))
+                })
         })
         .collect::<Vec<_>>();
     dylibs.sort();
     dylibs
 }
 
-#[cfg(any(
-    target_os = "windows",
-    all(target_os = "macos", target_arch = "x86_64")
-))]
 fn dedup_existing_files(paths: Vec<PathBuf>) -> Vec<PathBuf> {
     let mut out = Vec::new();
     for path in paths {
@@ -326,14 +298,6 @@ fn dedup_existing_files(paths: Vec<PathBuf>) -> Vec<PathBuf> {
         }
     }
     out
-}
-
-#[cfg(not(any(
-    target_os = "windows",
-    all(target_os = "macos", target_arch = "x86_64")
-)))]
-fn dynamic_ort_loader_ready() -> Result<(), String> {
-    Ok(())
 }
 
 /// Errors from the magika detector. Wraps the underlying `magika::Error`

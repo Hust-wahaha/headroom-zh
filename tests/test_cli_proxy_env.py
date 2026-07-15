@@ -106,6 +106,39 @@ class TestCLIWrapProxyTimeout:
         assert env["GITHUB_COPILOT_API_URL"] == "https://copilot-api.acme.ghe.com"
         assert env["GITHUB_COPILOT_API_TOKEN"] == "copilot-api-token"
 
+    def test_start_proxy_scrubs_inherited_copilot_refresh_seed_env(self, monkeypatch, tmp_path):
+        fake_proc = _FakeProxyProcess()
+        captured: dict[str, object] = {}
+
+        monkeypatch.setenv("GITHUB_COPILOT_API_TOKEN", "stale-parent-token")
+        monkeypatch.setenv("GITHUB_COPILOT_REFRESH_OAUTH_TOKEN", "stale-parent-refresh")
+        monkeypatch.setenv("GITHUB_COPILOT_API_TOKEN_EXPIRES_AT", "123")
+        monkeypatch.delenv(wrap_mod._WRAP_PROXY_TIMEOUT_ENV, raising=False)
+        monkeypatch.setattr(wrap_mod, "_ml_wrap_extras_detected", lambda: False)
+        monkeypatch.setattr(wrap_mod, "_get_log_path", lambda: tmp_path / "proxy.log")
+        monkeypatch.setattr(wrap_mod, "_check_proxy", lambda _port: True)
+        monkeypatch.setattr(wrap_mod.time, "sleep", lambda _seconds: None)
+
+        def fake_popen(*args, **kwargs):  # noqa: ANN002, ANN003
+            captured["kwargs"] = kwargs
+            return fake_proc
+
+        monkeypatch.setattr(wrap_mod.subprocess, "Popen", fake_popen)
+
+        proc = wrap_mod._start_proxy(
+            8787,
+            agent_type="copilot",
+            copilot_api_token="copilot-api-token",
+            copilot_refresh_oauth_token="gho-refresh",
+            copilot_api_token_expires_at=456.5,
+        )
+
+        assert proc is fake_proc
+        env = captured["kwargs"]["env"]
+        assert env["GITHUB_COPILOT_API_TOKEN"] == "copilot-api-token"
+        assert env["GITHUB_COPILOT_REFRESH_OAUTH_TOKEN"] == "gho-refresh"
+        assert env["GITHUB_COPILOT_API_TOKEN_EXPIRES_AT"] == "456.5"
+
     def test_start_proxy_redirects_subprocess_stdio_to_standalone_log(self, monkeypatch, tmp_path):
         fake_proc = _FakeProxyProcess()
         captured: dict[str, object] = {}

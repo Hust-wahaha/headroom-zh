@@ -43,7 +43,7 @@ def update_package_json(file_path: Path, version: str) -> None:
         data = json.load(f)
     data["version"] = version
     with open(file_path, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
+        json.dump(data, f, indent=2, ensure_ascii=False)
         f.write("\n")
 
 
@@ -53,7 +53,7 @@ def update_plugin_manifest(file_path: Path, version: str) -> None:
         data = json.load(f)
     data["version"] = version
     with open(file_path, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
+        json.dump(data, f, indent=2, ensure_ascii=False)
         f.write("\n")
 
 
@@ -70,7 +70,7 @@ def update_marketplace_manifest(file_path: Path, version: str) -> None:
             if isinstance(plugin, dict):
                 plugin["version"] = version
     with open(file_path, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
+        json.dump(data, f, indent=2, ensure_ascii=False)
         f.write("\n")
 
 
@@ -87,15 +87,18 @@ def update_plugin_versions(root: Path, version: str) -> None:
     )
 
 
-def update_openclaw_package_json(file_path: Path, version: str, sdk_version: str) -> None:
-    """Update openclaw package.json version and headroom-ai dependency range."""
+def update_openclaw_package_json(file_path: Path, version: str) -> None:
+    """Update openclaw package.json version.
+
+    Keep the source `headroom-ai` dependency registry-installable. The release
+    workflow rewrites the packed tgz dependency to the exact release range after
+    the local SDK tarball is available.
+    """
     with open(file_path, encoding="utf-8") as f:
         data = json.load(f)
     data["version"] = version
-    if "dependencies" in data and "headroom-ai" in data["dependencies"]:
-        data["dependencies"]["headroom-ai"] = f"^{sdk_version}"
     with open(file_path, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
+        json.dump(data, f, indent=2, ensure_ascii=False)
         f.write("\n")
 
 
@@ -125,7 +128,7 @@ def write_release_metadata(root: Path, version: str) -> None:
     }
     metadata_path = root / ".releasemetadata"
     with open(metadata_path, "w", encoding="utf-8") as f:
-        json.dump(metadata, f, indent=2)
+        json.dump(metadata, f, indent=2, ensure_ascii=False)
         f.write("\n")
 
 
@@ -166,9 +169,7 @@ def main() -> None:
 
     # Update all versioned files
     update_pyproject_version(args.root, version)
-    update_openclaw_package_json(
-        args.root / "plugins" / "openclaw" / "package.json", version, version
-    )
+    update_openclaw_package_json(args.root / "plugins" / "openclaw" / "package.json", version)
     update_package_json(args.root / "sdk" / "typescript" / "package.json", version)
     update_plugin_versions(args.root, version)
     write_release_metadata(args.root, version)

@@ -55,6 +55,21 @@ def test_read_cached_oauth_token_prefers_headroom_login(
     assert copilot_auth.read_cached_oauth_token() == "gho-headroom"
 
 
+def test_default_oauth_domain_uses_enterprise_url_host(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GITHUB_COPILOT_ENTERPRISE_URL", "https://ghe.example.com")
+
+    assert copilot_auth.default_oauth_domain() == "ghe.example.com"
+
+
+def test_default_oauth_domain_falls_back_to_github_com_when_env_blank(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GITHUB_COPILOT_ENTERPRISE_URL", "   ")
+    monkeypatch.setenv("GITHUB_COPILOT_ENTERPRISE_DOMAIN", "")
+
+    assert copilot_auth.default_oauth_domain() == "github.com"
+
+
 def test_read_cached_oauth_token_prefers_copilot_cli_before_generic_github_token(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -162,6 +177,8 @@ def test_resolve_subscription_bearer_token_details_exchanges_oauth_candidate(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("GITHUB_COPILOT_API_TOKEN", raising=False)
+    monkeypatch.delenv("GITHUB_COPILOT_REFRESH_OAUTH_TOKEN", raising=False)
+    monkeypatch.delenv("GITHUB_COPILOT_API_TOKEN_EXPIRES_AT", raising=False)
     monkeypatch.delenv("COPILOT_PROVIDER_BEARER_TOKEN", raising=False)
     monkeypatch.delenv("GITHUB_COPILOT_API_URL", raising=False)
     monkeypatch.delenv("GITHUB_COPILOT_ENTERPRISE_URL", raising=False)
@@ -202,6 +219,8 @@ def test_resolve_subscription_bearer_token_details_exchanges_oauth_candidate(
     assert resolution.confidence == "copilot-token-exchange"
     assert resolution.api_url == "https://api.business.githubcopilot.com"
     assert resolution.token_fingerprint == copilot_auth.token_fingerprint("copilot-api")
+    assert resolution.refresh_oauth_token == "gho-oauth"
+    assert isinstance(resolution.api_token_expires_at, float)
     assert captured == {
         "Accept": "application/json",
         "Authorization": "Bearer gho-oauth",
@@ -677,6 +696,39 @@ def test_apply_copilot_api_auth_passes_through_existing_api_token(
     assert "x-api-key" not in headers
 
 
+def test_apply_copilot_api_auth_replaces_managed_seeded_api_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_get_api_token() -> copilot_auth.CopilotAPIToken:
+        return copilot_auth.CopilotAPIToken(
+            token="copilot-refreshed",
+            expires_at=time.time() + 3600,
+            api_url=copilot_auth.DEFAULT_API_URL,
+        )
+
+    monkeypatch.setenv("GITHUB_COPILOT_API_TOKEN", "tid_existing_copilot_token")
+    monkeypatch.setenv("GITHUB_COPILOT_REFRESH_OAUTH_TOKEN", "gho-refresh")
+    monkeypatch.setattr(
+        copilot_auth.get_copilot_token_provider(),
+        "get_api_token",
+        fake_get_api_token,
+    )
+
+    headers = asyncio.run(
+        copilot_auth.apply_copilot_api_auth(
+            {
+                "authorization": "Bearer tid_existing_copilot_token",
+                "x-api-key": "sk-downstream",
+            },
+            url="https://api.githubcopilot.com/v1/chat/completions",
+        )
+    )
+
+    assert headers["Authorization"] == "Bearer copilot-refreshed"
+    assert "authorization" not in headers
+    assert "x-api-key" not in headers
+
+
 def test_apply_copilot_api_auth_passes_through_github_oauth_bearer(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -942,6 +994,8 @@ def test_token_provider_can_exchange_when_enabled(monkeypatch: pytest.MonkeyPatc
 
 def test_token_provider_prefers_explicit_api_token(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("GITHUB_COPILOT_API_TOKEN", "copilot-api")
+    monkeypatch.delenv("GITHUB_COPILOT_REFRESH_OAUTH_TOKEN", raising=False)
+    monkeypatch.delenv("GITHUB_COPILOT_API_TOKEN_EXPIRES_AT", raising=False)
     monkeypatch.setenv("GITHUB_COPILOT_API_URL", "https://api.githubcopilot.com")
 
     token = asyncio.run(copilot_auth.CopilotTokenProvider().get_api_token())
@@ -952,6 +1006,8 @@ def test_token_provider_prefers_explicit_api_token(monkeypatch: pytest.MonkeyPat
 
 def test_token_provider_raises_without_oauth_token(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("GITHUB_COPILOT_API_TOKEN", raising=False)
+    monkeypatch.delenv("GITHUB_COPILOT_REFRESH_OAUTH_TOKEN", raising=False)
+    monkeypatch.delenv("GITHUB_COPILOT_API_TOKEN_EXPIRES_AT", raising=False)
     monkeypatch.setattr(copilot_auth, "read_cached_oauth_token", lambda: None)
 
     with pytest.raises(RuntimeError, match="No GitHub Copilot OAuth token"):
@@ -970,6 +1026,145 @@ def test_exchange_token_raises_when_exchange_returns_empty_token(
 
     with pytest.raises(RuntimeError, match="empty token"):
         asyncio.run(provider._exchange_token("gho-oauth"))
+
+
+def test_token_provider_refreshes_expired_seeded_explicit_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GITHUB_COPILOT_API_TOKEN", "copilot-expired")
+    monkeypatch.setenv("GITHUB_COPILOT_REFRESH_OAUTH_TOKEN", "gho-refresh")
+    monkeypatch.setenv("GITHUB_COPILOT_API_TOKEN_EXPIRES_AT", str(time.time() - 120))
+    monkeypatch.delenv("GITHUB_COPILOT_USE_TOKEN_EXCHANGE", raising=False)
+
+    provider = copilot_auth.CopilotTokenProvider()
+    calls = {"count": 0}
+    captured: dict[str, str] = {}
+
+    def fake_exchange(headers: dict[str, str]) -> dict[str, object]:
+        calls["count"] += 1
+        captured.update(headers)
+        return {
+            "token": "copilot-refreshed",
+            "expires_at": int(time.time()) + 3600,
+            "endpoints": {"api": "https://api.business.githubcopilot.com"},
+        }
+
+    monkeypatch.setattr(provider, "_exchange_token_sync", staticmethod(fake_exchange))
+
+    token = asyncio.run(provider.get_api_token())
+
+    assert token.token == "copilot-refreshed"
+    assert captured["Authorization"] == "Bearer gho-refresh"
+    assert calls["count"] == 1
+
+
+def test_token_provider_reuses_valid_seeded_explicit_token_without_exchange(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GITHUB_COPILOT_API_TOKEN", "copilot-valid")
+    monkeypatch.setenv("GITHUB_COPILOT_REFRESH_OAUTH_TOKEN", "gho-refresh")
+    monkeypatch.setenv("GITHUB_COPILOT_API_TOKEN_EXPIRES_AT", str(time.time() + 3600))
+
+    provider = copilot_auth.CopilotTokenProvider()
+    calls = {"count": 0}
+
+    def fake_exchange(_headers: dict[str, str]) -> dict[str, object]:
+        calls["count"] += 1
+        return {
+            "token": "copilot-refreshed",
+            "expires_at": int(time.time()) + 3600,
+            "endpoints": {"api": "https://api.githubcopilot.com"},
+        }
+
+    monkeypatch.setattr(provider, "_exchange_token_sync", staticmethod(fake_exchange))
+
+    first = asyncio.run(provider.get_api_token())
+    second = asyncio.run(provider.get_api_token())
+
+    assert first.token == "copilot-valid"
+    assert second.token == "copilot-valid"
+    assert calls["count"] == 0
+
+
+def test_token_provider_refreshes_seeded_token_when_expiry_is_nonfinite(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GITHUB_COPILOT_API_TOKEN", "copilot-expired")
+    monkeypatch.setenv("GITHUB_COPILOT_REFRESH_OAUTH_TOKEN", "gho-refresh")
+    monkeypatch.setenv("GITHUB_COPILOT_API_TOKEN_EXPIRES_AT", "inf")
+
+    provider = copilot_auth.CopilotTokenProvider()
+    calls = {"count": 0}
+
+    def fake_exchange(_headers: dict[str, str]) -> dict[str, object]:
+        calls["count"] += 1
+        return {
+            "token": "copilot-refreshed",
+            "expires_at": int(time.time()) + 3600,
+            "endpoints": {"api": "https://api.githubcopilot.com"},
+        }
+
+    monkeypatch.setattr(provider, "_exchange_token_sync", staticmethod(fake_exchange))
+
+    token = asyncio.run(provider.get_api_token())
+
+    assert token.token == "copilot-refreshed"
+    assert calls["count"] == 1
+
+
+def test_token_provider_refreshes_seeded_token_even_when_exchange_flag_is_false(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GITHUB_COPILOT_API_TOKEN", "copilot-expired")
+    monkeypatch.setenv("GITHUB_COPILOT_REFRESH_OAUTH_TOKEN", "gho-refresh")
+    monkeypatch.setenv("GITHUB_COPILOT_API_TOKEN_EXPIRES_AT", str(time.time() - 120))
+    monkeypatch.setenv("GITHUB_COPILOT_USE_TOKEN_EXCHANGE", "false")
+
+    provider = copilot_auth.CopilotTokenProvider()
+    calls = {"count": 0}
+
+    def fake_exchange(_headers: dict[str, str]) -> dict[str, object]:
+        calls["count"] += 1
+        return {
+            "token": "copilot-refreshed",
+            "expires_at": int(time.time()) + 3600,
+            "endpoints": {"api": "https://api.githubcopilot.com"},
+        }
+
+    monkeypatch.setattr(provider, "_exchange_token_sync", staticmethod(fake_exchange))
+
+    token = asyncio.run(provider.get_api_token())
+
+    assert token.token == "copilot-refreshed"
+    assert calls["count"] == 1
+
+
+def test_token_provider_preserves_configured_api_url_when_refreshing_seeded_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GITHUB_COPILOT_API_TOKEN", "copilot-expired")
+    monkeypatch.setenv("GITHUB_COPILOT_REFRESH_OAUTH_TOKEN", "gho-refresh")
+    monkeypatch.setenv("GITHUB_COPILOT_API_TOKEN_EXPIRES_AT", str(time.time() - 120))
+    monkeypatch.setenv("GITHUB_COPILOT_API_URL", "https://proxy.internal.example.com")
+
+    provider = copilot_auth.CopilotTokenProvider()
+
+    monkeypatch.setattr(
+        provider,
+        "_exchange_token_sync",
+        staticmethod(
+            lambda _headers: {
+                "token": "copilot-refreshed",
+                "expires_at": int(time.time()) + 3600,
+                "endpoints": {"api": "https://api.other.githubcopilot.com"},
+            }
+        ),
+    )
+
+    token = asyncio.run(provider.get_api_token())
+
+    assert token.token == "copilot-refreshed"
+    assert token.api_url == "https://proxy.internal.example.com"
 
 
 def test_exchange_token_sync_raises_for_http_error(monkeypatch: pytest.MonkeyPatch) -> None:

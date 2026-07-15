@@ -106,9 +106,13 @@ def estimate_cost_usd(
     # noisy "Provider List" warnings, and the MCP path is unknown-model by far
     # the most often. Go straight to the blended fallback.
     if model and model != UNKNOWN:
-        priced = _estimate_compression_savings_usd(model, tokens_saved)
-        if priced > 0:
-            return round(priced, 6)
+        # Trust _estimate_compression_savings_usd's return verbatim: it already
+        # falls back to the blended rate for models litellm can't price, and
+        # returns a legitimate 0.0 for genuinely free (0-priced) models. A
+        # `priced > 0` gate here re-billed those free models at the $3/M fallback
+        # -- phantom cost-avoided -- undoing the same fix already applied inside
+        # that helper.
+        return round(_estimate_compression_savings_usd(model, tokens_saved), 6)
     return round(float(tokens_saved) * float(fallback_rate), 6)
 
 

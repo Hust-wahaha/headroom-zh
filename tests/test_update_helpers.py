@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.metadata as md
+import sys
 import sysconfig
 
 import pytest
@@ -128,6 +129,46 @@ def test_format_cmd_windows(monkeypatch):
     monkeypatch.setattr(up.sys, "platform", "win32")
     out = up._format_cmd([r"C:\\Program Files\\Python\\python.exe", "-m", "pip"])
     assert "Program Files" in out and out.endswith("-m pip")
+
+
+def test_windows_pip_update_needs_handoff(monkeypatch):
+    monkeypatch.setattr(up.sys, "platform", "win32")
+    assert up._windows_pip_update_needs_handoff(
+        up.InstallMethod(kind="pip", can_self_update=True, argv=["python"])
+    )
+    assert up._windows_pip_update_needs_handoff(
+        up.InstallMethod(kind="pip-user", can_self_update=True, argv=["python"])
+    )
+    assert not up._windows_pip_update_needs_handoff(
+        up.InstallMethod(kind="pipx", can_self_update=True, argv=["pipx"])
+    )
+
+
+def test_windows_pip_update_handoff_false_off_windows(monkeypatch):
+    monkeypatch.setattr(up.sys, "platform", "linux")
+    assert not up._windows_pip_update_needs_handoff(
+        up.InstallMethod(kind="pip", can_self_update=True, argv=["python"])
+    )
+
+
+@pytest.mark.parametrize("operator", ["&", "|", ">"])
+def test_build_windows_handoff_argv_preserves_pip_argv(monkeypatch, operator):
+    monkeypatch.setattr(up.sys, "platform", "win32")
+    pip_argv = [
+        r"C:\\Program Files\\Python\\python.exe",
+        "-m",
+        "pip",
+        "install",
+        "-U",
+        f"headroom-ai[foo{operator}calc]",
+    ]
+
+    handoff_argv = up._build_windows_handoff_argv(pip_argv)
+
+    assert handoff_argv[:2] == [sys.executable, "-c"]
+    assert "subprocess.run" in handoff_argv[2]
+    assert "cmd.exe" not in handoff_argv
+    assert handoff_argv[3:] == pip_argv[1:]
 
 
 def test_externally_managed_true(tmp_path, monkeypatch):

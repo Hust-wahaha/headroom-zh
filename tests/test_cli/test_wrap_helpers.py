@@ -122,6 +122,16 @@ def test_claude_context_tool_is_opt_in_for_prepare_only(
     assert prepare_rtk.call_count == 1
 
 
+def test_wrap_claude_allows_claude_print_short_flag_in_passthrough_args() -> None:
+    """Claude owns -p/--print; wrap claude must not parse it as --port."""
+    result = CliRunner().invoke(
+        main,
+        ["wrap", "claude", "--prepare-only", "-p", "Say only: hello"],
+    )
+
+    assert result.exit_code == 0, result.output
+
+
 def test_claude_context_tool_opt_in_preserves_lean_ctx_selection(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

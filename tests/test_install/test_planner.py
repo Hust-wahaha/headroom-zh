@@ -187,3 +187,84 @@ def test_resolve_targets_provider_scope_manual_rejects_unsupported() -> None:
             ["cursor"],
             scope=ConfigScope.PROVIDER.value,
         )
+
+
+def _base_manifest_kwargs(**overrides):
+    kwargs = {
+        "profile": "default",
+        "preset": InstallPreset.PERSISTENT_SERVICE.value,
+        "runtime_kind": "python",
+        "scope": "user",
+        "provider_mode": "manual",
+        "targets": ["claude"],
+        "port": 8787,
+        "backend": "bedrock",
+        "anyllm_provider": None,
+        "region": "eu-west-1",
+        "proxy_mode": "token",
+        "memory_enabled": False,
+        "telemetry_enabled": False,
+        "image": "ghcr.io/chopratejas/headroom:latest",
+    }
+    kwargs.update(overrides)
+    return kwargs
+
+
+def test_build_manifest_omits_new_bedrock_flags_by_default() -> None:
+    manifest = build_manifest(**_base_manifest_kwargs())
+
+    assert "--code-aware" not in manifest.proxy_args
+    assert "--no-code-aware" not in manifest.proxy_args
+    assert "--intercept-tool-results" not in manifest.proxy_args
+    assert "--protect-tool-results" not in manifest.proxy_args
+    assert "--bedrock-profile" not in manifest.proxy_args
+
+
+def test_build_manifest_persists_code_aware_true() -> None:
+    manifest = build_manifest(**_base_manifest_kwargs(code_aware=True))
+
+    assert "--code-aware" in manifest.proxy_args
+    assert "--no-code-aware" not in manifest.proxy_args
+
+
+def test_build_manifest_persists_code_aware_false() -> None:
+    manifest = build_manifest(**_base_manifest_kwargs(code_aware=False))
+
+    assert "--no-code-aware" in manifest.proxy_args
+    assert "--code-aware" not in manifest.proxy_args
+
+
+def test_build_manifest_persists_intercept_tool_results() -> None:
+    manifest = build_manifest(**_base_manifest_kwargs(intercept_tool_results=True))
+
+    assert "--intercept-tool-results" in manifest.proxy_args
+
+
+def test_build_manifest_persists_protect_tool_results() -> None:
+    manifest = build_manifest(**_base_manifest_kwargs(protect_tool_results="Bash,WebFetch"))
+
+    idx = manifest.proxy_args.index("--protect-tool-results")
+    assert manifest.proxy_args[idx + 1] == "Bash,WebFetch"
+
+
+def test_build_manifest_persists_bedrock_profile() -> None:
+    manifest = build_manifest(**_base_manifest_kwargs(bedrock_profile="sso-bedrock"))
+
+    idx = manifest.proxy_args.index("--bedrock-profile")
+    assert manifest.proxy_args[idx + 1] == "sso-bedrock"
+
+
+def test_build_manifest_merges_extra_env_into_base_env() -> None:
+    manifest = build_manifest(
+        **_base_manifest_kwargs(extra_env={"HEADROOM_WORKSPACE_DIR": "/custom/workspace"})
+    )
+
+    assert manifest.base_env["HEADROOM_WORKSPACE_DIR"] == "/custom/workspace"
+
+
+def test_build_manifest_extra_env_overrides_derived_defaults() -> None:
+    manifest = build_manifest(**_base_manifest_kwargs(extra_env={"HEADROOM_TELEMETRY": "on"}))
+
+    # telemetry_enabled=False in _base_manifest_kwargs would normally set "off";
+    # an explicit --env must win.
+    assert manifest.base_env["HEADROOM_TELEMETRY"] == "on"

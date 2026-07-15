@@ -50,6 +50,8 @@ on:
       - "pyproject.toml"
       - "scripts/verify-versions.py"
       - "scripts/version-sync.py"
+      - "scripts/build_npm_release_assets.mjs"
+      - "scripts/verify_npm_release_assets.mjs"
       - "Cargo.toml"
       - "Cargo.lock"
   workflow_dispatch:
@@ -187,20 +189,7 @@ jobs:
 
       - name: Build npm release packages
         run: |
-          mkdir -p release-assets
-
-          cd sdk/typescript
-          npm install
-          npm run build
-          npm version ${{ needs.detect-version.outputs.npm_version }} --no-git-tag-version --allow-same-version
-          npm pack --pack-destination ../../release-assets
-
-          cd ../../plugins/openclaw
-          npm install ../../release-assets/headroom-ai-${{ needs.detect-version.outputs.npm_version }}.tgz
-          npm install
-          npm run build
-          npm version ${{ needs.detect-version.outputs.npm_version }} --no-git-tag-version --allow-same-version
-          npm pack --pack-destination ../../release-assets
+          node scripts/build_npm_release_assets.mjs "${{ needs.detect-version.outputs.npm_version }}" release-assets
 
       - name: Upload release assets artifact
         uses: actions/upload-artifact@v7
@@ -608,18 +597,30 @@ jobs:
                 fi
               elif command -v apt-get >/dev/null 2>&1; then
                 export DEBIAN_FRONTEND=noninteractive
-                apt-get update -qq
+                apt_retry() {
+                  apt_get_args="$*"
+                  for attempt in 1 2 3; do
+                    if apt-get "$@"; then
+                      return 0
+                    fi
+                    echo "apt-get ${apt_get_args} failed on attempt ${attempt}; refreshing package lists" >&2
+                    apt-get update -qq || true
+                    sleep $((attempt * 5))
+                  done
+                  apt-get "$@"
+                }
+                apt_retry update -qq
                 # ubuntu:20.04s default repo only ships 3.8; 3.10 lives
                 # in deadsnakes. Add it on demand. ubuntu:22.04 has
                 # 3.10/3.11 in main and 3.12 via deadsnakes.
-                apt-get install -y -qq --no-install-recommends ca-certificates software-properties-common >/dev/null
+                apt_retry install -y -qq --fix-missing --no-install-recommends ca-certificates software-properties-common >/dev/null
                 add-apt-repository -y ppa:deadsnakes/ppa >/dev/null 2>&1 || true
-                apt-get update -qq
-                apt-get install -y -qq --no-install-recommends \
+                apt_retry update -qq
+                apt_retry install -y -qq --fix-missing --no-install-recommends \
                   "python$PYTHON_VERSION" \
                   "python$PYTHON_VERSION-venv" \
                   "python$PYTHON_VERSION-distutils" >/dev/null 2>&1 \
-                || apt-get install -y -qq --no-install-recommends \
+                || apt_retry install -y -qq --fix-missing --no-install-recommends \
                   "python$PYTHON_VERSION" \
                   "python$PYTHON_VERSION-venv" >/dev/null
                 python_bin="python$PYTHON_VERSION"
@@ -821,10 +822,11 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
+          version="${{ needs.detect-version.outputs.npm_version }}"
           cd sdk/typescript
-          npm install
+          npm ci
           npm run build
-          npm version ${{ needs.detect-version.outputs.npm_version }} --no-git-tag-version --allow-same-version
+          npm version "$version" --no-git-tag-version --allow-same-version
           npm publish --access public
         continue-on-error: true
 
@@ -833,10 +835,19 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
+          version="${{ needs.detect-version.outputs.npm_version }}"
           cd plugins/openclaw
-          npm install
+          npm ci
           npm run build
-          npm version ${{ needs.detect-version.outputs.npm_version }} --no-git-tag-version --allow-same-version
+          npm version "$version" --no-git-tag-version --allow-same-version
+          HEADROOM_NPM_VERSION="$version" node <<'EOF'
+          const fs = require("fs");
+          const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
+          pkg.dependencies = pkg.dependencies || {};
+          pkg.dependencies["headroom-ai"] = `^${process.env.HEADROOM_NPM_VERSION}`;
+          fs.writeFileSync("package.json", `${JSON.stringify(pkg, null, 2)}\n`);
+          EOF
+          node prepare-dist.mjs
           npm publish --access public
         continue-on-error: true
 

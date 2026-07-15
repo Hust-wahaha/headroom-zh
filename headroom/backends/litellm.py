@@ -25,6 +25,28 @@ from .base import Backend, BackendResponse, StreamEvent
 
 logger = logging.getLogger(__name__)
 
+_OPENAI_STANDARD_PARAMS = (
+    "max_tokens",
+    "temperature",
+    "top_p",
+    "stop",
+    "tools",
+    "tool_choice",
+    "response_format",
+    "seed",
+    "n",
+)
+
+_OPENAI_CONSUMED_BODY_KEYS = frozenset(
+    {
+        "model",
+        "messages",
+        "stream",
+        "stream_options",
+        *_OPENAI_STANDARD_PARAMS,
+    }
+)
+
 # litellm calls `dotenv.load_dotenv()` during its own import, which loads
 # the project `.env` into `os.environ`. We don't want that side effect —
 # importing a backend module should not silently leak API keys into the
@@ -137,6 +159,17 @@ def _build_bedrock_fallback_map(region: str) -> dict[str, str]:
     ]
 
     return {name: f"bedrock/{prefix}.{model_id}" for name, model_id in _CLAUDE_MODELS}
+
+
+def _build_openai_extra_body(body: dict[str, Any]) -> dict[str, Any]:
+    """Return unconsumed top-level OpenAI request fields for vendor passthrough."""
+    return {
+        key: value
+        for key, value in body.items()
+        if key not in _OPENAI_CONSUMED_BODY_KEYS
+        and not key.startswith("x-headroom-")
+        and not key.startswith("x_headroom_")
+    }
 
 
 def _fetch_bedrock_inference_profiles(
@@ -1177,19 +1210,13 @@ class LiteLLMBackend(Backend):
             }
 
             # Pass through OpenAI parameters
-            for param in [
-                "max_tokens",
-                "temperature",
-                "top_p",
-                "stop",
-                "tools",
-                "tool_choice",
-                "response_format",
-                "seed",
-                "n",
-            ]:
+            for param in _OPENAI_STANDARD_PARAMS:
                 if param in body:
                     kwargs[param] = body[param]
+
+            extra_body = _build_openai_extra_body(body)
+            if extra_body:
+                kwargs["extra_body"] = extra_body
 
             # Provider-specific region config
             if self.region:
@@ -1352,22 +1379,16 @@ class LiteLLMBackend(Backend):
                 "stream": True,
             }
 
-            for param in [
-                "max_tokens",
-                "temperature",
-                "top_p",
-                "stop",
-                "tools",
-                "tool_choice",
-                "response_format",
-                "seed",
-                "n",
-            ]:
+            for param in _OPENAI_STANDARD_PARAMS:
                 if param in body:
                     kwargs[param] = body[param]
 
             if "stream_options" in body:
                 kwargs["stream_options"] = body["stream_options"]
+
+            extra_body = _build_openai_extra_body(body)
+            if extra_body:
+                kwargs["extra_body"] = extra_body
 
             # Provider-specific region config
             if self.region:

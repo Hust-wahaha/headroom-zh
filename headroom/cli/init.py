@@ -322,11 +322,18 @@ def _ensure_codex_provider(path: Path, port: int) -> None:
         f"{_CODEX_PROVIDER_MARKER_END}"
     )
     content = path.read_text(encoding="utf-8") if path.exists() else ""
-    # init owns model_provider/openai_base_url: drop any prior assignment (any
-    # value, including one an older version mis-scoped under a table) so we
-    # replace it instead of emitting a duplicate top-level key (#260).
-    content = re.sub(r"(?m)^[ \t]*model_provider[ \t]*=.*\r?\n", "", content)
-    content = re.sub(r"(?m)^[ \t]*openai_base_url[ \t]*=.*\r?\n", "", content)
+    # init owns the ROOT-level model_provider/openai_base_url: drop any prior
+    # root assignment so we replace it instead of emitting a duplicate top-level
+    # key (#260). Scope the strip to the document root (everything before the
+    # first table header) -- these keys also appear legitimately inside
+    # [profiles.*] tables as per-profile overrides, and stripping them there
+    # silently reroutes the user's profiles to the injected "headroom" default.
+    _first_table = re.search(r"(?m)^[ \t]*\[", content)
+    _split = _first_table.start() if _first_table else len(content)
+    root, rest = content[:_split], content[_split:]
+    root = re.sub(r"(?m)^[ \t]*model_provider[ \t]*=.*\r?\n", "", root)
+    root = re.sub(r"(?m)^[ \t]*openai_base_url[ \t]*=.*\r?\n", "", root)
+    content = root + rest
     # The provider block carries top-level keys (model_provider, openai_base_url),
     # so it must land at the document root rather than after a trailing table (#260).
     content = _replace_marker_block(
@@ -469,24 +476,43 @@ def _ensure_codex_feature_flag(path: Path) -> None:
 def _ensure_codex_hooks(path: Path, profile: str) -> None:
     logger.debug("ensure codex hooks: %s (profile=%s)", path, profile)
     command = f"{_hook_command('--profile', profile)} --marker {_CODEX_HOOK_MARKER}"
-    payload = {
-        "hooks": {
-            "SessionStart": [
-                {
-                    "matcher": "startup|resume",
-                    "hooks": [{"type": "command", "command": command, "timeout": 15}],
-                }
-            ],
-            "PreToolUse": [
-                {
-                    "matcher": "Bash",
-                    "hooks": [{"type": "command", "command": command, "timeout": 15}],
-                }
-            ],
-        }
-    }
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    # Read-merge-write rather than overwrite: the previous version wrote a fresh
+    # payload wholesale, destroying any user-managed hooks (and other top-level
+    # keys) in codex hooks.json. Merge per event and dedup on the Headroom
+    # marker, matching _ensure_claude_hooks / _ensure_copilot_hooks.
+    payload = _json_file(path)
+    hooks = dict(payload.get("hooks") or {}) if isinstance(payload.get("hooks"), dict) else {}
+    for event, matcher in (
+        ("SessionStart", "startup|resume"),
+        ("PreToolUse", "Bash"),
+    ):
+        entries = list(hooks.get(event) or []) if isinstance(hooks.get(event), list) else []
+        retained: list[dict[str, Any]] = []
+        for entry in entries:
+            if not isinstance(entry, dict):
+                retained.append(entry)
+                continue
+            hook_items = entry.get("hooks")
+            if not isinstance(hook_items, list):
+                retained.append(entry)
+                continue
+            has_headroom = any(
+                isinstance(item, dict)
+                and item.get("command")
+                and _CODEX_HOOK_MARKER in str(item.get("command"))
+                for item in hook_items
+            )
+            if not has_headroom:
+                retained.append(entry)
+        retained.append(
+            {
+                "matcher": matcher,
+                "hooks": [{"type": "command", "command": command, "timeout": 15}],
+            }
+        )
+        hooks[event] = retained
+    payload["hooks"] = hooks
+    _write_json(path, payload)
 
 
 def _manifest_changed(

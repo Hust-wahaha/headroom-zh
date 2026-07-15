@@ -471,3 +471,41 @@ def test_register_robust_to_non_dict_mcp_servers(tmp_path: Path, mcp_servers: st
     assert result.status == RegisterStatus.REGISTERED
     data = json.loads(cfg.read_text())
     assert data["mcpServers"]["headroom"]["command"] == _RESOLVED_COMMAND[0]
+
+
+@pytest.mark.parametrize("contents", ["not json", "{", '{"projects": }', "[]"])
+def test_register_via_file_preserves_malformed_config(tmp_path: Path, contents: str) -> None:
+    """Registering must NOT clobber an existing but unparseable config.
+
+    ~/.claude.json holds unrelated Claude state (projects, oauthAccount,
+    session history). Before the fix a malformed file was read as {} and then
+    overwritten with only {"mcpServers": ...}, destroying everything else."""
+    cfg = tmp_path / ".claude.json"
+    cfg.write_text(contents, encoding="utf-8")
+    reg = _make_registrar(tmp_path, cli=None)
+
+    result = reg.register_server(_spec())
+
+    assert result.status == RegisterStatus.FAILED
+    assert "not valid JSON" in result.detail
+    # The original bytes are untouched — nothing was overwritten.
+    assert cfg.read_text(encoding="utf-8") == contents
+
+
+def test_register_via_file_merges_into_existing_valid_config(tmp_path: Path) -> None:
+    """The happy path still merges: unrelated keys are preserved and mcpServers
+    gains the headroom entry."""
+    cfg = tmp_path / ".claude.json"
+    cfg.write_text(
+        json.dumps({"projects": {"/x": {"y": 1}}, "oauthAccount": {"id": "abc"}}),
+        encoding="utf-8",
+    )
+    reg = _make_registrar(tmp_path, cli=None)
+
+    result = reg.register_server(_spec())
+
+    assert result.status == RegisterStatus.REGISTERED
+    data = json.loads(cfg.read_text(encoding="utf-8"))
+    assert data["projects"] == {"/x": {"y": 1}}
+    assert data["oauthAccount"] == {"id": "abc"}
+    assert "headroom" in data["mcpServers"]

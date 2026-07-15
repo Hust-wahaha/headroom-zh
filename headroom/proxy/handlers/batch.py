@@ -242,7 +242,24 @@ class BatchHandlerMixin:
                 if optimized_sys_inst:
                     compressed_req_content["systemInstruction"] = optimized_sys_inst
                 if existing_funcs is not None:
-                    compressed_req_content["tools"] = [{"functionDeclarations": existing_funcs}]
+                    # Preserve sibling tool configs (googleSearch, codeExecution,
+                    # ...) that live alongside functionDeclarations in the tools
+                    # array. Replace only the functionDeclarations entry with the
+                    # (possibly CCR-injected) funcs and append a new entry when the
+                    # original had none, instead of collapsing the whole array to a
+                    # single functionDeclarations entry (which dropped the siblings
+                    # and silently disabled Google Search / code execution).
+                    rebuilt_tools = []
+                    replaced = False
+                    for tool in tools or []:
+                        if "functionDeclarations" in tool:
+                            rebuilt_tools.append({**tool, "functionDeclarations": existing_funcs})
+                            replaced = True
+                        else:
+                            rebuilt_tools.append(tool)
+                    if not replaced:
+                        rebuilt_tools.append({"functionDeclarations": existing_funcs})
+                    compressed_req_content["tools"] = rebuilt_tools
 
                 compressed_req = {
                     "request": compressed_req_content,

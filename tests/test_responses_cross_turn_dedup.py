@@ -97,6 +97,32 @@ def test_single_read_does_not_fold():
     assert items[1]["output"] == _wrap("492f0f", "0.0000") + BODY
 
 
+def test_protected_websearch_outputs_do_not_fold():
+    items = [
+        {
+            "type": "function_call_output",
+            "call_id": "c1",
+            "output": '{\n  "results": [\n    {"title": "Headroom"}\n  ]\n}',
+        },
+        {
+            "type": "function_call_output",
+            "call_id": "c2",
+            "output": '{\n  "results": [\n    {"title": "Headroom"}\n  ]\n}',
+        },
+    ]
+    folded, saved = _dedup_responses_output_items(
+        items,
+        _RESPONSES_OUTPUT_ITEM_TYPES,
+        count_tokens=len,
+        protected_call_ids={"c1", "c2"},
+    )
+
+    assert folded == 0
+    assert saved == 0
+    assert items[0]["output"].endswith('{"title": "Headroom"}\n  ]\n}')
+    assert items[1]["output"].endswith('{"title": "Headroom"}\n  ]\n}')
+
+
 def test_non_output_items_untouched():
     # A duplicated MESSAGE (not a tool output) must never fold — only output
     # items are eligible.

@@ -1046,6 +1046,24 @@ class HeadroomMCPServer:
                 self.server.create_initialization_options(),
             )
 
+    async def run_streamable_http(
+        self,
+        host: str,
+        port: int,
+        path: str,
+        debug: bool = False,
+    ) -> None:
+        """Run the server with Streamable HTTP transport."""
+        from .mcp_http import serve_streamable_http
+
+        await serve_streamable_http(
+            self,
+            host=host,
+            port=port,
+            path=path,
+            debug=debug,
+        )
+
     async def cleanup(self) -> None:
         """Clean up resources."""
         if self._http_client:

@@ -478,6 +478,11 @@ class TestHelpTextCompleteness:
     def test_help_contains_mode_option(self, runner: CliRunner) -> None:
         assert "--mode" in self._help(runner)
 
+    def test_help_reports_cache_as_default_mode(self, runner: CliRunner) -> None:
+        out = self._help(runner)
+        assert "Optimization mode (default: cache)" in out
+        assert "Optimization mode (default: token)" not in out
+
     def test_help_contains_workers_option(self, runner: CliRunner) -> None:
         assert "--workers" in self._help(runner)
 
