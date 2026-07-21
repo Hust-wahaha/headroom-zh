@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 
 import pytest
@@ -408,3 +409,86 @@ def test_handle_stats_shows_zero_lifetime_totals_when_present() -> None:
     assert "Lifetime Savings:" in text
     assert "Tokens saved: 0" in text
     assert "Compression savings: $0.00" in text
+
+
+# --- Parent-death watchdog: reap orphaned `mcp serve` on client death --------
+# When the launching MCP client is SIGKILLed, stdin EOF may never arrive and the
+# SDK's blocking stdin reader wedges server.run() forever, orphaning this process
+# under init/launchd. run_stdio() runs a watchdog that detects the reparent and
+# forces shutdown. Refs headroomlabs-ai/headroom#2185 (secondary), #1761.
+
+
+def test_parent_death_watchdog_fires_when_reparented(monkeypatch) -> None:
+    """When ppid changes (client died), the watchdog resolves promptly."""
+    server = mcp_server.HeadroomMCPServer(check_proxy=False)
+    calls = {"n": 0}
+
+    def fake_getppid() -> int:
+        calls["n"] += 1
+        return 500 if calls["n"] == 1 else 1  # captured live, then reparented
+
+    monkeypatch.setattr(mcp_server.os, "getppid", fake_getppid)
+
+    async def run() -> None:
+        await asyncio.wait_for(server._await_parent_death(0.001), timeout=1.0)
+
+    asyncio.run(run())  # returns => detected reparent; TimeoutError would fail
+
+
+def test_parent_death_watchdog_stays_quiet_with_live_parent(monkeypatch) -> None:
+    """A stable ppid must never trip the watchdog."""
+    server = mcp_server.HeadroomMCPServer(check_proxy=False)
+    monkeypatch.setattr(mcp_server.os, "getppid", lambda: 500)
+
+    async def run() -> None:
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(server._await_parent_death(0.001), timeout=0.05)
+
+    asyncio.run(run())
+
+
+def test_run_stdio_reaps_process_on_parent_death(monkeypatch) -> None:
+    """On reparent, run_stdio cleans up and calls os._exit(0) even though the
+    (stubbed) server.run never returns — the orphan-reaper path."""
+    server = mcp_server.HeadroomMCPServer(check_proxy=False)
+
+    @contextlib.asynccontextmanager
+    async def fake_stdio_server():
+        yield (object(), object())
+
+    monkeypatch.setattr(mcp_server, "stdio_server", fake_stdio_server)
+
+    async def never_returns(*_args, **_kwargs) -> None:
+        await asyncio.sleep(3600)  # emulate the wedged SDK reader
+
+    # DummyServer (MCP SDK stub) has no `.run`; raising=False lets us add it.
+    monkeypatch.setattr(server.server, "run", never_returns, raising=False)
+
+    calls = {"n": 0}
+
+    def fake_getppid() -> int:
+        calls["n"] += 1
+        return 500 if calls["n"] == 1 else 1
+
+    monkeypatch.setattr(mcp_server.os, "getppid", fake_getppid)
+
+    cleaned = {"done": False}
+
+    async def fake_cleanup() -> None:
+        cleaned["done"] = True
+
+    monkeypatch.setattr(server, "cleanup", fake_cleanup)
+
+    class _Exited(Exception):
+        pass
+
+    def fake_exit(code: int) -> None:
+        raise _Exited(code)  # intercept so pytest survives
+
+    monkeypatch.setattr(mcp_server.os, "_exit", fake_exit)
+
+    with pytest.raises(_Exited) as excinfo:
+        asyncio.run(server.run_stdio(parent_death_poll_interval=0.001))
+
+    assert excinfo.value.args[0] == 0
+    assert cleaned["done"] is True

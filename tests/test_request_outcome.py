@@ -11,6 +11,8 @@ silently regress the wire shape.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import logging
 from dataclasses import FrozenInstanceError
 from typing import Any
@@ -324,6 +326,59 @@ async def test_funnel_skips_request_log_when_logger_absent() -> None:
     h = _FunnelHarness(with_logger=False)
     await h._record_request_outcome(_outcome())
     h.metrics.record_request.assert_awaited_once()  # still happens
+
+
+@pytest.mark.asyncio
+async def test_funnel_tail_survives_cancellation_inside_record_request() -> None:
+    """A client disconnect must not tear per-request bookkeeping in half.
+
+    Four call sites are ``finally:`` blocks inside streaming async generators
+    (``streaming.py:1611``, ``:1859``, ``:2069``, ``openai.py:8614``), and
+    ``record_request`` suspends partway through — it awaits the savings-ledger
+    append in a worker thread after the Prometheus counters have already been
+    committed. A cancellation landing on that await used to skip every effect
+    below it, leaving the request counted in Prometheus but absent from the cost
+    tracker, the request log, and the PERF line ``headroom perf`` reads.
+
+    Without the ``asyncio.shield`` in ``_record_request_outcome`` the release
+    below never resumes the funnel and this test times out on ``logged``.
+    """
+    h = _FunnelHarness()
+
+    logged = asyncio.Event()
+    collect = h.logger.log
+
+    def log_and_signal(entry: Any) -> None:
+        collect(entry)
+        logged.set()
+
+    h.logger.log = log_and_signal  # type: ignore[method-assign]
+
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def suspending_record_request(**kwargs: Any) -> None:
+        # Stands in for the `await asyncio.to_thread(...)` ledger append: the
+        # counters are in, and the funnel is now parked on an await.
+        entered.set()
+        await release.wait()
+
+    h.metrics.record_request = suspending_record_request
+
+    task = asyncio.create_task(h._record_request_outcome(_outcome()))
+    await asyncio.wait_for(entered.wait(), timeout=5)
+
+    task.cancel()
+    # The shield deliberately does not swallow the cancellation — the caller
+    # still sees CancelledError, so generator teardown propagates unchanged.
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+    release.set()
+    await asyncio.wait_for(logged.wait(), timeout=5)
+
+    assert h.cost_tracker.record_tokens.called, "cost tracker was skipped by the cancellation"
+    assert len(h.logger.logs) == 1, "request log was skipped by the cancellation"
 
 
 @pytest.mark.asyncio

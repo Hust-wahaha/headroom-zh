@@ -488,20 +488,26 @@ class LocalBackend:
                 new_memory_ids = related_memory_ids - seen_memory_ids
                 for mem_id in new_memory_ids:
                     memory = await self._hierarchical_memory.get(mem_id)
-                    if memory and memory.user_id == user_id:
-                        # Filter by session_id if specified (security: prevent session leakage)
-                        if session_id is not None and memory.session_id != session_id:
-                            continue
-                        # Add with lower score since it's from graph expansion
-                        results.append(
-                            MemorySearchResult(
-                                memory=memory,
-                                score=0.5,  # Default score for graph-expanded results
-                                related_entities=list(memory.entity_refs),
-                                related_memories=[],
-                            )
+                    if (
+                        memory is None
+                        or memory.user_id != user_id
+                        or memory.valid_until is not None
+                        or memory.superseded_by is not None
+                    ):
+                        continue
+                    # Filter by session_id if specified (security: prevent session leakage)
+                    if session_id is not None and memory.session_id != session_id:
+                        continue
+                    # Add with lower score since it's from graph expansion
+                    results.append(
+                        MemorySearchResult(
+                            memory=memory,
+                            score=0.5,  # Default score for graph-expanded results
+                            related_entities=list(memory.entity_refs),
+                            related_memories=[],
                         )
-                        seen_memory_ids.add(mem_id)
+                    )
+                    seen_memory_ids.add(mem_id)
 
         # Filter by specified entities if provided
         if entities:
@@ -560,6 +566,19 @@ class LocalBackend:
         )
 
         return new_memory
+
+    async def detach_supersession(
+        self,
+        old_memory_id: str,
+        new_memory_id: str,
+    ) -> tuple[Memory, Memory]:
+        """Detach one explicit supersession edge and refresh indexes."""
+        await self._ensure_initialized()
+        assert self._hierarchical_memory is not None
+        return await self._hierarchical_memory.detach_supersession(
+            old_memory_id,
+            new_memory_id,
+        )
 
     async def delete_memory(
         self,

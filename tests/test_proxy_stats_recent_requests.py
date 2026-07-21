@@ -81,7 +81,7 @@ def test_stats_refreshes_recent_requests_when_cached() -> None:
         assert second_response.status_code == 200
         second_payload = second_response.json()
 
-    assert second_payload["recent_requests"][-1]["model"] == "claude-sonnet"
+    assert second_payload["recent_requests"][0]["model"] == "claude-sonnet"
     assert second_payload["request_logs"][-1]["model"] == "claude-sonnet"
 
 
@@ -148,18 +148,18 @@ def test_stats_recent_requests_includes_token_incomplete_requests() -> None:
     assert response.status_code == 200
     payload = response.json()
     assert [req["model"] for req in payload["recent_requests"]] == [
-        "claude-haiku",
-        "claude-haiku",
         "claude-sonnet",
+        "claude-haiku",
+        "claude-haiku",
     ]
-    assert payload["recent_requests"][0]["input_tokens_optimized"] is None
-    assert payload["recent_requests"][0]["token_accounting_status"] == "missing"
-    assert payload["recent_requests"][0]["has_exact_tokens"] is False
+    assert payload["recent_requests"][0]["token_accounting_status"] == "complete"
+    assert payload["recent_requests"][0]["has_exact_tokens"] is True
     assert payload["recent_requests"][1]["output_tokens"] is None
     assert payload["recent_requests"][1]["token_accounting_status"] == "partial"
     assert payload["recent_requests"][1]["tokens_saved"] == 0
-    assert payload["recent_requests"][2]["token_accounting_status"] == "complete"
-    assert payload["recent_requests"][2]["has_exact_tokens"] is True
+    assert payload["recent_requests"][2]["input_tokens_optimized"] is None
+    assert payload["recent_requests"][2]["token_accounting_status"] == "missing"
+    assert payload["recent_requests"][2]["has_exact_tokens"] is False
     assert payload["summary"]["uncompressed_requests"]["unknown_token_accounting"] == 2
     assert payload["request_logs"][-1]["model"] == "claude-sonnet"
 

@@ -490,7 +490,7 @@ def test_existing_retrieve_tool_keeps_reversible_ccr_path_when_prefix_is_frozen(
         assert [tool["name"] for tool in forwarded["tools"]] == ["headroom_retrieve"]
 
 
-def test_cache_mode_skip_replays_cached_compressed_prefix_when_tool_injection_is_deferred(
+def test_cache_mode_compresses_delta_but_replays_cached_prefix_when_markers_are_historical(
     monkeypatch,
 ) -> None:
     captured: dict[str, object] = {}
@@ -574,13 +574,14 @@ def test_cache_mode_skip_replays_cached_compressed_prefix_when_tool_injection_is
         )
 
         assert response.status_code == 200
-        assert captured.get("compression_calls", []) == []
+        assert len(captured.get("compression_calls", [])) == 1
         forwarded = captured["body"]
         # Tool injection is deferred (no CCR tool this turn), but the frozen
         # prefix was cached COMPRESSED last turn. Replay it byte-identical so the
         # prompt cache still hits instead of busting on original bytes (#1850);
-        # the mutable tail stays original. Tool absent AND cache intact.
-        assert forwarded["messages"] == previous_forwarded_messages + original_messages[1:]
+        # the historical marker does not force tool injection back on. Tool absent
+        # AND cache intact.
+        assert forwarded["messages"] == previous_forwarded_messages
         assert "tools" not in forwarded
 
 
@@ -755,7 +756,7 @@ def test_token_mode_cached_messages_skip_cache_update_when_pipeline_result_is_un
         assert forwarded["messages"] == marker_messages
 
 
-def test_non_token_non_cache_mode_still_skips_marker_emission_when_tool_is_unavailable(
+def test_non_token_non_cache_mode_keeps_compression_and_injects_tool_for_new_markers(
     monkeypatch,
 ) -> None:
     captured: dict[str, object] = {}
@@ -828,11 +829,16 @@ def test_non_token_non_cache_mode_still_skips_marker_emission_when_tool_is_unava
             },
         )
 
+        marker_message = {
+            "role": "user",
+            "content": "[100 items compressed to 10. Retrieve more: hash=abc123def456abc123def456]",
+        }
+
         assert response.status_code == 200
-        assert captured.get("compression_calls", []) == []
+        assert len(captured.get("compression_calls", [])) == 1
         forwarded = captured["body"]
-        assert forwarded["messages"] == original_messages
-        assert "tools" not in forwarded
+        assert forwarded["messages"] == [marker_message]
+        assert [tool["name"] for tool in forwarded["tools"]] == ["headroom_retrieve"]
 
 
 def test_non_token_non_cache_mode_keeps_reversible_path_and_records_waste_signals(

@@ -66,6 +66,44 @@ def get_store(db_path: str) -> SQLiteMemoryStore:
     return SQLiteMemoryStore(db_path)
 
 
+def _resolve_memory(store: SQLiteMemoryStore, memory_id: str) -> Memory:
+    """Resolve an exact or unambiguous partial memory ID."""
+    memory = asyncio.run(store.get(memory_id))
+    if memory is not None:
+        return memory
+
+    memories = asyncio.run(store.query(MemoryFilter(limit=10000, include_superseded=True)))
+    matches = [candidate for candidate in memories if candidate.id.startswith(memory_id)]
+    if not matches:
+        raise ValueError(f"Memory not found: {memory_id}")
+    if len(matches) > 1:
+        raise ValueError(
+            f"Ambiguous ID '{memory_id}'. Matches: {[memory.id[:8] for memory in matches]}"
+        )
+    return matches[0]
+
+
+async def _apply_supersession_repair(
+    db_path: str,
+    old_memory_id: str,
+    new_memory_id: str,
+    vector_dimension: int,
+) -> tuple[Memory, Memory]:
+    """Apply a repair through LocalBackend so indexes and cache are refreshed."""
+    from ..memory.backends.local import LocalBackend, LocalBackendConfig
+
+    backend = LocalBackend(
+        LocalBackendConfig(
+            db_path=db_path,
+            vector_dimension=vector_dimension,
+        )
+    )
+    try:
+        return await backend.detach_supersession(old_memory_id, new_memory_id)
+    finally:
+        await backend.close()
+
+
 def get_scope_label(memory: Memory) -> str:
     """Get a human-readable scope label for a memory."""
     if memory.turn_id is not None:
@@ -255,6 +293,7 @@ def memory(ctx: click.Context) -> None:
         headroom memory stats                    Show memory statistics
         headroom memory edit <id> --content ...  Edit a memory's content
         headroom memory delete <id>              Delete a memory
+        headroom memory repair-supersession <old-id> <new-id>  Repair one lineage edge
         headroom memory prune --older-than 30d   Delete memories older than 30 days
         headroom memory purge --confirm          Delete ALL memories
         headroom memory export --output file.json  Export all memories to JSON
@@ -592,6 +631,81 @@ def edit_memory(
 
     except Exception as e:
         print_error(f"Failed to edit memory: {e}")
+        sys.exit(1)
+
+
+@memory.command("repair-supersession")
+@db_path_option
+@click.argument("old_memory_id", type=str)
+@click.argument("new_memory_id", type=str)
+@click.option(
+    "--apply",
+    "apply_change",
+    is_flag=True,
+    help="Apply the repair. Stop any proxy using this database first.",
+)
+@click.pass_context
+def repair_supersession(
+    ctx: click.Context,
+    db_path: str,
+    old_memory_id: str,
+    new_memory_id: str,
+    apply_change: bool,
+) -> None:
+    """Detach one incorrect OLD_ID -> NEW_ID supersession edge.
+
+    The command validates both reciprocal lineage pointers and changes no
+    neighboring edges. It is a dry run unless ``--apply`` is provided.
+
+    \b
+    Examples:
+        headroom memory repair-supersession OLD_ID NEW_ID
+        headroom memory repair-supersession OLD_ID NEW_ID --apply
+    """
+    _ = ctx
+    store = get_store(db_path)
+
+    try:
+        old_memory = _resolve_memory(store, old_memory_id)
+        new_memory = _resolve_memory(store, new_memory_id)
+
+        if old_memory.superseded_by != new_memory.id or new_memory.supersedes != old_memory.id:
+            raise ValueError(
+                f"Memories {old_memory.id} and {new_memory.id} do not form "
+                "a reciprocal supersession edge"
+            )
+
+        click.echo("\nSupersession repair preview:")
+        click.echo(
+            f"  Restore old memory: {old_memory.id} "
+            f"({truncate(old_memory.content.replace(chr(10), ' '), 60)})"
+        )
+        click.echo(
+            f"  Detach new memory: {new_memory.id} "
+            f"({truncate(new_memory.content.replace(chr(10), ' '), 60)})"
+        )
+        click.echo("  Clear: old.valid_until, old.superseded_by, new.supersedes")
+
+        if not apply_change:
+            print_warning("DRY RUN: No changes made. Re-run with --apply to repair this edge.")
+            return
+
+        embedding = (
+            old_memory.embedding if old_memory.embedding is not None else new_memory.embedding
+        )
+        vector_dimension = len(embedding) if embedding is not None else 384
+        asyncio.run(
+            _apply_supersession_repair(
+                db_path,
+                old_memory.id,
+                new_memory.id,
+                vector_dimension,
+            )
+        )
+        print_success(f"Detached supersession edge {old_memory.id[:8]} -> {new_memory.id[:8]}.")
+
+    except Exception as e:
+        print_error(f"Failed to repair supersession: {e}")
         sys.exit(1)
 
 

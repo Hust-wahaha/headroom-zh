@@ -16,6 +16,9 @@ from .main import main
 # Default paths
 CLAUDE_CONFIG_DIR = Path.home() / ".claude"
 MCP_CONFIG_PATH = CLAUDE_CONFIG_DIR / "mcp.json"
+# Servers registered via `claude mcp add` (user scope) live in ~/.claude.json,
+# NOT in ~/.claude/mcp.json. Status must check both to avoid a false negative.
+CLAUDE_JSON_PATH = Path.home() / ".claude.json"
 DEFAULT_PROXY_URL = "http://127.0.0.1:8787"
 DEFAULT_HTTP_HOST = "127.0.0.1"
 DEFAULT_HTTP_PORT = 8788
@@ -48,6 +51,30 @@ def save_mcp_config(config: dict) -> None:
     with open(MCP_CONFIG_PATH, "w", encoding="utf-8") as f:
         json.dump(config, f, indent=2)
         f.write("\n")  # Trailing newline
+
+
+def find_headroom_registration() -> tuple[Path, dict[str, Any]] | None:
+    """Locate an existing 'headroom' MCP server registration.
+
+    Claude Code stores servers registered with `claude mcp add` (user scope) in
+    ~/.claude.json under "mcpServers". Headroom's own `mcp install` fallback
+    writes ~/.claude/mcp.json, and a project may define ./.mcp.json. Check all of
+    them so `status` reflects reality instead of only looking at mcp.json.
+
+    Returns (config_path, server_config) for the first match, else None.
+    """
+    for path in (CLAUDE_JSON_PATH, MCP_CONFIG_PATH, Path.cwd() / ".mcp.json"):
+        if not path.exists():
+            continue
+        try:
+            with open(path) as f:
+                data = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            continue
+        servers = data.get("mcpServers", {})
+        if isinstance(servers, dict) and "headroom" in servers:
+            return path, servers["headroom"]
+    return None
 
 
 @main.group()

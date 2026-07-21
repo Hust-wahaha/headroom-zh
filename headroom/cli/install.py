@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
+import sys
+from collections.abc import Mapping
 from copy import deepcopy
+from dataclasses import dataclass
 
 import click
 
+from headroom._subprocess import run
 from headroom.install.health import probe_json, probe_ready
 from headroom.install.models import (
     ConfigScope,
@@ -42,6 +47,17 @@ from headroom.install.supervisors import (
 )
 
 from .main import main
+
+
+@dataclass(frozen=True)
+class TurnkeyPlan:
+    """Resolved runtime strategy for one-line deployments."""
+
+    preset: str
+    runtime: str
+    supervisor_kind: str | None
+    reason: str
+    base_env: dict[str, str] | None = None
 
 
 @main.group()
@@ -155,6 +171,226 @@ def _reject_task_lifecycle(manifest: DeploymentManifest, action: str) -> None:
         )
 
 
+def _command_available(command: str) -> bool:
+    return shutil.which(command) is not None
+
+
+def _probe_command(command: list[str]) -> subprocess.CompletedProcess[str] | None:
+    try:
+        return run(
+            command,
+            capture_output=True,
+            check=False,
+            text=True,
+            timeout=3,
+        )
+    except (OSError, subprocess.SubprocessError, subprocess.TimeoutExpired):
+        return None
+
+
+def _detect_nvidia_gpu_names() -> list[str]:
+    if not _command_available("nvidia-smi"):
+        return []
+    result = _probe_command(["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"])
+    if result is None or result.returncode != 0:
+        return []
+    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+
+def _docker_supports_nvidia_gpus() -> bool:
+    if not _command_available("docker"):
+        return False
+    result = _probe_command(["docker", "info", "--format", "{{json .Runtimes}}"])
+    if result is None or result.returncode != 0:
+        return False
+    return "nvidia" in result.stdout.lower()
+
+
+def _select_turnkey_plan(*, prefer_docker: bool = True) -> TurnkeyPlan:
+    """Choose the most portable available deployment strategy for this host."""
+
+    gpu_names = _detect_nvidia_gpu_names()
+    if prefer_docker and gpu_names and _docker_supports_nvidia_gpus():
+        gpu_summary = ", ".join(gpu_names[:2])
+        if len(gpu_names) > 2:
+            gpu_summary += f", +{len(gpu_names) - 2} more"
+        return TurnkeyPlan(
+            preset=InstallPreset.PERSISTENT_DOCKER.value,
+            runtime=RuntimeKind.DOCKER.value,
+            supervisor_kind=SupervisorKind.NONE.value,
+            reason=f"NVIDIA GPU available ({gpu_summary}); using Docker GPU passthrough.",
+            base_env={"HEADROOM_DOCKER_GPUS": "all"},
+        )
+
+    if prefer_docker and _command_available("docker"):
+        return TurnkeyPlan(
+            preset=InstallPreset.PERSISTENT_DOCKER.value,
+            runtime=RuntimeKind.DOCKER.value,
+            supervisor_kind=SupervisorKind.NONE.value,
+            reason="Docker is available, so Headroom can run in a restartable container.",
+        )
+
+    if sys.platform == "darwin" and _command_available("launchctl"):
+        return TurnkeyPlan(
+            preset=InstallPreset.PERSISTENT_TASK.value,
+            runtime=RuntimeKind.PYTHON.value,
+            supervisor_kind=SupervisorKind.TASK.value,
+            reason="launchd is available for scheduled health recovery.",
+        )
+
+    if sys.platform.startswith("win") and _command_available("schtasks"):
+        return TurnkeyPlan(
+            preset=InstallPreset.PERSISTENT_TASK.value,
+            runtime=RuntimeKind.PYTHON.value,
+            supervisor_kind=SupervisorKind.TASK.value,
+            reason="Windows Task Scheduler is available for scheduled health recovery.",
+        )
+
+    if sys.platform.startswith("linux") and _command_available("crontab"):
+        return TurnkeyPlan(
+            preset=InstallPreset.PERSISTENT_TASK.value,
+            runtime=RuntimeKind.PYTHON.value,
+            supervisor_kind=SupervisorKind.TASK.value,
+            reason="cron is available for scheduled health recovery.",
+        )
+
+    return TurnkeyPlan(
+        preset=InstallPreset.PERSISTENT_TASK.value,
+        runtime=RuntimeKind.PYTHON.value,
+        supervisor_kind=SupervisorKind.NONE.value,
+        reason="No supported supervisor was detected; Headroom will start a managed detached runtime.",
+    )
+
+
+def _build_deployment_manifest(
+    *,
+    preset: str,
+    runtime: str,
+    scope: str,
+    provider_mode: str,
+    targets: tuple[str, ...],
+    profile: str,
+    port: int,
+    backend: str,
+    anyllm_provider: str | None,
+    region: str | None,
+    proxy_mode: str,
+    memory: bool,
+    telemetry: bool,
+    no_telemetry: bool,
+    image: str,
+    no_http2: bool,
+    code_aware: bool | None = None,
+    intercept_tool_results: bool = False,
+    protect_tool_results: str | None = None,
+    bedrock_profile: str | None = None,
+    extra_env: dict[str, str] | None = None,
+    supervisor_kind: str | None = None,
+    extra_base_env: dict[str, str] | None = None,
+) -> DeploymentManifest:
+    manifest = build_manifest(
+        profile=profile,
+        preset=preset,
+        runtime_kind=runtime,
+        scope=scope,
+        provider_mode=provider_mode,
+        targets=list(targets),
+        port=port,
+        backend=backend,
+        anyllm_provider=anyllm_provider,
+        region=region,
+        proxy_mode=proxy_mode,
+        memory_enabled=memory,
+        telemetry_enabled=telemetry and not no_telemetry,
+        image=image,
+        no_http2=no_http2,
+        code_aware=code_aware,
+        intercept_tool_results=intercept_tool_results,
+        protect_tool_results=protect_tool_results,
+        bedrock_profile=bedrock_profile,
+        extra_env=extra_env or {},
+    )
+    if supervisor_kind is not None:
+        manifest.supervisor_kind = supervisor_kind
+    if extra_base_env:
+        manifest.base_env.update(extra_base_env)
+    return manifest
+
+
+# Upstream-routing overrides the interactive `headroom proxy` reads from the
+# environment (via resolve_api_overrides), but a supervised runner starts from a
+# bare environment, so these never reach the persistent proxy unless captured
+# into the manifest. Without this, `install apply` with e.g.
+# ANTHROPIC_TARGET_API_URL exported silently routes to the default provider
+# endpoint instead of the user's gateway (#2240). Only URL overrides are
+# captured; the *_TARGET_API_HEADERS vars can carry bearer tokens and are left
+# to explicit `--env` so a secret is never persisted to the manifest implicitly.
+_PASSTHROUGH_URL_ENV_VARS = (
+    "ANTHROPIC_TARGET_API_URL",
+    "ANTHROPIC_FOUNDRY_BASE_URL",
+    "OPENAI_TARGET_API_URL",
+    "GEMINI_TARGET_API_URL",
+    "CLOUDCODE_TARGET_API_URL",
+    "VERTEX_TARGET_API_URL",
+    "BEDROCK_TARGET_API_URL",
+)
+
+
+def _capture_passthrough_env(environ: Mapping[str, str]) -> dict[str, str]:
+    """Return the upstream-routing overrides present in ``environ``.
+
+    An empty or unset value is skipped so it cannot shadow an auto-derived
+    default. Explicit ``--env`` values are meant to win over these, so callers
+    should merge the returned dict *under* the parsed ``--env`` map.
+    """
+    captured: dict[str, str] = {}
+    for name in _PASSTHROUGH_URL_ENV_VARS:
+        value = environ.get(name)
+        if value:
+            captured[name] = value
+    return captured
+
+
+def _apply_manifest(manifest: DeploymentManifest) -> None:
+    try:
+        existing = load_manifest(manifest.profile)
+    except ManifestError as e:
+        # A corrupt existing manifest shouldn't block a fresh apply; overwrite it.
+        click.echo(f"Warning: {e}; overwriting.")
+        existing = None
+    if existing is not None:
+        click.echo(f"Updating existing deployment profile '{manifest.profile}'...")
+        _remove_deployment(existing)
+
+    try:
+        manifest.artifacts = install_supervisor(manifest)
+        save_manifest(manifest)
+        _start_deployment(manifest)
+        _activate_deployment_mutations(manifest)
+    except Exception as exc:
+        _remove_deployment(manifest)
+        if existing is not None:
+            click.echo(f"Restoring previous deployment '{manifest.profile}'...")
+            _restore_deployment(existing)
+        # Surface non-Click errors (OSError, CalledProcessError, ...) as a clean
+        # message rather than a raw traceback; Click errors pass through as-is.
+        if isinstance(exc, click.ClickException | click.Abort):
+            raise
+        raise click.ClickException(
+            f"Failed to install deployment '{manifest.profile}': {exc}"
+        ) from exc
+
+
+def _echo_installed(manifest: DeploymentManifest, *, prefix: str = "Installed persistent") -> None:
+    click.echo(
+        f"{prefix} deployment '{manifest.profile}' "
+        f"({manifest.preset}, runtime={manifest.runtime_kind}, scope={manifest.scope})."
+    )
+    click.echo(f"Health: {manifest.health_url}")
+    if manifest.targets:
+        click.echo(f"Targets: {', '.join(manifest.targets)}")
+
+
 @install.command("apply")
 @click.option(
     "--preset",
@@ -189,7 +425,9 @@ def _reject_task_lifecycle(manifest: DeploymentManifest, action: str) -> None:
     "--target",
     "targets",
     multiple=True,
-    type=click.Choice(["claude", "copilot", "codex", "aider", "cursor", "openclaw", "opencode"]),
+    type=click.Choice(
+        ["claude", "copilot", "codex", "aider", "cursor", "grok_build", "openclaw", "opencode"]
+    ),
     help="Tool target to configure when --providers manual is used.",
 )
 @click.option("--profile", default="default", show_default=True, help="Deployment profile name.")
@@ -323,62 +561,151 @@ def install_apply(
         key, _, value = item.partition("=")
         parsed_env[key] = value
 
-    manifest = build_manifest(
+    # Auto-carry upstream-routing overrides from the current environment so a
+    # supervised runner forwards to the same gateway the interactive proxy would
+    # (#2240). Explicit --env wins, so merge the captured vars underneath.
+    combined_env = {**_capture_passthrough_env(os.environ), **parsed_env}
+
+    manifest = _build_deployment_manifest(
         profile=profile,
         preset=preset,
-        runtime_kind=runtime,
+        runtime=runtime,
         scope=scope,
         provider_mode=provider_mode,
-        targets=list(targets),
+        targets=targets,
         port=port,
         backend=backend,
         anyllm_provider=anyllm_provider,
         region=region,
         proxy_mode=proxy_mode,
-        memory_enabled=memory,
-        telemetry_enabled=telemetry and not no_telemetry,
+        memory=memory,
+        telemetry=telemetry,
+        no_telemetry=no_telemetry,
         image=image,
         no_http2=no_http2,
         code_aware=code_aware,
         intercept_tool_results=intercept_tool_results,
         protect_tool_results=protect_tool_results,
         bedrock_profile=bedrock_profile,
-        extra_env=parsed_env,
+        extra_env=combined_env,
     )
 
-    try:
-        existing = load_manifest(profile)
-    except ManifestError as e:
-        # A corrupt existing manifest shouldn't block a fresh apply; overwrite it.
-        click.echo(f"Warning: {e}; overwriting.")
-        existing = None
-    if existing is not None:
-        click.echo(f"Updating existing deployment profile '{profile}'...")
-        _remove_deployment(existing)
+    _apply_manifest(manifest)
+    _echo_installed(manifest)
 
-    try:
-        manifest.artifacts = install_supervisor(manifest)
-        save_manifest(manifest)
-        _start_deployment(manifest)
-        _activate_deployment_mutations(manifest)
-    except Exception as exc:
-        _remove_deployment(manifest)
-        if existing is not None:
-            click.echo(f"Restoring previous deployment '{profile}'...")
-            _restore_deployment(existing)
-        # Surface non-Click errors (OSError, CalledProcessError, …) as a clean
-        # message rather than a raw traceback; Click errors pass through as-is.
-        if isinstance(exc, click.ClickException | click.Abort):
-            raise
-        raise click.ClickException(f"Failed to install deployment '{profile}': {exc}") from exc
 
-    click.echo(
-        f"Installed persistent deployment '{profile}' "
-        f"({manifest.preset}, runtime={manifest.runtime_kind}, scope={manifest.scope})."
+@main.command("deploy")
+@click.option("--profile", default="default", show_default=True, help="Deployment profile name.")
+@click.option(
+    "--port", "-p", default=8787, type=int, show_default=True, help="Persistent proxy port."
+)
+@click.option(
+    "--backend",
+    default="anthropic",
+    show_default=True,
+    help="Proxy backend for the persistent runtime.",
+)
+@click.option(
+    "--anyllm-provider",
+    default=None,
+    help="Provider for any-llm backends when --backend anyllm is used.",
+)
+@click.option("--region", default=None, help="Cloud region for Bedrock / Vertex style backends.")
+@click.option(
+    "--mode", "proxy_mode", default="token", show_default=True, help="Proxy optimization mode."
+)
+@click.option(
+    "--scope",
+    type=click.Choice([scope.value for scope in ConfigScope]),
+    default=ConfigScope.USER.value,
+    show_default=True,
+    help="Where to apply persistent configuration.",
+)
+@click.option(
+    "--providers",
+    "provider_mode",
+    type=click.Choice([mode.value for mode in ProviderSelectionMode]),
+    default=ProviderSelectionMode.AUTO.value,
+    show_default=True,
+    help="Target selection mode for direct tool configuration.",
+)
+@click.option(
+    "--target",
+    "targets",
+    multiple=True,
+    type=click.Choice(["claude", "copilot", "codex", "aider", "cursor", "openclaw", "opencode"]),
+    help="Tool target to configure when --providers manual is used.",
+)
+@click.option("--memory", is_flag=True, help="Enable persistent memory in the proxy runtime.")
+@click.option(
+    "--telemetry",
+    is_flag=True,
+    help="Opt in to anonymous telemetry in the runtime (off by default).",
+)
+@click.option(
+    "--no-telemetry",
+    is_flag=True,
+    help="Force anonymous telemetry off in the runtime (already the default).",
+)
+@click.option(
+    "--image",
+    default="ghcr.io/headroomlabs-ai/headroom:latest",
+    show_default=True,
+    help="Docker image to use when Docker is selected.",
+)
+@click.option(
+    "--no-docker",
+    is_flag=True,
+    help="Use the native Python runtime even when Docker is installed.",
+)
+@click.option(
+    "--no-http2",
+    is_flag=True,
+    help="Disable HTTP/2 in the persistent runtime (enabled by default).",
+)
+def deploy(
+    profile: str,
+    port: int,
+    backend: str,
+    anyllm_provider: str | None,
+    region: str | None,
+    proxy_mode: str,
+    scope: str,
+    provider_mode: str,
+    targets: tuple[str, ...],
+    memory: bool,
+    telemetry: bool,
+    no_telemetry: bool,
+    image: str,
+    no_docker: bool,
+    no_http2: bool,
+) -> None:
+    """Deploy a turnkey local Headroom proxy and configure detected tools."""
+
+    plan = _select_turnkey_plan(prefer_docker=not no_docker)
+    click.echo(f"Selected {plan.preset} ({plan.runtime}): {plan.reason}")
+    manifest = _build_deployment_manifest(
+        profile=profile,
+        preset=plan.preset,
+        runtime=plan.runtime,
+        scope=scope,
+        provider_mode=provider_mode,
+        targets=targets,
+        port=port,
+        backend=backend,
+        anyllm_provider=anyllm_provider,
+        region=region,
+        proxy_mode=proxy_mode,
+        memory=memory,
+        telemetry=telemetry,
+        no_telemetry=no_telemetry,
+        image=image,
+        no_http2=no_http2,
+        supervisor_kind=plan.supervisor_kind,
+        extra_base_env=plan.base_env,
     )
-    click.echo(f"Health: {manifest.health_url}")
-    if manifest.targets:
-        click.echo(f"Targets: {', '.join(manifest.targets)}")
+    _apply_manifest(manifest)
+    _echo_installed(manifest, prefix="Deployed turnkey")
 
 
 @install.command("status")

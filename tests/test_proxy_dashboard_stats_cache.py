@@ -740,7 +740,9 @@ def test_dashboard_uses_cached_stats_and_lazy_history_feed_polling() -> None:
     assert "Lean-ctx" in html
     assert "Context Tool" in html
     assert "cliFilteringLabel + ' Filtered (this session)'" in html
-    assert "cliFilteringLabel + ' Filtered (lifetime)'" in html
+    # Lifetime CLI-filtering savings moved from the session card to the
+    # history tab as "Lifetime Saved" in #2198 (persist lifetime metrics).
+    assert "cliFilteringLabel) + ' Lifetime Saved'" in html
 
 
 def test_dashboard_session_metrics_do_not_repeat_proxy_tokens_without_new_context() -> None:

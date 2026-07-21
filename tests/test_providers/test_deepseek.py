@@ -42,10 +42,16 @@ class TestDeepSeekPricingModule:
         assert registry.get_price("deepseek-v4-pro") is not None
         assert registry.get_price("nonexistent") is None
 
-    def test_registry_staleness_and_source_url(self):
+    def test_registry_source_url(self):
         registry = get_deepseek_registry()
         assert registry.source_url == "https://api-docs.deepseek.com/quick_start/pricing"
-        assert not registry.is_stale()
+        # Deliberately no `assert not registry.is_stale()` here: is_stale()
+        # compares the shipped LAST_UPDATED against date.today(), so asserting
+        # freshness makes this test fail on wall-clock time alone once the
+        # pricing date ages past STALENESS_THRESHOLD_DAYS (30) - which then
+        # breaks CI on every unrelated PR in the repo. The staleness mechanism
+        # is covered time-independently in tests/test_pricing.py, and the
+        # sibling Anthropic/OpenAI registries make no freshness assertion.
 
     def test_deepseek_registry_estimate_cost(self):
         registry = get_deepseek_registry()

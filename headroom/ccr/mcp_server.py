@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -86,6 +87,12 @@ _READ_ENABLED = os.environ.get("HEADROOM_MCP_READ", "off").lower().strip() in (
 )
 
 DEFAULT_PROXY_URL = os.environ.get("HEADROOM_PROXY_URL", "http://127.0.0.1:8787")
+
+# How often the parent-death watchdog polls os.getppid() (seconds). When the
+# launching MCP client is SIGKILLed, stdin EOF may never arrive and the SDK's
+# blocking stdin-reader thread wedges server.run() forever, orphaning this
+# process under init/launchd. The watchdog reaps us once we are reparented.
+PARENT_DEATH_POLL_INTERVAL = 5.0
 
 
 def _format_session_summary(
@@ -1036,15 +1043,70 @@ class HeadroomMCPServer:
             )
         ]
 
-    async def run_stdio(self) -> None:
-        """Run the server with stdio transport."""
+    async def _await_parent_death(self, interval: float) -> None:
+        """Resolve once the launching parent process is gone.
+
+        We are started with a real parent (the MCP client, over stdio). If our
+        ppid changes we have been reparented — the client died — and stdin EOF
+        may never come (SIGKILL leaves the SDK's blocking stdin reader wedged),
+        so ``server.run`` would hang forever. Detecting the reparent lets the
+        caller shut down instead of orphaning. Watching for *any* change to the
+        captured ppid is more portable than hard-coding ``== 1``: POSIX reparents
+        to init/launchd (pid 1), but a Linux subreaper can adopt us instead.
+        """
+        initial_ppid = os.getppid()
+        while os.getppid() == initial_ppid:
+            await asyncio.sleep(interval)
+        logger.warning(
+            "parent process gone (ppid %s -> %s); shutting down MCP server",
+            initial_ppid,
+            os.getppid(),
+        )
+
+    async def run_stdio(
+        self,
+        parent_death_poll_interval: float = PARENT_DEATH_POLL_INTERVAL,
+    ) -> None:
+        """Run the server with stdio transport.
+
+        Normally the server stops on stdin EOF when the client disconnects. A
+        parent-death watchdog runs alongside it because an abrupt client SIGKILL
+        leaves the SDK's stdin reader wedged and ``server.run`` never returns; the
+        watchdog forces shutdown once we are reparented.
+        """
         async with stdio_server() as (read_stream, write_stream):
             logger.info(f"Headroom MCP Server starting (proxy: {self.proxy_url})")
-            await self.server.run(
-                read_stream,
-                write_stream,
-                self.server.create_initialization_options(),
+            serve_task = asyncio.create_task(
+                self.server.run(
+                    read_stream,
+                    write_stream,
+                    self.server.create_initialization_options(),
+                )
             )
+            watchdog = asyncio.create_task(self._await_parent_death(parent_death_poll_interval))
+            done, _pending = await asyncio.wait(
+                {serve_task, watchdog},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+
+            if watchdog in done:
+                # Parent died. stdin EOF may never arrive — a client SIGKILL
+                # leaves the SDK's stdin-reader thread blocked, so both
+                # ``server.run`` and the ``stdio_server`` context-manager exit
+                # can hang forever. Reap from *inside* the context manager:
+                # os._exit skips the (wedged) async teardown and guarantees this
+                # orphan dies. Reached only once the parent is already gone.
+                watchdog.result()  # surface a watchdog error, if any
+                await self.cleanup()
+                os._exit(0)
+
+            # Normal shutdown: the client closed stdin and ``server.run``
+            # returned. Cancel the watchdog and let the context manager unwind
+            # cleanly — the reader is not wedged in this path.
+            watchdog.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await watchdog
+            serve_task.result()  # re-raise a real server error; no-op on clean EOF
 
     async def run_streamable_http(
         self,

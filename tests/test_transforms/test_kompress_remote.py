@@ -96,6 +96,49 @@ def test_remote_kompress_malformed_success_fails_open() -> None:
     assert result.compression_ratio == 1.0
 
 
+def test_remote_kompress_null_numeric_field_fails_open() -> None:
+    # A 200 response with a valid 'compressed' but a malformed numeric field
+    # (here an explicit JSON null) must still fail open, not raise. data.get
+    # returns None for a present key, so float(None) would blow up if the
+    # coercions were outside the fail-open guard.
+    content = _long_text()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"compressed": "short result", "compression_ratio": None},
+        )
+
+    compressor = _compressor(httpx.MockTransport(handler))
+    try:
+        result = compressor.compress(content)
+    finally:
+        compressor.close()
+
+    assert result.compressed == content
+    assert result.compression_ratio == 1.0
+
+
+def test_remote_kompress_non_numeric_field_fails_open() -> None:
+    # A non-numeric string in a numeric field is also a malformed response.
+    content = _long_text()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"compressed": "short result", "original_tokens": "lots"},
+        )
+
+    compressor = _compressor(httpx.MockTransport(handler))
+    try:
+        result = compressor.compress(content)
+    finally:
+        compressor.close()
+
+    assert result.compressed == content
+    assert result.compression_ratio == 1.0
+
+
 def test_content_router_selects_remote_kompress_from_env(monkeypatch) -> None:
     monkeypatch.setenv("HEADROOM_KOMPRESS_ENDPOINT", "https://kompress.example")
     monkeypatch.setenv("HEADROOM_KOMPRESS_ENDPOINT_TOKEN", "secret")

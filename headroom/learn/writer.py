@@ -408,3 +408,33 @@ class GeminiWriter(ContextWriter):
             gemini_md.write_text(full_content, encoding="utf-8")
 
         return result
+
+
+# =============================================================================
+# Grok Writer (Grok CLI)
+# =============================================================================
+
+
+class GrokWriter(ContextWriter):
+    """Writes learned patterns to GROK.md for Grok CLI."""
+
+    def write(
+        self,
+        recommendations: list[Recommendation],
+        project: ProjectInfo,
+        dry_run: bool = True,
+    ) -> WriteResult:
+        result = WriteResult()
+        result.dry_run = dry_run
+
+        if not recommendations:
+            return result
+
+        grok_md = project.context_file or (project.project_path / "GROK.md")
+        full_content = _merge_into_file(grok_md, recommendations)
+        result.add(grok_md, full_content)
+        if not dry_run:
+            grok_md.parent.mkdir(parents=True, exist_ok=True)
+            grok_md.write_text(full_content, encoding="utf-8")
+
+        return result

@@ -187,11 +187,11 @@ long Chinese context that still has to remain actionable after compression.
 
 - **Library** — `compress(messages)` in Python or TypeScript, inline in any app
 - **Proxy** — `headroom proxy --port 8787`, zero code changes, any language
-- **Agent wrap** — `headroom wrap claude|codex|copilot|cursor|aider|opencode|cline|continue|goose|openhands|openclaw|vibe|zcode` in one command; undo durable wrapping with `headroom unwrap <tool>`
+- **Agent wrap** — `headroom wrap claude|codex|grok|copilot|cursor|aider|opencode|cline|continue|goose|openhands|openclaw|vibe|omp|zcode` in one command; undo durable wrapping with `headroom unwrap <tool>`
 - **MCP server** — `headroom_compress`, `headroom_retrieve`, `headroom_stats` for any MCP client
-- **Cross-agent memory** — shared store across Claude, Codex, Gemini, auto-dedup
-- **`headroom learn`** — mines failed sessions, writes corrections to `CLAUDE.local.md` by default, or to `CLAUDE.md` / `AGENTS.md` / `GEMINI.md` when requested
-- **Output token reduction** — trims what the model writes back, not just what you send: less ceremony, less repeated code, and lower effort on routine tool-followup turns
+- **Cross-agent memory** — shared store across Claude, Codex, Gemini, Grok, auto-dedup
+- **`headroom learn`** — mines failed sessions, writes corrections to `CLAUDE.local.md` (default, gitignored) or `CLAUDE.md` / `AGENTS.md` / `GEMINI.md` / `GROK.md`
+- **Output token reduction** — trims what the model *writes back* (not just what you send): drops ceremony/restated code and skips deep "thinking" on routine steps. See [Output token reduction](#output-token-reduction-cut-what-the-model-writes-back).
 - **Reversible (CCR)** — originals are cached for retrieval on demand
 
 ## How it works (30 seconds)
@@ -230,17 +230,18 @@ artifacts for the baseline runtime, or install this repository from source to
 reproduce the verified Chinese-first demo path.
 
 ```bash
-# 1 — Install a baseline runtime
-uv tool install "headroom-ai[all]"      # global `headroom` CLI in a self-contained virtual env
-pip install "headroom-ai[all]"          # Python — ships the `headroom` CLI
-npm install headroom-ai                 # TypeScript SDK only — no `headroom` CLI
+# 1 — Install a baseline runtime, or run the verified fork directly
+uv tool install --python 3.13 "headroom-ai[all]"  # global `headroom` CLI in a self-contained virtual env
+pip install "headroom-ai[all]"                    # Python — ships the `headroom` CLI
+npm install headroom-ai                             # TypeScript SDK only — no `headroom` CLI
 
-# 2 — Or run the verified fork directly
+# Chinese-first compression path from this fork
 git clone https://github.com/Hust-wahaha/headroom-zh.git
 cd headroom-zh
 pip install -e ".[dev]"
 
-# 3 — Pick your mode
+# 2 — Pick your mode
+headroom deploy                         # turnkey local deployment + agent config
 headroom wrap claude                    # wrap a coding agent
 headroom proxy --port 8787              # drop-in proxy, zero code changes
 # or: from headroom import compress      # inline library
@@ -372,6 +373,7 @@ or estimated with a confidence band.
 |--------------|:---------------:|----------------------------------|
 | Claude Code  | ✅              | `--memory` · `--code-graph` · `--1m` · `--tool-search` |
 | Codex        | ✅              | shares memory with Claude        |
+| Grok CLI     | ✅              | routes via `GROK_CLI_CHAT_PROXY_BASE_URL` |
 | Cursor       | Manual setup    | starts proxy and prints base URLs for Cursor settings |
 | Aider        | ✅              | starts proxy + launches          |
 | Copilot CLI  | ✅              | starts proxy + launches          |
@@ -382,13 +384,13 @@ or estimated with a confidence band.
 | Goose        | ✅              | starts proxy + launches          |
 | OpenHands    | ✅              | starts proxy + launches          |
 | Mistral Vibe | ✅              | starts proxy + launches          |
+| Oh My Pi     | ✅              | injects config · starts proxy + launches |
 | Cortex Code  | Library only    | 60–65% savings (library mode; no `wrap`) |
+| Kimi CLI     | ✅              | OAuth bearer forwarded — log in once |
 | ZCode        | ✅              | starts proxy and prints base URLs for ZCode settings |
 
-Any OpenAI-compatible client works via `headroom proxy`. MCP-native:
-`headroom mcp install`. Undo durable wrapping with `headroom unwrap <tool>`
-for supported tools (supports: `claude`, `copilot`, `codex`, `opencode`,
-`openclaw`, `zcode`).
+Any OpenAI-compatible client works via `headroom proxy`. MCP-native: `headroom mcp install`.
+Undo durable wrapping with `headroom unwrap <tool>` (supports: `claude`, `copilot`, `codex`, `grok`, `kimi`, `omp`, `opencode`, `openclaw`, `zcode`).
 Registry authors can use the canonical [`server.json`](server.json) in the repo root instead of reconstructing the `headroom mcp serve` contract from prose.
 
 ### GitHub Copilot CLI subscription mode
@@ -491,7 +493,7 @@ Headroom exposes one stable request lifecycle across `compress()`, the SDK, and 
 
 Provider and tool-specific behavior lives under `headroom/providers/` so core orchestration stays focused on lifecycle, sequencing, and policy.
 
-- **CLI/tool slices**: `headroom/providers/claude`, `copilot`, `codex`, `openclaw`
+- **CLI/tool slices**: `headroom/providers/claude`, `copilot`, `codex`, `grok`, `openclaw`
 - **Provider runtime slices**: `headroom/providers/claude`, `gemini`, plus shared backend/runtime dispatch in `headroom/providers/registry.py`
 - **Core files stay orchestration-first**: `wrap.py`, `client.py`, `cli/proxy.py`, and `proxy/server.py` delegate provider-specific env shaping, API target normalization, backend selection, and transport dispatch.
 
@@ -511,8 +513,9 @@ monthly LLM spend.
 ## Install
 
 ```bash
-pip install "headroom-ai[all]"          # Python, everything — includes the `headroom` CLI
-npm install headroom-ai                 # TypeScript SDK (library only — no `headroom` CLI)
+uv tool install --python 3.13 "headroom-ai[all]"  # CLI, isolated app env
+pip install "headroom-ai[all]"                    # Python, everything — includes the `headroom` CLI
+npm install headroom-ai                           # TypeScript SDK (library only — no `headroom` CLI)
 docker pull ghcr.io/chopratejas/headroom:latest
 ```
 
@@ -528,6 +531,25 @@ Granular extras: `[proxy]`, `[mcp]`, `[ml]` (Kompress + kompress_zh), `[code]`,
 
 For the verified `headroom-zh` route shown in this repository, prefer source
 install from `Hust-wahaha/headroom-zh`.
+
+Using `uv` for the `headroom` CLI? Prefer `uv tool install` so the command lives in an isolated app environment. On macOS, pass `--python 3.13` if your default `python3` is newer than the current wheel set:
+
+```bash
+brew install python@3.13  # if Python 3.13 is not already available
+uv tool install --python 3.13 "headroom-ai[all]"
+uv tool update-shell      # if ~/.local/bin is not already on PATH
+headroom --version
+```
+
+For MCP clients such as Codex that do not inherit your interactive shell `PATH`, configure the absolute executable path returned by `command -v headroom`:
+
+```toml
+[mcp_servers.headroom]
+command = "/Users/you/.local/bin/headroom"
+args = ["mcp", "serve"]
+```
+
+Current native wheels cover macOS Apple Silicon and Linux. On Intel macOS, use Docker-native install until native wheel support lands.
 
 Using `pipx`? Choose a supported interpreter explicitly:
 

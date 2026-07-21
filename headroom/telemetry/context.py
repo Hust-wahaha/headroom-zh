@@ -22,7 +22,17 @@ logger = logging.getLogger(__name__)
 
 
 _KNOWN_WRAP_AGENTS = frozenset(
-    {"claude", "copilot", "codex", "aider", "cursor", "openclaw", "opencode"}
+    {
+        "claude",
+        "copilot",
+        "codex",
+        "aider",
+        "cursor",
+        "grok_build",
+        "omp",
+        "openclaw",
+        "opencode",
+    }
 )
 
 # Stack slugs must start with a letter and contain only [a-z0-9_], max 64 chars.

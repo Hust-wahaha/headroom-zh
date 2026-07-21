@@ -22,6 +22,7 @@ pub mod detection;
 pub mod diff_compressor;
 pub mod live_zone;
 pub mod log_compressor;
+#[cfg(feature = "ml")]
 pub mod magika_detector;
 pub mod pipeline;
 pub mod recommendations;
@@ -49,11 +50,13 @@ pub use log_compressor::{
     LogCompressionResult, LogCompressor, LogCompressorConfig, LogCompressorStats, LogFormat,
     LogLevel, LogLine,
 };
+#[cfg(feature = "ml")]
 pub use magika_detector::{magika_detect, map_magika_label, MagikaDetectorError};
 pub use pipeline::{
     CompressionContext, CompressionPipeline, CompressionPipelineBuilder, DiffNoise, DiffOffload,
     JsonMinifier, JsonOffload, LogOffload, LogTemplate, OffloadOutput, OffloadTransform,
-    PipelineConfig, PipelineResult, ReformatOutput, ReformatTransform, TransformError,
+    PipelineConfig, PipelineResult, ProseFieldOffload, ReformatOutput, ReformatTransform,
+    TransformError,
 };
 pub use recommendations::{Recommendation, RecommendationStore, RECOMMENDATIONS_PATH_ENV_VAR};
 pub use safety::{tool_pair_indices, ToolPair};

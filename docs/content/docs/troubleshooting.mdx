@@ -142,6 +142,27 @@ config.smart_crusher.min_tokens_to_crush = 100  # Default is 200
 </Tab>
 </Tabs>
 
+### Dashboard shows 0 compressed/saved tokens after upgrading to 0.31.0
+
+**Symptom**: After upgrading from 0.27.0 to 0.31.0, the dashboard's compression / "Tokens Saved" figures read ~0, even though total token spend is the same or **lower** than before.
+
+**Cause**: This is a default-mode change, not a regression. 0.31.0 ships the `coding` savings profile as the out-of-box default, and `coding` runs the proxy in **cache** mode (see [Savings profiles](/docs/proxy#savings-profiles)). Cache mode freezes the provider prefix and compresses only the newest turn *delta* — this deliberately avoids busting the provider's prompt cache. So the **compression** figure is small, and the savings shift to **cheaper prefix-cache reads** (cached input tokens are billed at a fraction of list price). On a short prompt there is little delta to compress, so the compression tile can read ~0 while your actual cost still drops.
+
+**Where the savings show up**: Look at the **Prefix Cache Impact** panel and the **Compression vs Cache** tile on the dashboard — these reflect cache-read savings rather than per-request compression. The headline "Tokens Saved" tile only counts compression, so in cache mode it understates the real benefit.
+
+**To get 0.27.0-style compression numbers back**: run the proxy in token mode, which prioritizes visible compression:
+
+```bash
+# Per run
+headroom proxy --mode token
+
+# Or pick a token-mode profile
+HEADROOM_SAVINGS_PROFILE=balanced headroom proxy   # ~70% target
+HEADROOM_SAVINGS_PROFILE=agent-90 headroom proxy   # ~90% target
+```
+
+Trade-off: token mode maximizes visible compression but rewrites prior turns, which can reduce provider prefix-cache hits — so raw compression goes up while cache-read savings go down. Cache mode is the default because, for long coding sessions, preserving the prefix cache usually wins overall.
+
 ## Claude Code context window is larger through the proxy
 
 **Symptom**: After pointing Claude Code at Headroom (`ANTHROPIC_BASE_URL`), `/context all`
@@ -339,6 +360,41 @@ pip install "headroom-ai[code]"
 # For everything
 pip install "headroom-ai[all]"
 ```
+
+### Windows: Defender blocks ast-grep-cli (sg.exe) during install
+
+**Symptom**: On Windows, `uv tool install "headroom-ai[all]"` (or `pip install`) fails while installing the `ast-grep-cli` wheel, and Windows Defender flags `sg.exe`:
+
+```text
+error: Failed to install: ast_grep_cli-0.44.1-py3-none-win_amd64.whl (ast-grep-cli==0.44.1)
+Caused by: failed to open file ...\ast_grep_cli-0.44.1.data\scripts\sg.exe:
+The operation did not complete successfully because the file contains a virus
+or potentially unwanted software. (os error 225)
+
+Threat: Trojan:Win64/Lazy!MTB
+```
+
+**Cause**: A known **false positive** in the upstream `ast-grep-cli` wheel's bundled `sg.exe` ([ast-grep/ast-grep#2799](https://github.com/ast-grep/ast-grep/issues/2799)), not a Headroom issue. `ast-grep` is a base dependency, so the block also affects the `[proxy]` extra. Headroom uses `ast-grep` only for optional AST-based Read-output outlining and **runs normally without it** — the only impact is the install-time quarantine.
+
+**Workarounds** (safest first):
+
+1. **Run the proxy in Docker** — no local wheel is installed, so Defender is never triggered. See [Docker install](/docs/docker-install); the image is `ghcr.io/headroomlabs-ai/headroom`.
+
+2. **Restore the file from quarantine and retry** — open **Windows Security → Virus & threat protection → Protection history**, select the `sg.exe` detection, choose **Restore**, then re-run the install command. This changes no persistent settings.
+
+3. **Add a temporary, scoped Defender exclusion during install** (last resort; requires an elevated PowerShell). Only do this if you accept excluding a *known false positive*, and remove the exclusion afterward:
+
+   ```powershell
+   # Scope the exclusion to uv's tools directory, install, then remove it
+   $uvTools = (uv tool dir)
+   Add-MpPreference -ExclusionPath $uvTools
+   uv tool install "headroom-ai[all]"
+   Remove-MpPreference -ExclusionPath $uvTools
+   ```
+
+   Do **not** disable Defender wholesale — keep the exclusion narrow and temporary.
+
+4. **Report the false positive to Microsoft** so a corrected signature ships for everyone: submit `sg.exe` at the [Microsoft Security Intelligence sample submission](https://www.microsoft.com/en-us/wdsi/filesubmission) page.
 
 ## Provider-Specific Issues
 

@@ -26,6 +26,7 @@ This page is the authoritative reference for the **Python Headroom CLI** exposed
 | `headroom proxy` | Run the Headroom proxy server | **native in container** |
 | `headroom learn` | Learn from past tool-call failures | **native in container** |
 | `headroom perf` | Summarize recent proxy performance | **native in container** |
+| `headroom inspect` | Show original vs compressed content for recent requests | **native in container** |
 | `headroom evals ...` | Run memory evaluation workflows | **native in container** |
 | `headroom memory ...` | Inspect and manage stored memories | **native in container** |
 | `headroom mcp ...` | Install, inspect, remove, or serve MCP integration | **native in container** |
@@ -268,6 +269,8 @@ headroom proxy --mode cache
 | `--anyllm-provider` | `openai` | Provider name for `anyllm` |
 | `--anthropic-api-url` | unset | Custom Anthropic passthrough API URL |
 | `--openai-api-url` | unset | Custom OpenAI passthrough API URL |
+| `--anthropic-extra-headers` | unset | JSON object of extra headers merged into (and overriding) forwarded Anthropic requests |
+| `--openai-extra-headers` | unset | JSON object of extra headers merged into (and overriding) forwarded OpenAI requests |
 | `--gemini-api-url` | unset | Custom Gemini passthrough API URL |
 | `--region` | `us-west-2` | Cloud region for Bedrock / Vertex / related backends |
 | `--bedrock-region` | unset | Deprecated Bedrock region override |
@@ -278,7 +281,7 @@ headroom proxy --mode cache
 Notes:
 
 - `--learn` implies memory unless `--no-learn` is also set.
-- Proxy startup can also read environment variables such as `HEADROOM_HOST`, `HEADROOM_PORT`, `HEADROOM_BUDGET`, `HEADROOM_MODE`, `HEADROOM_ANYLLM_PROVIDER`, `HEADROOM_ANTHROPIC_PRE_UPSTREAM_CONCURRENCY`, `HEADROOM_ANTHROPIC_PRE_UPSTREAM_ACQUIRE_TIMEOUT_SECONDS`, `HEADROOM_REQUEST_TIMEOUT`, `HEADROOM_ANTHROPIC_PRE_UPSTREAM_MEMORY_CONTEXT_TIMEOUT_SECONDS`, `ANTHROPIC_TARGET_API_URL`, `OPENAI_TARGET_API_URL`, and `GEMINI_TARGET_API_URL`. CLI flags take precedence over environment variables.
+- Proxy startup can also read environment variables such as `HEADROOM_HOST`, `HEADROOM_PORT`, `HEADROOM_BUDGET`, `HEADROOM_MODE`, `HEADROOM_ANYLLM_PROVIDER`, `HEADROOM_ANTHROPIC_PRE_UPSTREAM_CONCURRENCY`, `HEADROOM_ANTHROPIC_PRE_UPSTREAM_ACQUIRE_TIMEOUT_SECONDS`, `HEADROOM_REQUEST_TIMEOUT`, `HEADROOM_ANTHROPIC_PRE_UPSTREAM_MEMORY_CONTEXT_TIMEOUT_SECONDS`, `ANTHROPIC_TARGET_API_URL`, `OPENAI_TARGET_API_URL`, `GEMINI_TARGET_API_URL`, `ANTHROPIC_TARGET_API_HEADERS`, and `OPENAI_TARGET_API_HEADERS`. CLI flags take precedence over environment variables.
 - The default Anthropic pre-upstream cap is intentionally conservative for CPU/ONNX-heavy work. Larger containers may want to raise it after checking the resolved runtime values on `/readyz` or `/debug/warmup`.
 
 See also: [Proxy Server](proxy.md), [Configuration](configuration.md)
@@ -327,6 +330,30 @@ headroom perf --raw
 The command reads `${HEADROOM_WORKSPACE_DIR}/logs/proxy.log` (defaults
 to `~/.headroom/logs/proxy.log` — see the
 [Filesystem Contract](filesystem-contract.md)).
+
+## `headroom inspect`
+
+Show the original vs compressed content for recent requests so you can *see*
+what the compressor changed (not just the token counts). Useful for building
+trust in compression and debugging quality regressions.
+
+```bash
+headroom inspect                 # inspect the most recent request
+headroom inspect --last 5        # inspect the 5 most recent requests
+headroom inspect --full          # include unchanged messages
+headroom inspect --format json   # raw feed for piping into another tool
+```
+
+| Option | Default | Meaning |
+|---|---|---|
+| `--port` / `-p` | `8787` | Proxy port to query (env: `HEADROOM_PORT`) |
+| `--last` | `1` | Number of most-recent requests to show |
+| `--format` | `text` | `text` renders a highlighted diff; `json` emits the raw feed |
+| `--full` | off | Include messages the compressor left unchanged |
+
+`inspect` queries the running proxy's loopback `/transformations/feed` endpoint,
+so the proxy must be started with `--log-messages` (or `--log-file`) for the
+pre/post-compression snapshots to be captured.
 
 ## `headroom evals`
 

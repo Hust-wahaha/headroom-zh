@@ -58,6 +58,7 @@ from headroom.proxy.output_effort_policy import (
     lower_text_verbosity_value,
 )
 from headroom.proxy.output_steering import (
+    apply_openai_chat_verbosity_steering,
     apply_openai_responses_verbosity_steering,
     apply_verbosity_steering,
     replace_or_append_steering_block,
@@ -76,6 +77,7 @@ __all__ = [
     "OutputShaperSettings",
     "ShapeResult",
     "TurnKind",
+    "apply_openai_chat_verbosity_steering",
     "apply_openai_responses_verbosity_steering",
     "apply_verbosity_steering",
     "classify_openai_responses_input",
@@ -84,6 +86,7 @@ __all__ = [
     "route_effort",
     "route_openai_reasoning_effort",
     "route_openai_text_verbosity",
+    "shape_openai_chat_request",
     "shape_openai_responses_request",
     "shape_request",
     "steering_text",
@@ -352,6 +355,36 @@ def shape_request(
     return result
 
 
+def shape_openai_chat_request(
+    body: dict[str, Any],
+    settings: OutputShaperSettings | None = None,
+    level_override: int | None = None,
+) -> ShapeResult:
+    """Apply output-shaping levers to an OpenAI chat/completions body in place.
+
+    The chat counterpart of :func:`shape_request`. Chat carries the system
+    prompt as a ``role: "system"`` message, so verbosity steering uses the
+    chat-specific injector. Effort routing is intentionally not applied here:
+    the ``route_effort`` levers write Anthropic-shaped config and there is no
+    portable chat/completions equivalent, so only the verbosity steering lever
+    (the one that reduces output tokens) runs on this path.
+    """
+    if settings is None:
+        settings = OutputShaperSettings.from_env()
+    result = ShapeResult()
+    if not settings.enabled:
+        return result
+
+    assert result.labels is not None  # __post_init__ guarantees this
+
+    level = settings.verbosity_level if level_override is None else level_override
+    if level > 0 and apply_openai_chat_verbosity_steering(body, level):
+        result.changed = True
+        result.labels.append(f"output_shaper:verbosity:L{level}")
+
+    return result
+
+
 # ---------------------------------------------------------------------------
 # OpenAI Responses format (Codex, /v1/responses HTTP + WebSocket)
 # ---------------------------------------------------------------------------
@@ -364,10 +397,10 @@ _RESPONSES_EFFORT_RANK = {"minimal": 0, "low": 1, "medium": 2, "high": 3, "xhigh
 # model — the Responses counterpart of an Anthropic ``tool_result`` block.
 _RESPONSES_TOOL_OUTPUT_TYPES = frozenset(
     {
-        "function_call_output",
         "custom_tool_call_output",
+        "function_call_output",
         "local_shell_call_output",
-        "computer_call_output",
+        "apply_patch_call_output",
     }
 )
 

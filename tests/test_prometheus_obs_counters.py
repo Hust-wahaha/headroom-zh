@@ -1,11 +1,13 @@
-"""Unit tests for the fail-open + kompress-size-gate observability counters.
+"""Unit tests for fail-open compression observability counters.
 
-Covers the two counters added to ``PrometheusMetrics``:
+Covers the related counters added to ``PrometheusMetrics``:
 
 * ``headroom_compression_failed_total{reason}`` — recorded at the proxy's
   optimization fail-open site, split into "timeout" vs "error".
 * ``headroom_kompress_size_gate_total{outcome}`` — recorded by ContentRouter
   via the observer hook, split into "exceeded" vs "within".
+* ``headroom_compression_quarantine_total{event}`` — records quarantine
+  activation and immediate executor skips while a timed-out worker remains.
 
 Imports only the metrics module so the test stays free of heavy ML deps.
 """
@@ -50,6 +52,17 @@ def test_record_kompress_size_gate_buckets_by_outcome() -> None:
     assert metrics.kompress_size_gate_by_outcome["within"] == 2
 
 
+def test_record_compression_quarantine_buckets_by_event() -> None:
+    metrics = PrometheusMetrics()
+
+    metrics.record_compression_quarantine("activated")
+    metrics.record_compression_quarantine("skipped")
+    metrics.record_compression_quarantine("skipped")
+
+    assert metrics.compression_quarantine_by_event["activated"] == 1
+    assert metrics.compression_quarantine_by_event["skipped"] == 2
+
+
 @pytest.mark.asyncio
 async def test_counters_exported_in_prometheus_text() -> None:
     metrics = PrometheusMetrics()
@@ -58,6 +71,8 @@ async def test_counters_exported_in_prometheus_text() -> None:
     metrics.record_compression_failed("error")
     metrics.record_kompress_size_gate("exceeded")
     metrics.record_kompress_size_gate("within")
+    metrics.record_compression_quarantine("activated")
+    metrics.record_compression_quarantine("skipped")
 
     text = await metrics.export()
 
@@ -68,6 +83,10 @@ async def test_counters_exported_in_prometheus_text() -> None:
     assert "# TYPE headroom_kompress_size_gate_total counter" in text
     assert 'headroom_kompress_size_gate_total{outcome="exceeded"} 1' in text
     assert 'headroom_kompress_size_gate_total{outcome="within"} 1' in text
+
+    assert "# TYPE headroom_compression_quarantine_total counter" in text
+    assert 'headroom_compression_quarantine_total{event="activated"} 1' in text
+    assert 'headroom_compression_quarantine_total{event="skipped"} 1' in text
 
 
 @pytest.mark.asyncio
@@ -80,19 +99,22 @@ async def test_counters_absent_from_export_until_recorded() -> None:
     # matching the other labelled-counter blocks in export().
     assert "headroom_compression_failed_total" not in text
     assert "headroom_kompress_size_gate_total" not in text
+    assert "headroom_compression_quarantine_total" not in text
 
 
 @pytest.mark.asyncio
-async def test_reset_runtime_clears_both_counters() -> None:
+async def test_reset_runtime_clears_observability_counters() -> None:
     metrics = PrometheusMetrics()
 
     metrics.record_compression_failed("timeout")
     metrics.record_kompress_size_gate("exceeded")
+    metrics.record_compression_quarantine("activated")
 
     await metrics.reset_runtime()
 
     assert dict(metrics.compression_failed_by_reason) == {}
     assert dict(metrics.kompress_size_gate_by_outcome) == {}
+    assert dict(metrics.compression_quarantine_by_event) == {}
 
 
 @pytest.mark.asyncio

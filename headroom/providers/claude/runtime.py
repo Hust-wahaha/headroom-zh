@@ -218,6 +218,13 @@ def detect_claude_code_version(claude_bin: str | None = None) -> tuple[int, int,
         proc = run([binary, "--version"], capture_output=True, text=True, timeout=10)
     except (OSError, subprocess.SubprocessError):
         return None
+    # A non-zero exit is a detection failure, per this function's contract: a
+    # failing `claude --version` may still print a version-shaped string, and
+    # trusting it would surface a false *exact*-version warning instead of the
+    # self-qualified "2.1.196+ / unknown" path the callers rely on. getattr with
+    # a success default keeps stubbed CompletedProcess objects working.
+    if getattr(proc, "returncode", 0) != 0:
+        return None
     # getattr, not attribute access: a stubbed CompletedProcess (e.g. a test's
     # SimpleNamespace) may lack stdout/stderr — degrade to "unknown", never raise.
     stdout = getattr(proc, "stdout", "") or ""

@@ -20,6 +20,7 @@ from headroom.proxy.output_shaper import (
     route_effort,
     route_openai_reasoning_effort,
     route_openai_text_verbosity,
+    shape_openai_chat_request,
     shape_openai_responses_request,
     shape_request,
     steering_text,
@@ -402,3 +403,40 @@ class TestOpenAIResponsesTextVerbosity:
         assert steering_text(2) in body["instructions"]
         assert body["reasoning"]["effort"] == "low"
         assert body["text"]["verbosity"] == "low"
+
+
+class TestShapeOpenAIChatRequest:
+    def test_disabled_is_noop(self):
+        body = {"messages": [{"role": "system", "content": "Sys."}]}
+        snapshot = copy.deepcopy(body)
+        result = shape_openai_chat_request(body, OutputShaperSettings(enabled=False))
+        assert result.changed is False
+        assert body == snapshot
+
+    def test_enabled_applies_verbosity_steering(self):
+        body = {
+            "messages": [
+                {"role": "system", "content": "Sys."},
+                {"role": "user", "content": "hi"},
+            ]
+        }
+        result = shape_openai_chat_request(body, ENABLED)
+        assert result.changed is True
+        assert result.labels == ["output_shaper:verbosity:L2"]
+        assert steering_text(2) in body["messages"][0]["content"]
+        # User turn is untouched.
+        assert body["messages"][1] == {"role": "user", "content": "hi"}
+
+    def test_level_override_supersedes_settings(self):
+        body = {"messages": [{"role": "system", "content": "Sys."}]}
+        result = shape_openai_chat_request(body, ENABLED, level_override=4)
+        assert result.labels == ["output_shaper:verbosity:L4"]
+        assert steering_text(4) in body["messages"][0]["content"]
+
+    def test_second_pass_is_stable(self):
+        body = {"messages": [{"role": "system", "content": "Sys."}]}
+        shape_openai_chat_request(body, ENABLED)
+        snapshot = copy.deepcopy(body)
+        second = shape_openai_chat_request(body, ENABLED)
+        assert second.changed is False
+        assert body == snapshot

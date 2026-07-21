@@ -252,3 +252,69 @@ class TestStreamingCacheStatsCompletion:
             assert usage["input_tokens"] == 42
             assert "cache_read_input_tokens" not in usage
             assert "cache_creation_input_tokens" not in usage
+
+
+class TestSystemFieldCacheControl:
+    """The top-level Anthropic `system` field must not be flattened to a
+    plain string when it carries per-block cache_control, or Bedrock prompt
+    caching of the system prefix silently breaks (see module docstring,
+    #1390's uncovered case)."""
+
+    def test_list_system_with_cache_control_preserved(self):
+        backend = _backend()
+        system = [
+            {"type": "text", "text": "You are a helpful assistant."},
+            {"type": "text", "text": "Long static prefix.", "cache_control": {"type": "ephemeral"}},
+        ]
+        msg = backend._system_field_to_message(system)
+        assert msg["role"] == "system"
+        assert isinstance(msg["content"], list)
+        assert msg["content"][-1]["cache_control"] == {"type": "ephemeral"}
+
+    def test_string_system_unaffected(self):
+        backend = _backend()
+        msg = backend._system_field_to_message("You are a helpful assistant.")
+        assert msg == {"role": "system", "content": "You are a helpful assistant."}
+        assert isinstance(msg["content"], str)
+
+    def test_list_system_without_cache_control_has_no_cache_control_keys(self):
+        backend = _backend()
+        system = [
+            {"type": "text", "text": "First block."},
+            {"type": "text", "text": "Second block."},
+        ]
+        msg = backend._system_field_to_message(system)
+        assert isinstance(msg["content"], list)
+        assert all("cache_control" not in block for block in msg["content"])
+
+    def test_bedrock_converse_transform_emits_cachepoint_for_list_with_cache_control(self):
+        from litellm.llms.bedrock.chat.converse_transformation import AmazonConverseConfig
+
+        backend = _backend()
+        system = [
+            {"type": "text", "text": "You are a helpful assistant."},
+            {"type": "text", "text": "Long static prefix.", "cache_control": {"type": "ephemeral"}},
+        ]
+        system_msg = backend._system_field_to_message(system)
+        messages = [system_msg, {"role": "user", "content": "hi"}]
+
+        _, system_blocks = AmazonConverseConfig()._transform_system_message(
+            messages, model="global.anthropic.claude-sonnet-5"
+        )
+        assert any("cachePoint" in block for block in system_blocks)
+
+    def test_bedrock_converse_transform_omits_cachepoint_without_cache_control(self):
+        from litellm.llms.bedrock.chat.converse_transformation import AmazonConverseConfig
+
+        backend = _backend()
+        system = [
+            {"type": "text", "text": "First block."},
+            {"type": "text", "text": "Second block."},
+        ]
+        system_msg = backend._system_field_to_message(system)
+        messages = [system_msg, {"role": "user", "content": "hi"}]
+
+        _, system_blocks = AmazonConverseConfig()._transform_system_message(
+            messages, model="global.anthropic.claude-sonnet-5"
+        )
+        assert not any("cachePoint" in block for block in system_blocks)

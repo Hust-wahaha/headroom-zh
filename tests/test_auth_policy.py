@@ -43,6 +43,13 @@ def test_client_explicit_override_wins_over_user_agent() -> None:
     assert classify_client_signals(signals) == "aider"
 
 
+def test_grok_build_user_agent_is_subscription_client() -> None:
+    signals = AuthSignals(user_agent="grok/1.2.3")
+
+    assert classify_auth_signals(signals) is AuthMode.SUBSCRIPTION
+    assert classify_client_signals(signals) == "grok_build"
+
+
 def test_codex_stamp_only_for_unidentified_responses_callers() -> None:
     assert should_stamp_codex_client_signals("/v1/responses", AuthSignals()) is True
     assert (

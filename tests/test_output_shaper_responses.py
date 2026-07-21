@@ -75,6 +75,10 @@ class TestClassifyResponsesTurn:
         items = _mechanical_input()[:-1] + [_fn_output(item_type="custom_tool_call_output")]
         assert classify_responses_turn(items) == TurnKind.MECHANICAL_CONTINUATION
 
+    def test_apply_patch_call_output_is_mechanical(self):
+        items = _mechanical_input()[:-1] + [_fn_output(item_type="apply_patch_call_output")]
+        assert classify_responses_turn(items) == TurnKind.MECHANICAL_CONTINUATION
+
     def test_trailing_user_message_is_new_ask(self):
         items = _mechanical_input() + [_user_message("also check bar.py")]
         assert classify_responses_turn(items) == TurnKind.NEW_USER_ASK

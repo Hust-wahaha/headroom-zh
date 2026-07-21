@@ -54,11 +54,18 @@ dependencies = [
     # ImportError-guarded. Marking it 3.14-optional lets headroom install on Python 3.14
     # (core compression + the Anthropic proxy path never import litellm). See GH #956.
     "litellm>=1.86.2,<2.0; python_version < '3.14'",  # model registry, pricing, providers (lazy)
-    "click>=8.3.3",               # CLI framework
+    "click>=8.3.3",               # CLI framework; PYSEC-2026-2132 fix (command injection in click.edit())
     "rich>=13.0.0",               # Rich terminal output
     "opentelemetry-api>=1.24.0",  # Safe no-op OTEL API for instrumentation
-    "ast-grep-cli>=0.30.0",       # AST-aware code slicing (CodeCompressor); binary wheel
+    # AST-aware code slicing (CodeCompressor); binary wheel. 0.44.1 is excluded:
+    # that PyPI release was a compromised supply-chain build shipping an
+    # info-stealer `sg.exe` (Trojan:Win64/Lazy!MTB) alongside the real binary
+    # (GH #2332). The `!=` keeps every other release installable, including a
+    # future patched one.
+    "ast-grep-cli>=0.30.0,!=0.44.1",
+    "pyyaml>=6.0",                # omp wrap: parse/merge omp's models.yml registry
     "tomli>=2.0.0; python_version < '3.11'",  # tomllib backport for helper scripts
+    "tomlkit>=0.13.0,<1.0",       # Loss-minimizing Codex config recovery
 ]
 
 [project.optional-dependencies]
@@ -71,12 +78,12 @@ proxy = [
     "orjson>=3.9.14; platform_python_implementation != 'PyPy'",
     "httpx[http2]>=0.24.0",
     "openai>=2.14.0",             # OpenAI API format support
-    "mcp>=1.0.0",                 # MCP server (headroom_compress, retrieve, stats)
+    "mcp>=1.28.1",                 # MCP server (headroom_compress, retrieve, stats)
     "magika>=0.6.0",              # ML content detection for ContentRouter
     "zstandard>=0.20.0",          # Decompress zstd request bodies (Codex, etc.)
     "websockets>=13.0",           # WebSocket proxy for /v1/responses (Codex gpt-5.4+)
     "onnxruntime>=1.16.0",        # Kompress ONNX INT8 text compression (no torch needed)
-    "transformers>=4.30.0,<6.0",  # Tokenizer only (for Kompress)
+    "transformers>=5.5.0,<6.0",   # Tokenizer only (for Kompress)
     "watchdog>=4.0.0",            # File watcher for live code graph reindexing (--code-graph)
     "sqlite-vec>=0.1.6",          # Vector index for memory (--memory). Lightweight, no torch.
 ]
@@ -89,11 +96,11 @@ proxy-prod = [
     "gunicorn>=21.0.0; sys_platform != 'win32'",
 ]
 # AST-based code compression (tree-sitter)
-# NOTE: cap below 1.0. tree-sitter-language-pack 1.x is a breaking rewrite whose
-# get_language()/get_parser() return the pack's own binding types instead of
-# standalone tree_sitter.Language/Parser, so _get_parser() in
-# transforms/code_compressor.py fails and code compression silently no-ops.
-# The 0.x line (>=0.10,<1.0) returns standalone tree_sitter objects as expected.
+# tree-sitter-language-pack >=1.0 removed the bundled tree-sitter package and
+# switched to an incompatible internal node API (.kind vs .type, callable
+# root_node, etc.).  Pin to <1.0.0 so that tree-sitter>=0.25.2 is pulled in
+# as a transitive dependency and the existing code_compressor.py node-walk
+# logic continues to work.  See issue #1216.
 code = [
     "tree-sitter-language-pack>=0.10.0,<1.0",
     "tree-sitter>=0.25.2,<0.27",
@@ -105,7 +112,7 @@ ml = [
     # PyTorch does not publish wheels for macOS 15 x86_64 at this floor, which
     # makes `headroom-ai[all]` unsatisfiable on Intel Macs (#1931).
     "torch>=2.12.1; sys_platform != 'darwin' or platform_machine != 'x86_64'",
-    "transformers>=4.30.0,<6.0",
+    "transformers>=5.5.0,<6.0",
     "peft>=0.11.0",
     "ms-swift>=3.0.0",
     # transformers >= 5.x requires huggingface-hub >= 1.5.0,<2.0; pinning
@@ -167,7 +174,7 @@ relevance = [
 # `headroom/image/compressor.py` adapts both API shapes at runtime via
 # a try/except cascade. See issue #372 for context.
 image = [
-    "pillow>=12.3.0",
+    "pillow>=12.3.0",         # PYSEC-2026-2253/2254/2255/2256/2257 fixes (decompression-bomb + cmd-injection)
     "sentencepiece>=0.1.99",  # Required by SigLIP tokenizer (SiglipTokenizer)
     # Python 3.6–3.12: keep the proven ORT-bundled package directly.
     # ~15 MB ONNX models auto-downloaded on first use.
@@ -210,9 +217,17 @@ agno = [
 strands = [
     "strands-agents>=0.1.0",
 ]
+# CrewAI agent framework integration
+crewai = [
+    "crewai>=1.0",
+]
+# AutoGen agent framework integration
+autogen = [
+    "autogen-agentchat>=0.7",
+]
 # MCP server for Claude Code integration
 mcp = [
-    "mcp>=1.0.0",
+    "mcp>=1.28.1",
     "httpx>=0.24.0",
     "starlette>=0.27.0",
     "uvicorn>=0.23.0,<1.0",
@@ -220,7 +235,7 @@ mcp = [
 # Voice filler detection
 voice = [
     "onnxruntime>=1.16.0",
-    "transformers>=4.30.0,<6.0",
+    "transformers>=5.5.0,<6.0",
     "torch>=2.12.1; sys_platform != 'darwin' or platform_machine != 'x86_64'",
 ]
 # Voice training (includes voice deps + training extras)
@@ -257,7 +272,7 @@ dev = [
     "pytest>=7.0.0",
     "pytest-cov>=4.0.0",
     "pytest-asyncio>=0.21.0",
-    "ruff>=0.1.0",
+    "ruff==0.15.17",
     "mypy>=1.0.0",
     "pre-commit>=3.0.0",
     "openai>=1.0.0",

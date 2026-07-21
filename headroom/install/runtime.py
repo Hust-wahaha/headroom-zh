@@ -16,8 +16,9 @@ from typing import Any, cast
 from headroom._subprocess import pid_alive, run
 
 from .health import probe_ready
-from .models import DeploymentManifest, InstallPreset, RuntimeKind
+from .models import DeploymentManifest, InstallPreset, RuntimeKind, SupervisorKind
 from .paths import log_path, pid_path, profile_root
+from .state import load_manifest
 
 # Inside the container the proxy must listen on every interface so the
 # host-side published port (127.0.0.1:<port>) can reach it.
@@ -131,6 +132,9 @@ def build_runtime_command(manifest: DeploymentManifest) -> list[str]:
         "--volume",
         f"{_mount_source(home, '.config/opencode')}:{container_home}/.config/opencode",
     ]
+    docker_gpus = manifest.base_env.get("HEADROOM_DOCKER_GPUS", "").strip()
+    if docker_gpus:
+        command.extend(["--gpus", docker_gpus])
     if not _is_windows():
         getuid = getattr(os, "getuid", None)
         getgid = getattr(os, "getgid", None)
@@ -370,3 +374,85 @@ def runtime_status(manifest: DeploymentManifest) -> str:
     # as a SystemError against the detached agent, crashing status and taking the
     # live proxy down with it (#1544).
     return "running" if pid_alive(pid) else "stopped"
+
+
+def detect_current_deployment() -> tuple[DeploymentManifest | None, str]:
+    """Detect how THIS running proxy was launched.
+
+    Returns ``(manifest_or_none, mode)`` where ``mode`` is one of:
+
+    * ``"docker"``     — persistent-docker deployment. Cannot self-restart:
+      there is no docker socket/CLI inside the container.
+    * ``"service"``    — any other persistent (supervised) deployment; can
+      self-restart via ``headroom install restart``.
+    * ``"foreground"`` — a plain ``headroom proxy`` (or unknown); not
+      self-restartable.
+
+    Keys off the ``HEADROOM_DEPLOYMENT_*`` env vars the supervisor injects at
+    launch (see :func:`_deployment_env`); a foreground proxy has none set.
+    """
+    profile = os.environ.get("HEADROOM_DEPLOYMENT_PROFILE")
+    preset = os.environ.get("HEADROOM_DEPLOYMENT_PRESET")
+    if not profile:
+        return None, "foreground"
+    manifest = load_manifest(profile)
+    if preset == InstallPreset.PERSISTENT_DOCKER.value:
+        return manifest, "docker"
+    if manifest is None:
+        return None, "foreground"
+    if manifest.supervisor_kind == SupervisorKind.TASK.value:
+        return manifest, "task"
+    return manifest, "service"
+
+
+def _spawn_detached_restart(profile: str) -> None:
+    """Spawn a detached ``headroom install restart --profile <p>`` process.
+
+    Detached (``start_new_session`` on POSIX) so it outlives this process being
+    torn down by the very restart it triggers.
+    """
+    command = [*resolve_headroom_command(), "install", "restart", "--profile", profile]
+    popen_kwargs: dict[str, Any] = {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
+    if not _is_windows():
+        popen_kwargs["start_new_session"] = True
+    subprocess.Popen(command, **popen_kwargs)
+
+
+def restart_current_deployment() -> dict[str, Any]:
+    """Restart the current deployment so new settings take effect.
+
+    * service -> spawn a detached restart, return ``{restarted: True, ...}``.
+    * docker  -> not restartable in-container; return the host command to run.
+    * task    -> not restartable via the CLI (``headroom install`` rejects
+      lifecycle ops for task-scheduled deployments); return an instruction.
+    * foreground/unknown -> return a manual-restart instruction.
+    """
+    manifest, mode = detect_current_deployment()
+    profile = os.environ.get("HEADROOM_DEPLOYMENT_PROFILE") or (
+        manifest.profile if manifest else "default"
+    )
+    if mode == "service":
+        _spawn_detached_restart(profile)
+        return {"restarted": True, "mode": "service", "profile": profile}
+    if mode == "docker":
+        return {
+            "restarted": False,
+            "mode": "docker",
+            "command": f"headroom install restart --profile {profile}",
+        }
+    if mode == "task":
+        return {
+            "restarted": False,
+            "mode": "task",
+            "instruction": (
+                "This deployment is managed by an OS task scheduler, not "
+                "`headroom install`; stop the running process so it is "
+                "relaunched (with the new settings) on its next scheduled "
+                "trigger, or restart it via your OS task scheduler."
+            ),
+        }
+    return {
+        "restarted": False,
+        "mode": "foreground",
+        "instruction": "Restart the proxy to apply the new settings.",
+    }

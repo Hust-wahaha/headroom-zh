@@ -10,3 +10,9 @@ def get_dashboard_html() -> str:
     """Load the dashboard HTML template."""
     template_path = TEMPLATES_DIR / "dashboard.html"
     return template_path.read_text(encoding="utf-8")
+
+
+def get_settings_html() -> str:
+    """Load the settings GUI HTML template."""
+    template_path = TEMPLATES_DIR / "settings.html"
+    return template_path.read_text(encoding="utf-8")

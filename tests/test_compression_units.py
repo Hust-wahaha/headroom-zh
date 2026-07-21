@@ -29,6 +29,29 @@ class Router:
         )
 
 
+class CharacterCounter:
+    def count_text(self, text: str) -> int:
+        return len(text)
+
+
+def test_compression_unit_uses_utf8_bytes_for_floor():
+    result = compress_unit_with_router(
+        CompressionUnit(
+            text="你" * 256,
+            provider="openai",
+            endpoint="responses",
+            role="tool",
+            item_type="function_call_output",
+            min_bytes=512,
+        ),
+        router=Router("短"),
+        tokenizer=CharacterCounter(),
+    )
+
+    assert result.modified is True
+    assert result.reason is None
+
+
 def test_compression_unit_accepts_token_shrinking_replacement():
     result = compress_unit_with_router(
         CompressionUnit(

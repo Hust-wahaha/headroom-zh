@@ -189,7 +189,7 @@ def _compress_marker_free_text(
         return text, [], last_router_result
 
     leading, core, trailing = boundary.groups()
-    if len(core) < unit.min_bytes:
+    if len(core.encode("utf-8", errors="replace")) < unit.min_bytes:
         return text, [], last_router_result
 
     router_result = router.compress(
@@ -261,7 +261,7 @@ def compress_unit_with_router(
         return _with_reason(reason="protected_assistant_message")
     if unit.cache_zone != "live":
         return _with_reason(reason=f"cache_zone_{unit.cache_zone}")
-    if len(unit.text) < unit.min_bytes:
+    if text_bytes < unit.min_bytes:
         return _with_reason(reason="below_unit_floor")
 
     prior_target_ratio = getattr(router, "_runtime_target_ratio", None)

@@ -172,6 +172,14 @@ class _DummyAnthropicHandler(AnthropicHandlerMixin):
                 update_from_response=lambda *a, **k: None,
                 record_request=lambda *a, **k: None,
             ),
+            resolve_tracker=lambda *a, **k: SimpleNamespace(
+                _cached_token_count=0,
+                get_frozen_message_count=lambda: 0,
+                get_last_original_messages=lambda: [],
+                get_last_forwarded_messages=lambda: [],
+                update_from_response=lambda *a, **k: None,
+                record_request=lambda *a, **k: None,
+            ),
         )
         # Unit 4: the only field this test cares about.
         self.anthropic_pre_upstream_sem = anthropic_pre_upstream_sem

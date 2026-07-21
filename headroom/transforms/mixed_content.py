@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
 
@@ -36,9 +37,35 @@ def mixed_content_indicators(content: str) -> dict[str, bool]:
     return {
         "has_code_fences": bool(_CODE_FENCE_PATTERN.search(content)),
         "has_json_blocks": bool(_JSON_BLOCK_START.search(content)),
+        "has_embedded_json_with_text": _has_valid_json_block_with_text(content),
         "has_prose": len(_PROSE_PATTERN.findall(content)) > 5,
         "has_search_results": bool(_SEARCH_RESULT_PATTERN.search(content)),
     }
+
+
+def _has_valid_json_block_with_text(content: str) -> bool:
+    """Return true when prose or log text wraps a valid JSON block."""
+    lines = content.split("\n")
+
+    for index, line in enumerate(lines):
+        if not line.strip().startswith(("[", "{")):
+            continue
+
+        json_content, end_index = _extract_json_block(lines, index)
+        if json_content is None:
+            continue
+
+        try:
+            json.loads(json_content)
+        except (TypeError, ValueError):
+            continue
+
+        leading_text = "\n".join(lines[:index]).strip()
+        trailing_text = "\n".join(lines[end_index + 1 :]).strip()
+        if leading_text or trailing_text:
+            return True
+
+    return False
 
 
 def split_into_sections(content: str) -> list[ContentSection]:

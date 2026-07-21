@@ -21,6 +21,12 @@ def _expected_project_prefix() -> str:
     return f"/p/{quote(Path.cwd().name, safe='')}"
 
 
+@pytest.fixture(autouse=True)
+def _enable_rtk(monkeypatch: pytest.MonkeyPatch) -> None:
+    # RTK is opt-in (off by default); these tests exercise the RTK-on injection path.
+    monkeypatch.setenv("HEADROOM_RTK", "1")
+
+
 @pytest.fixture
 def runner() -> CliRunner:
     return CliRunner()
@@ -981,7 +987,7 @@ def test_wrap_copilot_subscription_uses_resolved_subscription_endpoint(
     assert env["COPILOT_PROVIDER_BEARER_TOKEN"] == "copilot-api"
 
 
-def test_wrap_copilot_subscription_normalizes_individual_public_endpoint(
+def test_wrap_copilot_subscription_normalizes_enterprise_host(
     runner: CliRunner,
     wrap_modules: tuple[types.ModuleType, click.Group],
     monkeypatch: pytest.MonkeyPatch,
@@ -1013,7 +1019,7 @@ def test_wrap_copilot_subscription_normalizes_individual_public_endpoint(
                 lambda _headers: {
                     "token": "copilot-api",
                     "expires_at": 9999999999,
-                    "endpoints": {"api": "https://api.individual.githubcopilot.com"},
+                    "endpoints": {"api": "https://api.enterprise.githubcopilot.com"},
                 }
             ),
         ),

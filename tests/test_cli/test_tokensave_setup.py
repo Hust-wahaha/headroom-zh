@@ -186,12 +186,17 @@ def _spy_compressor(monkeypatch: pytest.MonkeyPatch, *, tokensave_ok: bool) -> d
     return calls
 
 
-def test_policy_tokensave_primary_disables_serena(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_policy_serena_primary_by_default_disables_tokensave(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Serena is now the default code-memory engine: with no explicit selection it
+    # is set up and any Headroom-installed tokensave entry is disabled (the
+    # inverse of the old tokensave-primary policy).
     calls = _spy_compressor(monkeypatch, tokensave_ok=True)
     wrap_cli._setup_coding_compressor(_FakeRegistrar(), serena_context="claude-code")
-    assert calls["tokensave"] == "setup"
-    assert calls["serena_setup"] is False
-    assert calls["serena_disabled"] == "tokensave is now the primary code-graph compressor"
+    assert calls["serena_setup"] is True
+    assert calls["tokensave"] == "disabled"
+    assert calls["serena_disabled"] is None
 
 
 def test_policy_serena_fallback_when_tokensave_unavailable(

@@ -75,11 +75,16 @@ pub struct AppState {
 }
 
 /// PR-E6: maximum number of sessions tracked by the drift detector
-/// LRU. Picked so that a noisy test fleet of 1000 distinct API keys
-/// stays in cache for at least one full turn before the oldest
-/// evicts. Operators with larger fleets can bump this; the memory
-/// cost per entry is ~150 bytes (key string + 96-byte StructuralHash
-/// + LRU overhead).
+/// LRU. Sessions are keyed per conversation (credential + first-
+/// message fingerprint), not per credential, so the working set is
+/// the number of *concurrently active conversations* — 1000 keeps a
+/// noisy fleet in cache for at least one full turn before the oldest
+/// evicts. A burst of short one-shot conversations can cycle the LRU
+/// and evict a live session between its turns; the cost is telemetry-
+/// only (one repeated `cache_drift_first_request`, no lost requests).
+/// Operators with larger fleets can bump this; the memory cost per
+/// entry is ~250 bytes (key string + 163-byte StructuralHash + LRU
+/// overhead).
 const DRIFT_DETECTOR_CAPACITY: usize = 1000;
 
 impl AppState {
@@ -699,7 +704,7 @@ pub(crate) async fn forward_http(
                 }
             };
             if let (Some(kind), Some(headers)) = (drift_kind, headers_snapshot.as_ref()) {
-                let session_key = derive_session_key(headers, &client_addr);
+                let session_key = derive_session_key(headers, &client_addr, &parsed, kind);
                 let hash = compute_structural_hash(&parsed, kind);
                 observe_drift(&state.drift_state, &session_key, hash);
             }

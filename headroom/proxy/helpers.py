@@ -64,7 +64,9 @@ from headroom.proxy.body_forwarding import (
 from headroom.proxy.body_forwarding import (
     prepare_outbound_body_bytes as prepare_outbound_body_bytes,  # noqa: F401 - compatibility export
 )
-from headroom.proxy.body_forwarding import serialize_body_canonical
+from headroom.proxy.body_forwarding import (
+    serialize_body_canonical as serialize_body_canonical,  # noqa: F401 - compatibility export
+)
 from headroom.proxy.ccr_golden_policy import (
     create_fresh_ccr_tool_definition,
     replay_golden_ccr_tool_definition,
@@ -87,6 +89,9 @@ from headroom.proxy.internal_header_policy import (
 from headroom.proxy.memory_golden_policy import (
     replay_golden_memory_tool_definition,
     serialize_memory_tool_definition_canonical,
+)
+from headroom.proxy.tool_definition_serialization import (
+    serialize_tool_definition_canonical as _serialize_tool_definition_canonical,
 )
 from headroom.proxy.tool_injection_config import (
     ToolInjectionStickyMode,
@@ -353,6 +358,7 @@ def log_memory_injection(
     decision: str,
     bytes_injected: int,
     query: str | None = None,
+    tags: dict[str, str] | None = None,
 ) -> None:
     """Emit a structured log line for every memory-context routing decision.
 
@@ -360,6 +366,8 @@ def log_memory_injection(
     Never log raw query content or Authorization header — only a stable
     hash of the query.
     """
+    if tags is not None and bytes_injected > 0:
+        tags["memory_injected"] = "true"
     query_hash = hash_query_for_log(query) if query else ""
     logger.info(
         "event=memory_injection request_id=%s session_id=%s decision=%s "
@@ -545,6 +553,68 @@ def get_sse_event_max_bytes() -> int:
     return request_limit_policy.resolve_sse_event_max_bytes(
         os.environ.get(_SSE_EVENT_MAX_BYTES_ENV)
     )
+
+
+# Well-known OpenAI-compatible upstreams, matched by host against the
+# configured ``--openai-api-url``. Used only to label the dashboard/stats
+# display provider — the internal provider key stays ``openai`` so pricing
+# and request formatting are unaffected (issue #1533).
+_OPENAI_COMPATIBLE_HOSTS: tuple[tuple[str, str], ...] = (
+    ("openrouter.ai", "OpenRouter"),
+    ("api.groq.com", "Groq"),
+    ("api.together.xyz", "Together AI"),
+    ("api.fireworks.ai", "Fireworks AI"),
+    ("api.deepseek.com", "DeepSeek"),
+    ("api.mistral.ai", "Mistral"),
+    ("api.perplexity.ai", "Perplexity"),
+    ("openai.azure.com", "Azure OpenAI"),
+    ("api.openai.com", "OpenAI"),
+)
+
+
+def classify_openai_upstream(url: str | None) -> str | None:
+    """Map a custom ``--openai-api-url`` to a well-known provider display name.
+
+    Matches the URL host against :data:`_OPENAI_COMPATIBLE_HOSTS` (exact or
+    subdomain). Returns ``None`` when no URL is set or the host is unrecognized
+    (callers then fall back to an explicit ``--provider-name`` or the raw
+    ``openai`` label).
+    """
+    if not url:
+        return None
+    from urllib.parse import urlparse
+
+    try:
+        host = (urlparse(url).hostname or "").lower()
+    except (ValueError, TypeError):
+        return None
+    if not host:
+        return None
+    for needle, name in _OPENAI_COMPATIBLE_HOSTS:
+        if host == needle or host.endswith("." + needle):
+            return name
+    return None
+
+
+def resolve_display_provider(
+    raw_provider: str | None,
+    *,
+    openai_api_url: str | None = None,
+    provider_name: str | None = None,
+) -> str:
+    """Resolve the dashboard display provider for a logged request.
+
+    Only requests whose internal provider is ``openai`` are reclassified;
+    Anthropic/Bedrock/Gemini keep their own labels. This affects the display
+    label only — pricing and request formatting still key on ``openai``.
+    Precedence: explicit ``--provider-name`` > host detection > raw provider.
+    """
+    raw = (raw_provider or "").strip()
+    if raw.lower() != "openai":
+        return raw or "unknown"
+    if provider_name:
+        return provider_name
+    return classify_openai_upstream(openai_api_url) or raw
 
 
 # Body-too-large status code (PR-A8 / P5-59). Default 413 (RFC 7231 §6.5.11).
@@ -1128,6 +1198,10 @@ def _read_rtk_lifetime_stats() -> dict[str, Any] | None:
             _rtk_gain_command(rtk_path, scope),
             capture_output=True,
             text=True,
+            # rtk output is UTF-8 (emoji etc.); without this, Windows decodes
+            # with cp1252 and the reader thread dies with UnicodeDecodeError.
+            encoding="utf-8",
+            errors="replace",
             timeout=5,
         )
         if result.returncode == 0 and result.stdout.strip():
@@ -1177,6 +1251,9 @@ def _read_lean_ctx_lifetime_stats() -> dict[str, Any] | None:
             [str(lean_ctx_path), "gain", "--json"],
             capture_output=True,
             text=True,
+            # UTF-8 regardless of the Windows console code page (cp1252).
+            encoding="utf-8",
+            errors="replace",
             timeout=5,
         )
         # Failed reads return None ("no data") — mirrors the rtk reader so
@@ -1507,6 +1584,24 @@ def _strip_internal_headers(headers: dict[str, str]) -> dict[str, str]:
     return strip_internal_headers(headers, mode=get_strip_internal_headers_mode())
 
 
+def merge_extra_headers(headers: dict[str, str], extra: dict[str, str] | None) -> dict[str, str]:
+    """Merge configured extra headers into ``headers``, overriding same-named keys.
+
+    ``extra`` comes from ``ProxyConfig.anthropic_extra_headers``/``openai_extra_headers``
+    (settings-panel/CLI-configured, for gateways that need one extra header alongside the
+    client's own auth). Returns ``headers`` unchanged (no copy) when nothing is configured.
+    """
+    if not extra:
+        return headers
+    # HTTP header names are case-insensitive: drop any existing key that
+    # case-insensitively collides with a configured extra so the extra wins.
+    # A plain {**headers, **extra} would emit both casings upstream.
+    lowered = {k.lower() for k in extra}
+    merged = {k: v for k, v in headers.items() if k.lower() not in lowered}
+    merged.update(extra)
+    return merged
+
+
 def log_outbound_headers(
     *,
     forwarder: str,
@@ -1828,7 +1923,7 @@ def serialize_tool_definition_canonical(tool_definition: dict[str, Any]) -> byte
     follow-up turn must inject byte-equal output to keep the prefix
     cache hot.
     """
-    return serialize_body_canonical(tool_definition)
+    return _serialize_tool_definition_canonical(tool_definition)
 
 
 class SessionToolTracker(_SessionToolTracker):

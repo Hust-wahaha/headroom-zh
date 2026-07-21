@@ -117,6 +117,13 @@ class PrometheusMetrics:
         self.compressions_by_strategy: dict[str, int] = defaultdict(int)
         self.tokens_saved_by_strategy: dict[str, int] = defaultdict(int)
 
+        # Per-extension token savings, keyed by the extension-supplied
+        # ``key``. Populated lazily by ``record_extension_savings`` — no
+        # hardcoded list of extensions. Proxy extensions report the tokens
+        # they saved so per-extension contribution is observable via /stats,
+        # mirroring the per-strategy compression breakdown above.
+        self.extension_savings: dict[str, int] = defaultdict(int)
+
         # Fail-open compression failures, keyed by reason ("timeout",
         # "error"). The proxy fails open on any optimization error so the
         # request still succeeds; without this counter the failure is only
@@ -130,14 +137,18 @@ class PrometheusMetrics:
         # counter proves whether the gate ever fires on live traffic.
         self.kompress_size_gate_by_outcome: dict[str, int] = defaultdict(int)
 
-        # These two counters are mutated from the compression thread-pool
-        # worker (record_kompress_size_gate runs inside ContentRouter, which
-        # the proxy runs in an executor), while export()/reset_runtime() read
-        # and clear them from the event-loop thread. asyncio.Lock can't be
-        # taken off-loop, so guard them with a plain threading.Lock, mirroring
-        # _stage_timing_lock below. Without it a first-time key insert can race
-        # an export iteration ("dictionary changed size during iteration") and
-        # concurrent increments can be lost.
+        # Timeout-debt quarantine events. ``activated`` means a request timed
+        # out while its worker kept running; ``skipped`` means later work was
+        # rejected before executor admission behind that worker.
+        self.compression_quarantine_by_event: dict[str, int] = defaultdict(int)
+
+        # These counters are mutated from compression worker threads and the
+        # event-loop thread, while export()/reset_runtime() read and clear them.
+        # asyncio.Lock can't be taken off-loop, so guard them with a plain
+        # threading.Lock, mirroring _stage_timing_lock below. Without it a
+        # first-time key insert can race an export iteration ("dictionary
+        # changed size during iteration") and concurrent increments can be
+        # lost.
         self._obs_counter_lock = threading.Lock()
 
         # Codex WebSocket compression observability. These are intentionally
@@ -317,9 +328,11 @@ class PrometheusMetrics:
 
             self.compressions_by_strategy.clear()
             self.tokens_saved_by_strategy.clear()
+            self.extension_savings.clear()
             with self._obs_counter_lock:
                 self.compression_failed_by_reason.clear()
                 self.kompress_size_gate_by_outcome.clear()
+                self.compression_quarantine_by_event.clear()
 
             self.codex_ws_units_total = 0
             self.codex_ws_units_modified_total = 0
@@ -446,6 +459,7 @@ class PrometheusMetrics:
         ):
             return
         self.requests_by_stack[slug] += 1
+        self.savings_tracker.record_lifetime_stack(slug)
 
     def record_compression(
         self,
@@ -477,6 +491,24 @@ class PrometheusMetrics:
         if saved > 0:
             self.tokens_saved_by_strategy[strategy] += saved
 
+    def record_extension_savings(self, key: str, saved: int) -> None:
+        """Accumulate tokens saved by a proxy extension, keyed by ``key``.
+
+        Called by proxy extensions that perform their own token
+        reduction and want that contribution surfaced alongside the
+        built-in compression metrics. The per-extension totals are
+        exposed via /stats (``extension_savings``), mirroring how
+        ``record_compression`` accumulates ``tokens_saved_by_strategy``.
+
+        Synchronous + lock-free: ``defaultdict(int)`` writes are atomic
+        under the GIL for these key types, matching ``record_compression``.
+
+        Non-positive ``saved`` values are ignored — the metric never
+        records "negative savings".
+        """
+        if saved > 0:
+            self.extension_savings[key] += saved
+
     def record_compression_failed(self, reason: str) -> None:
         """Record one fail-open compression failure, bucketed by ``reason``.
 
@@ -500,6 +532,18 @@ class PrometheusMetrics:
         """
         with self._obs_counter_lock:
             self.kompress_size_gate_by_outcome[outcome or "within"] += 1
+
+    def record_compression_quarantine(self, event: str) -> None:
+        """Record one timeout-debt quarantine event.
+
+        ``event`` is ``"activated"`` when a timed-out worker is confirmed to
+        still be running, or ``"skipped"`` when new compression is rejected
+        before executor admission while that worker remains. Both worker and
+        event-loop threads call this method, so updates share the
+        observer-counter lock.
+        """
+        with self._obs_counter_lock:
+            self.compression_quarantine_by_event[event or "skipped"] += 1
 
     def record_router_route_counts(self, counts: dict[str, int]) -> None:
         """Accumulate ContentRouter routing-category counts for a single
@@ -636,6 +680,7 @@ class PrometheusMetrics:
         cache_write_1h_tokens: int = 0,
         uncached_input_tokens: int = 0,
         attempted_input_tokens: int = 0,
+        output_tokens_saved: int = 0,
         project: str | None = None,
         client: str | None = None,
     ):
@@ -732,6 +777,24 @@ class PrometheusMetrics:
             if len(self.savings_history) > 500:
                 self.savings_history = self.savings_history[-500:]
 
+            self.savings_tracker.record_lifetime_request(
+                persist=False,
+                provider=provider,
+                stack=None,
+                record_stack=False,
+                model=model,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                attempted_input_tokens=attempted_input_tokens,
+                tokens_saved=tokens_saved,
+                cached=cached,
+                cache_read_tokens=cache_read_tokens,
+                cache_write_tokens=cache_write_tokens,
+                cache_write_5m_tokens=cache_write_5m_tokens,
+                cache_write_1h_tokens=cache_write_1h_tokens,
+                uncached_input_tokens=uncached_input_tokens,
+                waste_signals=waste_signals,
+            )
             total_input_tokens, total_input_cost_usd = self._current_savings_tracker_totals()
             self.savings_tracker.record_request(
                 model=model,
@@ -744,31 +807,45 @@ class PrometheusMetrics:
                 uncached_input_tokens=uncached_input_tokens,
                 total_input_tokens=total_input_tokens,
                 total_input_cost_usd=total_input_cost_usd,
+                output_tokens_saved=output_tokens_saved,
             )
 
-            # Also append to the durable, multi-process savings ledger so
-            # `headroom savings` reflects proxy traffic alongside MCP-tool usage.
-            # The real upstream model means litellm prices it accurately. The
-            # client is the harness classified from the User-Agent / X-Client
-            # (claude-code, codex, cursor, ...); it falls back to "proxy" only
-            # when the harness is unidentified.
-            if tokens_saved > 0 and not self._stateless:
-                # `input_tokens` here is the optimized (post-compression) count
-                # that was actually forwarded — see emit_request_outcome, which
-                # passes `input_tokens=outcome.optimized_tokens`. The ledger's
-                # `before` is the pre-compression original and `after` is what we
-                # forwarded, and `headroom savings` derives the reduction percent
-                # as saved / before. Passing the forwarded count as `before`
-                # understated the original by `tokens_saved`, inflating that
-                # percentage (e.g. a real 40% reduction was reported as ~67%).
-                # Reconstruct the original as forwarded + saved.
-                savings_ledger.record_savings_event(
-                    tokens_before=input_tokens + tokens_saved,
-                    tokens_after=input_tokens,
-                    model=model,
-                    client=client or "proxy",
-                    source="proxy",
-                )
+        # Also append to the durable, multi-process savings ledger so
+        # `headroom savings` reflects proxy traffic alongside MCP-tool usage.
+        # The real upstream model means litellm prices it accurately. The
+        # client is the harness classified from the User-Agent / X-Client
+        # (claude-code, codex, cursor, ...); it falls back to "proxy" only
+        # when the harness is unidentified.
+        #
+        # Deliberately outside `self._lock` and off the loop. The append does
+        # synchronous open + fcntl.flock + write, and rewrites the whole file
+        # once it passes 1 MB — and it fires on every compressed request. Under
+        # the lock that queued every other metrics caller behind the disk,
+        # including `export()`, which holds the same lock for the full
+        # Prometheus serialization. The ledger takes its own flock across
+        # processes, so the metrics lock was never what made it safe. Moving it
+        # out is not optional once it becomes an await: awaiting inside the lock
+        # would hold the lock for the whole write instead of just the syscall.
+        # ponytail: default thread pool, not a dedicated executor -- give it one
+        # if a profile ever shows writers parked on flock saturating the pool.
+        if tokens_saved > 0 and not self._stateless:
+            # `input_tokens` here is the optimized (post-compression) count
+            # that was actually forwarded — see emit_request_outcome, which
+            # passes `input_tokens=outcome.optimized_tokens`. The ledger's
+            # `before` is the pre-compression original and `after` is what we
+            # forwarded, and `headroom savings` derives the reduction percent
+            # as saved / before. Passing the forwarded count as `before`
+            # understated the original by `tokens_saved`, inflating that
+            # percentage (e.g. a real 40% reduction was reported as ~67%).
+            # Reconstruct the original as forwarded + saved.
+            await asyncio.to_thread(
+                savings_ledger.record_savings_event,
+                tokens_before=input_tokens + tokens_saved,
+                tokens_after=input_tokens,
+                model=model,
+                client=client or "proxy",
+                source="proxy",
+            )
 
         self._get_otel_metrics().record_proxy_request(
             provider=provider,
@@ -828,6 +905,7 @@ class PrometheusMetrics:
         async with self._lock:
             self.cache_bust_tokens_lost += tokens_lost
             self.cache_bust_count += 1
+        self.savings_tracker.record_lifetime_cache_bust(tokens_lost=tokens_lost)
         self._get_otel_metrics().record_proxy_cache_bust(tokens_lost=tokens_lost)
 
     async def record_cache_miss_attribution(self, provider: str, reason: str) -> None:
@@ -841,6 +919,7 @@ class PrometheusMetrics:
         """
         async with self._lock:
             self.cache_miss_attribution_by_provider[provider][reason] += 1
+        self.savings_tracker.record_lifetime_cache_miss(provider=provider, reason=reason)
 
     # ------------------------------------------------------------------
     # Unit 3: WS session lifecycle gauges / histogram
@@ -886,11 +965,13 @@ class PrometheusMetrics:
     async def record_rate_limited(self, *, provider: str | None = None, model: str | None = None):
         async with self._lock:
             self.requests_rate_limited += 1
+        self.savings_tracker.record_lifetime_rate_limited(provider=provider, model=model)
         self._get_otel_metrics().record_proxy_rate_limited(provider=provider, model=model)
 
     async def record_failed(self, *, provider: str | None = None, model: str | None = None):
         async with self._lock:
             self.requests_failed += 1
+        self.savings_tracker.record_lifetime_failed(provider=provider, model=model)
         self._get_otel_metrics().record_proxy_failed(provider=provider, model=model)
 
     async def export(self) -> str:
@@ -1142,6 +1223,7 @@ class PrometheusMetrics:
             with self._obs_counter_lock:
                 compression_failed = dict(self.compression_failed_by_reason)
                 kompress_size_gate = dict(self.kompress_size_gate_by_outcome)
+                compression_quarantine = dict(self.compression_quarantine_by_event)
 
             if compression_failed:
                 lines.extend(
@@ -1166,6 +1248,19 @@ class PrometheusMetrics:
                 for outcome, count in kompress_size_gate.items():
                     lines.append(
                         f'headroom_kompress_size_gate_total{{outcome="{_escape_label_value(outcome)}"}} {count}'
+                    )
+                lines.append("")
+
+            if compression_quarantine:
+                lines.extend(
+                    [
+                        "# HELP headroom_compression_quarantine_total Timeout-debt quarantine events by type",
+                        "# TYPE headroom_compression_quarantine_total counter",
+                    ]
+                )
+                for event, count in compression_quarantine.items():
+                    lines.append(
+                        f'headroom_compression_quarantine_total{{event="{_escape_label_value(event)}"}} {count}'
                     )
                 lines.append("")
 

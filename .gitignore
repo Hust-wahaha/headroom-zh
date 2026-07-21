@@ -17,6 +17,7 @@ scripts/*
 !scripts/sync-plugin-versions.py
 !scripts/changelog-gen.py
 !scripts/verify-versions.py
+!scripts/verify-ruff-version.py
 !scripts/pr-governance.py
 !scripts/bootstrap-windows-dev.ps1
 !scripts/build_npm_release_assets.mjs
@@ -234,6 +235,9 @@ pyrightconfig.json
 \#*\#
 .\#*
 
+# Local git worktrees (isolated feature branches)
+.worktrees/
+
 # Local development configuration
 CLAUDE.md
 
@@ -261,3 +265,5 @@ uv.lock
 /headroom/_core.*.so
 /headroom/_core.so
 .tokensave
+
+.codebase-memory/

@@ -73,8 +73,8 @@ def is_ccr_tool_call(tool_call: dict[str, Any]) -> bool:
     """Return true when a provider-native tool call names the CCR retrieval tool."""
     return (
         tool_call.get("name") == CCR_TOOL_NAME
-        or tool_call.get("function", {}).get("name") == CCR_TOOL_NAME
-        or tool_call.get("functionCall", {}).get("name") == CCR_TOOL_NAME
+        or (tool_call.get("function") or {}).get("name") == CCR_TOOL_NAME
+        or (tool_call.get("functionCall") or {}).get("name") == CCR_TOOL_NAME
     )
 
 

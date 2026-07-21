@@ -139,6 +139,12 @@ class _DummyAnthropicHandler(AnthropicHandlerMixin):
                 get_last_forwarded_messages=lambda: [],
                 record_request=lambda *a, **k: None,
             ),
+            resolve_tracker=lambda *a, **k: SimpleNamespace(
+                get_frozen_message_count=lambda: 0,
+                get_last_original_messages=lambda: [],
+                get_last_forwarded_messages=lambda: [],
+                record_request=lambda *a, **k: None,
+            ),
         )
         # Cold-start deferral wiring under test.
         self._background_compression_enabled = True

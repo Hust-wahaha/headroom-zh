@@ -397,6 +397,23 @@ class MemoryStore(Protocol):
         """
         ...
 
+    async def detach_supersession(
+        self,
+        old_memory_id: str,
+        new_memory_id: str,
+    ) -> tuple[Memory, Memory]:
+        """Detach one explicit edge from a supersession chain.
+
+        The two memories must form a reciprocal direct edge:
+        ``old.superseded_by == new.id`` and ``new.supersedes == old.id``.
+        The old memory becomes current again while all other chain edges
+        remain unchanged.
+
+        Returns:
+            The updated ``(old_memory, new_memory)`` pair.
+        """
+        ...
+
     async def get_history(
         self,
         memory_id: str,

@@ -379,7 +379,15 @@ class CCRResponseHandler:
                 "content": response.get("content", []),
             }
         elif provider == "openai":
-            message = response.get("choices", [{}])[0].get("message", {})
+            # Guard an empty/malformed ``choices`` the same way the Google branch
+            # below (and ccr/tool_calls.py) already do: ``response.get("choices",
+            # [{}])`` only falls back when the key is absent, so a present-but-
+            # empty ``choices: []`` (or ``[null]``) — which OpenAI-compatible
+            # gateways can send on a content-filtered/usage-only response — made
+            # ``[0]`` raise IndexError (or ``.get`` raise on a non-dict).
+            choices = response.get("choices")
+            first = choices[0] if isinstance(choices, list) and choices else {}
+            message = first.get("message", {}) if isinstance(first, dict) else {}
             return {
                 "role": "assistant",
                 "content": message.get("content"),
@@ -803,9 +811,11 @@ class StreamingCCRHandler:
                 if dtype == "text_delta":
                     target["text"] = target.get("text", "") + delta.get("text", "")
                 elif dtype == "input_json_delta":
-                    if target.get("type") == "tool_use":
-                        partial = delta.get("partial_json", "")
-                        target["_partial_json"] = target.get("_partial_json", "") + partial
+                    # Accumulate for any block streaming input (tool_use AND
+                    # server_tool_use); the stop handler parses it into `input`
+                    # (#2438).
+                    partial = delta.get("partial_json", "")
+                    target["_partial_json"] = target.get("_partial_json", "") + partial
                 elif dtype == "thinking_delta":
                     target["thinking_buffer"] = target.get("thinking_buffer", "") + delta.get(
                         "thinking", ""
@@ -822,13 +832,17 @@ class StreamingCCRHandler:
                 idx = event.get("index")
                 target = (blocks_by_index.get(idx) if idx is not None else None) or current_block
                 if target is not None:
-                    if target.get("type") == "tool_use" and "_partial_json" in target:
-                        partial = target.pop("_partial_json", "")
-                        if partial:
-                            try:
-                                target["input"] = json.loads(partial)
-                            except json.JSONDecodeError:
-                                target["input"] = {}
+                    # Parse streamed `_partial_json` into `input` for any block
+                    # that carried input_json_delta — tool_use AND
+                    # server_tool_use — not just tool_use. The narrow type gate
+                    # left server_tool_use.input malformed and leaked the scratch
+                    # key into replayed history (#2438). Always strip the key.
+                    if "_partial_json" in target:
+                        partial = target.pop("_partial_json")
+                        try:
+                            target["input"] = json.loads(partial) if partial else {}
+                        except json.JSONDecodeError:
+                            target["input"] = {}
                     if target.get("type") == "thinking" and "thinking_buffer" in target:
                         target["thinking"] = target.pop("thinking_buffer")
                     if target not in response["content"]:

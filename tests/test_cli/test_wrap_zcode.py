@@ -18,6 +18,12 @@ from headroom.cli import wrap as wrap_mod
 from headroom.cli.main import main
 
 
+@pytest.fixture(autouse=True)
+def _enable_rtk(monkeypatch: pytest.MonkeyPatch) -> None:
+    # RTK is opt-in (off by default); these tests exercise the RTK-on injection path.
+    monkeypatch.setenv("HEADROOM_RTK", "1")
+
+
 @pytest.fixture
 def runner() -> CliRunner:
     return CliRunner()

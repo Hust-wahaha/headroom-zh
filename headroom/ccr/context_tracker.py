@@ -31,6 +31,38 @@ from ..cache.compression_store import get_compression_store
 logger = logging.getLogger(__name__)
 
 
+def looks_like_claude_code_compact_summary(*texts: str | None) -> bool:
+    """Return true for Claude Code `/compact` continuation summaries.
+
+    Claude Code can carry a previous session forward by injecting a compact
+    conversation summary into a fresh session. Those summaries are already
+    context; tracking them for CCR proactive expansion makes Headroom re-add
+    stale session state to later turns. Keep this detector deliberately narrow
+    so ordinary tool output that happens to mention "summary" remains eligible.
+    """
+    combined = " ".join(text.strip() for text in texts if text and text.strip())
+    if not combined:
+        return False
+
+    normalized = " ".join(combined.lower().split())
+    has_summary = "summary" in normalized or "summarized" in normalized
+
+    if "this session is being continued from a previous conversation" in normalized and has_summary:
+        return True
+
+    if "conversation is summarized below" in normalized and (
+        "ran out of context" in normalized or "previous conversation" in normalized
+    ):
+        return True
+
+    return (
+        "/compact" in normalized
+        and "claude" in normalized
+        and has_summary
+        and ("conversation" in normalized or "session" in normalized)
+    )
+
+
 @dataclass
 class CompressedContext:
     """Represents a piece of compressed context from the conversation.
@@ -155,6 +187,13 @@ class ContextTracker:
             sample_content: Sample of the content for relevance matching.
         """
         if not self.config.enabled:
+            return
+
+        if looks_like_claude_code_compact_summary(query_context, sample_content):
+            logger.debug(
+                "CCR Tracker: skipped Claude Code compact summary %s for proactive expansion",
+                hash_key,
+            )
             return
 
         context = CompressedContext(

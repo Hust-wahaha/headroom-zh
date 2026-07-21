@@ -1165,7 +1165,7 @@ class SmartCrusher(Transform):
         except Exception as e:  # pragma: no cover - defensive
             logger.debug("CCR mirror: cannot get compression_store (%s)", e)
             return
-        # The TTL on the Python store defaults to 5 minutes — same as
+        # The TTL on the Python store defaults to 30 minutes — same as
         # the Rust store's `DEFAULT_TTL` (see crates/headroom-core/src/
         # ccr/mod.rs). No need to override.
         try:

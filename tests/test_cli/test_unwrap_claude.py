@@ -16,6 +16,11 @@ def runner() -> CliRunner:
     return CliRunner()
 
 
+@pytest.fixture(autouse=True)
+def _no_persistent_manifest(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(wrap_cli, "_find_persistent_manifest", lambda _port: None)
+
+
 def test_remove_claude_rtk_hooks_preserves_unrelated_hooks(tmp_path: Path) -> None:
     settings = tmp_path / "settings.json"
     settings.write_text(
@@ -244,6 +249,106 @@ def test_unwrap_claude_restores_all_base_url_modes(runner: CliRunner) -> None:
             "settings_path": settings_path,
         },
     ]
+
+
+def test_unwrap_claude_stops_claude_owned_persistent_deployment(
+    runner: CliRunner,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Manifest:
+        profile = "unwrap-2340"
+        targets = ["claude"]
+        tool_envs = {"claude": {"ANTHROPIC_BASE_URL": "http://127.0.0.1:8787"}}
+        mutations: list[object] = []
+        supervisor_kind = "service"
+
+    stopped: list[str] = []
+    deactivated: list[str] = []
+
+    monkeypatch.setattr(wrap_cli, "_find_persistent_manifest", lambda port: Manifest())
+    monkeypatch.setattr(
+        "headroom.cli.install._deactivate_deployment_mutations",
+        lambda manifest: deactivated.append(manifest.profile),
+    )
+    monkeypatch.setattr(
+        "headroom.cli.install._stop_deployment",
+        lambda manifest: stopped.append(manifest.profile),
+    )
+
+    with (
+        patch("headroom.cli.wrap._stop_local_proxy_for_unwrap") as stop_local,
+    ):
+        result = runner.invoke(
+            main,
+            ["unwrap", "claude", "--keep-mcp", "--keep-rtk", "--port", "8787"],
+        )
+
+    assert result.exit_code == 0, result.output
+    stop_local.assert_not_called()
+    assert deactivated == ["unwrap-2340"]
+    assert stopped == ["unwrap-2340"]
+    assert "Stopped Claude-owned persistent deployment 'unwrap-2340' on port 8787." in result.output
+    assert "Claude is no longer durably wrapped by Headroom." in result.output
+
+
+def test_unwrap_claude_reports_ambiguous_same_port_persistent_deployment(
+    runner: CliRunner,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Manifest:
+        profile = "shared-proxy"
+        targets = ["codex"]
+        tool_envs = {"codex": {"OPENAI_BASE_URL": "http://127.0.0.1:8787"}}
+        mutations: list[object] = []
+        supervisor_kind = "service"
+
+    monkeypatch.setattr(wrap_cli, "_find_persistent_manifest", lambda port: Manifest())
+
+    with patch("headroom.cli.wrap._stop_local_proxy_for_unwrap") as stop_local:
+        result = runner.invoke(
+            main,
+            ["unwrap", "claude", "--keep-mcp", "--keep-rtk", "--port", "8787"],
+        )
+
+    assert result.exit_code == 0, result.output
+    stop_local.assert_not_called()
+    assert "same-port persistent deployment 'shared-proxy' still owns port 8787" in result.output
+    assert "headroom install stop --profile shared-proxy" in result.output
+    assert "Claude is no longer durably wrapped by Headroom." not in result.output
+
+
+def test_unwrap_claude_warns_about_same_port_inherited_env(
+    runner: CliRunner,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "http://127.0.0.1:8787")
+
+    with patch("headroom.cli.wrap._stop_local_proxy_for_unwrap", return_value="stopped"):
+        result = runner.invoke(
+            main,
+            ["unwrap", "claude", "--keep-mcp", "--keep-rtk", "--port", "8787"],
+        )
+
+    assert result.exit_code == 0, result.output
+    assert "current shell still exports ANTHROPIC_BASE_URL for port 8787" in result.output
+    assert "Claude is no longer durably wrapped by Headroom." not in result.output
+
+
+def test_unwrap_claude_ignores_malformed_inherited_env_port(
+    runner: CliRunner,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "http://127.0.0.1:notaport")
+
+    with patch("headroom.cli.wrap._stop_local_proxy_for_unwrap", return_value="stopped"):
+        result = runner.invoke(
+            main,
+            ["unwrap", "claude", "--keep-mcp", "--keep-rtk", "--port", "8787"],
+        )
+
+    assert result.exit_code == 0, result.output
+    assert "current shell still exports ANTHROPIC_BASE_URL" not in result.output
+    assert "Claude is no longer durably wrapped by Headroom." in result.output
 
 
 def test_remove_claude_rtk_hooks_removes_init_hooks_and_env(tmp_path: Path) -> None:

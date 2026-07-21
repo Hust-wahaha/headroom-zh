@@ -20,7 +20,7 @@ use crate::ccr::{CcrStore, DEFAULT_CAPACITY, DEFAULT_TTL};
 /// In-memory CCR store backed by [`DashMap`] for sharded concurrent
 /// access.
 ///
-/// - **TTL**: 5 minutes by default. Entries past their TTL are dropped
+/// - **TTL**: 30 minutes by default. Entries past their TTL are dropped
 ///   on the next `get` (lazy expiry — no background reaper thread).
 /// - **Capacity**: 1000 entries by default. When `put` would push us
 ///   past capacity, the oldest entry (per insertion order) is evicted.
@@ -46,7 +46,7 @@ struct Entry {
 }
 
 impl InMemoryCcrStore {
-    /// Default: 1000 entries, 5-minute TTL.
+    /// Default: 1000 entries, 30-minute TTL.
     pub fn new() -> Self {
         Self::with_capacity_and_ttl(DEFAULT_CAPACITY, DEFAULT_TTL)
     }

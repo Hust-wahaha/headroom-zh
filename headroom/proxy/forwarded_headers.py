@@ -72,7 +72,9 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "TRUSTED_DASHBOARD_CLIENT_CIDRS_ENV",
     "TRUSTED_GATEWAY_CIDRS_ENV",
+    "load_trusted_dashboard_client_cidrs",
     "load_trusted_gateway_cidrs",
     "peer_is_trusted_gateway",
     "resolve_client_ip",
@@ -82,6 +84,7 @@ __all__ = [
 
 #: Environment variable that holds the comma-separated CIDR allow-list.
 TRUSTED_GATEWAY_CIDRS_ENV = "HEADROOM_PROXY_TRUSTED_GATEWAY_CIDRS"
+TRUSTED_DASHBOARD_CLIENT_CIDRS_ENV = "HEADROOM_PROXY_TRUSTED_DASHBOARD_CLIENT_CIDRS"
 
 
 def _parse_cidr_list(
@@ -113,6 +116,18 @@ def load_trusted_gateway_cidrs(
     if raw is None:
         raw = os.environ.get(TRUSTED_GATEWAY_CIDRS_ENV, "")
     return _parse_cidr_list(raw)
+
+
+def load_trusted_dashboard_client_cidrs(
+    raw: str | None = None,
+) -> tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...]:
+    """Parse the Dashboard client CIDR allow-list from its environment variable."""
+    if raw is None:
+        raw = os.environ.get(TRUSTED_DASHBOARD_CLIENT_CIDRS_ENV, "")
+    try:
+        return _parse_cidr_list(raw)
+    except ValueError as exc:
+        raise ValueError(f"Invalid {TRUSTED_DASHBOARD_CLIENT_CIDRS_ENV} entry: {exc}") from exc
 
 
 def _normalize_ip(

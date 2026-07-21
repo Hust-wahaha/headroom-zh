@@ -8,6 +8,7 @@ real code paths (not mocked) and assert on registry / task state.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import sys
@@ -81,6 +82,7 @@ class _DummyOpenAIHandler(OpenAIHandlerMixin):
             retry_base_delay_ms=1,
             retry_max_delay_ms=1,
             connect_timeout_seconds=10,
+            openai_extra_headers=None,
         )
         self.usage_reporter = None
         self.openai_provider = SimpleNamespace(
@@ -125,6 +127,13 @@ class _FakeWebSocketDisconnect(Exception):
 _FakeWebSocketDisconnect.__name__ = "WebSocketDisconnect_Fake"
 
 
+class _FakeUpstreamClose(Exception):
+    def __init__(self, code: int, reason: str) -> None:
+        super().__init__(reason)
+        self.code = code
+        self.reason = reason
+
+
 class _FakeWebSocket:
     """Scripted client WebSocket that can delay / disconnect mid-stream."""
 
@@ -145,8 +154,10 @@ class _FakeWebSocket:
         self.sent_bytes: list[bytes] = []
         self.accepted_subprotocol: str | None = None
         self.accepted_headers: list[tuple[bytes, bytes]] | None = None
+        self.accepted_event = asyncio.Event()
         self.closed = False
         self.close_code: int | None = None
+        self.close_reason: str | None = None
         self._call_log = call_log
         # "client" can trip this event to simulate mid-stream disconnect.
         self._disconnect_event = asyncio.Event()
@@ -155,6 +166,7 @@ class _FakeWebSocket:
     async def accept(self, subprotocol=None, headers=None) -> None:
         self.accepted_subprotocol = subprotocol
         self.accepted_headers = list(headers) if headers is not None else None
+        self.accepted_event.set()
         if self._call_log is not None:
             self._call_log.append("accept")
 
@@ -183,7 +195,10 @@ class _FakeWebSocket:
 
     async def close(self, code: int | None = None, reason: str | None = None) -> None:
         self.closed = True
-        self.close_code = code
+        if code is not None or self.close_code is None:
+            self.close_code = code
+        if reason is not None or self.close_reason is None:
+            self.close_reason = reason
 
     def trigger_disconnect(self) -> None:
         self._disconnect_event.set()
@@ -755,6 +770,77 @@ async def test_ws_session_metrics_include_dashboard_performance_timings():
 
 
 @pytest.mark.asyncio
+async def test_ws_opt_in_flattens_response_create_for_openai_compatible_upstream(monkeypatch):
+    """Some OpenAI-compatible WS gateways expect top-level response.create payloads."""
+
+    monkeypatch.setenv("HEADROOM_OPENAI_WS_FLATTEN_RESPONSE_CREATE", "1")
+    upstream_events = [
+        json.dumps({"type": "response.created", "response": {"id": "r_1"}}),
+        json.dumps({"type": "response.completed", "response": {"id": "r_1"}}),
+    ]
+    upstream = _FakeUpstream(upstream_events)
+    fake_ws_mod = _make_fake_websockets_module(upstream)
+
+    first = json.dumps(
+        {
+            "type": "response.create",
+            "event_id": "evt_flatten",
+            "response": {
+                "model": "gpt-5.4",
+                "input": "hello",
+                "instructions": "be concise",
+                "tools": [{"type": "function", "name": "shell"}],
+            },
+        }
+    )
+    client_ws = _FakeWebSocket(frames=[first])
+    handler = _DummyOpenAIHandler()
+
+    with patch.dict(sys.modules, {"websockets": fake_ws_mod}):
+        await handler.handle_openai_responses_ws(client_ws)
+
+    assert upstream.sent
+    sent = json.loads(upstream.sent[0])
+    assert sent == {
+        "model": "gpt-5.4",
+        "input": "hello",
+        "instructions": "be concise",
+        "tools": [{"type": "function", "name": "shell"}],
+        "type": "response.create",
+        "event_id": "evt_flatten",
+    }
+
+
+@pytest.mark.asyncio
+async def test_ws_opt_in_propagates_upstream_close_code_and_reason(monkeypatch):
+    """Expose upstream close details to Codex instead of swallowing them in debug logs."""
+
+    monkeypatch.setenv("HEADROOM_OPENAI_WS_PROPAGATE_UPSTREAM_CLOSE", "1")
+    upstream = _FakeUpstream(
+        [],
+        raise_mid_stream=_FakeUpstreamClose(4001, "bad request shape"),
+    )
+    fake_ws_mod = _make_fake_websockets_module(upstream)
+
+    client_ws = _FakeWebSocket(
+        frames=[_first_frame()],
+        hold_after_initial=True,
+    )
+    handler = _DummyOpenAIHandler()
+
+    with patch.dict(sys.modules, {"websockets": fake_ws_mod}):
+        await asyncio.wait_for(
+            handler.handle_openai_responses_ws(client_ws),
+            timeout=2.0,
+        )
+
+    assert client_ws.closed
+    assert client_ws.close_code == 4001
+    assert client_ws.close_reason == "bad request shape"
+    assert handler.metrics.termination_causes[-1] == "upstream_error"
+
+
+@pytest.mark.asyncio
 async def test_client_disconnect_cancels_upstream_relay_within_100ms():
     """**Failing-test-first** scenario from the plan.
 
@@ -951,18 +1037,19 @@ async def test_upstream_connect_failure_still_deregisters_cleanly():
 
 @pytest.mark.asyncio
 async def test_ws_connect_failure_falls_back_to_http():
-    """When every upstream connect attempt fails, the client is still
-    accepted (with no x-codex-* headers, since there is no upstream
-    window) and the request is served via the HTTP POST fallback with
-    the client's first frame. Preserves the pre-reorder WS-upgrade-
-    failure behaviour.
+    """When every ChatGPT-auth upstream connect attempt fails, the client
+    still gets its local 101 immediately, then the request is served via
+    the HTTP POST fallback with the first frame after retries exhaust.
     """
     fake_ws_mod = _make_fake_websockets_module(
         None, connect_error=RuntimeError("HTTP 500 from upstream")
     )
 
     first = _first_frame()
-    client_ws = _FakeWebSocket(frames=[first])
+    client_ws = _FakeWebSocket(
+        frames=[first],
+        headers=_codex_lite_headers(chatgpt=True),
+    )
     handler = _DummyOpenAIHandler()
 
     fallback_calls: list[tuple] = []
@@ -980,9 +1067,62 @@ async def test_ws_connect_failure_falls_back_to_http():
     # Fallback ran with the first frame.
     assert len(fallback_calls) == 1
     _body, _first_raw = fallback_calls[0]
-    assert _first_raw == first
-    assert _body == json.loads(first)
+    expected = json.loads(first)
+    expected["response"]["store"] = False
+    assert json.loads(_first_raw) == expected
+    assert _body == expected
     # Clean teardown.
+    assert handler.ws_sessions.active_count() == 0
+
+
+@pytest.mark.asyncio
+async def test_chatgpt_ws_accepts_before_stalled_upstream_connect():
+    """ChatGPT-auth sessions must send the local 101 before a stalled
+    upstream opening handshake is released.
+    """
+    upstream_events = [
+        json.dumps({"type": "response.created", "response": {"id": "r_1"}}),
+        json.dumps({"type": "response.completed", "response": {"id": "r_1"}}),
+    ]
+    first_attempt_started = asyncio.Event()
+    release_first_attempt = asyncio.Event()
+    connect_calls: list[tuple[tuple, dict]] = []
+
+    async def _connect(*args, **kwargs):
+        connect_calls.append((args, dict(kwargs)))
+        if len(connect_calls) == 1:
+            first_attempt_started.set()
+            await release_first_attempt.wait()
+            raise RuntimeError("first opening handshake stalled")
+        return _FakeUpstream(list(upstream_events))
+
+    fake_ws_mod = MagicMock()
+    fake_ws_mod.connect = _connect
+    fake_ws_mod.Subprotocol = str
+
+    client_ws = _FakeWebSocket(
+        frames=[_first_frame()],
+        headers=_codex_lite_headers(chatgpt=True),
+    )
+    handler = _DummyOpenAIHandler()
+    handler.config.retry_max_attempts = 3
+
+    with patch.dict(sys.modules, {"websockets": fake_ws_mod}):
+        task = asyncio.create_task(handler.handle_openai_responses_ws(client_ws))
+        try:
+            await asyncio.wait_for(first_attempt_started.wait(), timeout=0.5)
+            await asyncio.wait_for(client_ws.accepted_event.wait(), timeout=0.2)
+            assert len(connect_calls) == 1
+            assert client_ws.accepted_headers is None
+            release_first_attempt.set()
+            await asyncio.wait_for(task, timeout=2.0)
+        finally:
+            release_first_attempt.set()
+            if not task.done():
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+
     assert handler.ws_sessions.active_count() == 0
 
 
@@ -1124,9 +1264,9 @@ async def test_ws_first_frame_strips_codex_lite_metadata_mirror():
 
 
 @pytest.mark.asyncio
-async def test_ws_connect_happens_before_accept():
-    """The upstream connect must complete before the client 101 is sent,
-    so OpenAI's x-codex-* handshake headers are available to attach.
+async def test_api_key_ws_connect_happens_before_accept():
+    """API-key sessions keep the upstream connect before the client 101,
+    so OpenAI's x-codex-* handshake headers remain attachable there.
     """
     upstream_events = [
         json.dumps({"type": "response.created", "response": {"id": "r_1"}}),

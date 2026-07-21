@@ -719,3 +719,30 @@ class TestExtractAssistantMessage:
         assert message["role"] == "assistant"
         assert message["content"] == "Hello"
         assert message["tool_calls"] == [{"id": "123"}]
+
+
+class TestExtractAssistantMessageEdgeCases:
+    """Regression: `_extract_assistant_message` must not crash on an empty or
+    malformed OpenAI `choices` array (OpenAI-compatible gateways can send
+    `choices: []` or `[null]` on content-filtered / usage-only responses)."""
+
+    def test_openai_empty_choices_does_not_crash(self):
+        handler = CCRResponseHandler()
+        msg = handler._extract_assistant_message({"choices": []}, "openai")
+        assert msg == {"role": "assistant", "content": None, "tool_calls": None}
+
+    def test_openai_null_first_choice_does_not_crash(self):
+        handler = CCRResponseHandler()
+        msg = handler._extract_assistant_message({"choices": [None]}, "openai")
+        assert msg == {"role": "assistant", "content": None, "tool_calls": None}
+
+    def test_openai_absent_choices_does_not_crash(self):
+        handler = CCRResponseHandler()
+        msg = handler._extract_assistant_message({}, "openai")
+        assert msg == {"role": "assistant", "content": None, "tool_calls": None}
+
+    def test_openai_normal_choice_still_extracts(self):
+        handler = CCRResponseHandler()
+        resp = {"choices": [{"message": {"content": "hi", "tool_calls": [{"id": "1"}]}}]}
+        msg = handler._extract_assistant_message(resp, "openai")
+        assert msg == {"role": "assistant", "content": "hi", "tool_calls": [{"id": "1"}]}

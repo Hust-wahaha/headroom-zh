@@ -45,6 +45,7 @@ Telemetry is **off by default** (opt-in). Opt in with `HEADROOM_TELEMETRY=on` or
 | `--log-messages` | `false` | Store full request/response content for the live feed |
 | `--budget` | None | Daily budget limit in USD |
 | `--openai-api-url` | `https://api.openai.com` | Custom OpenAI API URL |
+| `--provider-name` | Detected from `--openai-api-url` | Display name for the OpenAI-compatible upstream on the dashboard (e.g. `OpenRouter`). Well-known hosts (OpenRouter, Groq, Together, Azure OpenAI, …) are detected automatically; this overrides them. Routing and pricing are unaffected. |
 | `--anthropic-api-url` | Anthropic default | Custom Anthropic API URL |
 | `--gemini-api-url` | Gemini default | Custom Gemini API URL |
 | `--backend` | `anthropic` | Backend: `anthropic`, `bedrock`, `openrouter`, `anyllm`, or `litellm-<provider>` |
@@ -123,11 +124,13 @@ HEADROOM_SAVINGS_PROFILE=agent-90 headroom proxy --port 8787
 | `--no-learn` | `false` | Explicitly disable traffic learning |
 | `--min-evidence` | `5` | Minimum observations before a learned pattern is persisted |
 | `--codex-wire-debug` | `false` | Write local Codex wire snapshots and matching proxy log traces |
+| `--compress-passthrough` | `false` | Also compress custom proxy paths that fall through to the catch-all handler (OpenAI Responses-shaped bodies, path ends in `/responses`). Also `HEADROOM_COMPRESS_PASSTHROUGH=1` |
 
 ```bash
 headroom proxy --memory
 headroom proxy --learn --min-evidence 3
 headroom proxy --codex-wire-debug
+headroom proxy --compress-passthrough
 ```
 
 <Callout type="info" title="LLMLingua removed from the proxy CLI">
@@ -317,11 +320,18 @@ headroom wrap aider
 
 # Cursor (starts the proxy and prints settings to paste into Cursor)
 headroom wrap cursor
+
+# Grok Build (updates ~/.grok/config.toml and starts the proxy)
+headroom wrap grok-build
 ```
 
 Cursor reads model endpoints from its settings UI, so `headroom wrap cursor`
 does not rewrite Cursor configuration or launch the app. After it starts the
 proxy, copy the printed base URL into Cursor's model settings.
+
+Grok Build reads model endpoints from `~/.grok/config.toml`. `headroom wrap grok-build`
+injects or updates `[model.grok-build] base_url` to point at the local proxy, then
+run `grok` from the same project directory. See [Grok Build Integration](/docs/grok-build).
 
 For environment-driven clients, you can also set the base URL manually:
 
@@ -348,6 +358,78 @@ headroom proxy --backend azure
 # OpenRouter (400+ models)
 OPENROUTER_API_KEY=sk-or-... headroom proxy --backend openrouter
 ```
+
+### Google Vertex AI
+
+`--backend vertex_ai` delegates to [LiteLLM](https://docs.litellm.ai/docs/providers/vertex),
+which brings two requirements that are easy to miss:
+
+**1. Install the Vertex SDK.** `google-cloud-aiplatform` is not included in any
+Headroom extra (`[proxy]`, `[all]`, …) or Docker image variant, so install it
+alongside Headroom:
+
+```bash
+pip install "headroom-ai[proxy]" "google-cloud-aiplatform>=1.38"
+```
+
+Without it, the first Vertex request fails with
+`litellm.BadRequestError: … vertexai import failed … No module named 'vertexai'`.
+
+**2. Set the LiteLLM project/location variables.** LiteLLM reads the GCP project
+and region from `VERTEXAI_PROJECT` / `VERTEXAI_LOCATION` — these are **not** the
+standard Google Cloud variables (`GOOGLE_CLOUD_PROJECT` / `GOOGLE_CLOUD_LOCATION`)
+used by `gcloud` and current Google SDKs:
+
+```bash
+export GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json  # or use ADC
+export VERTEXAI_PROJECT=<your-gcp-project>
+export VERTEXAI_LOCATION=us-central1
+
+headroom proxy --backend vertex_ai --region us-central1
+```
+
+<Callout type="warn">
+If `VERTEXAI_PROJECT` is unset, requests do not fail loudly — they can silently
+resolve against your Application Default Credentials' default quota project,
+billing a different GCP project than you intended. Set it explicitly even if
+`GOOGLE_CLOUD_PROJECT` is already exported.
+</Callout>
+
+**Backend name aliases.** `vertex_ai`, `vertex`, `google-vertex`, `googlevertex`,
+`litellm-vertex`, and `litellm-vertex_ai` are all normalized to the same
+LiteLLM-backed `vertex_ai` backend — CLI help text and older docs use these
+spellings interchangeably.
+
+Running Claude Code against Claude models on Vertex? See
+[Claude Code on Vertex AI](/docs/claude-code-vertex) for the recommended
+native Vertex-mode flow that reuses Claude Code's own GCP auth.
+
+<Callout type="info" title="Not the same as the LiteLLM callback">
+`--backend vertex_ai` runs Headroom **as a proxy that itself calls Vertex via
+LiteLLM**. The [LiteLLM integration page](/docs/litellm) documents the inverse:
+adding Headroom as a compression callback inside your own LiteLLM app. Despite
+the shared name, they are different mechanisms.
+</Callout>
+
+### Native Vertex passthrough routes
+
+Separately from `--backend vertex_ai`, the proxy always registers routes that
+mirror Vertex's native REST shape verbatim — no backend flag needed:
+
+```text
+/{api_version}/projects/{project}/locations/{location}/publishers/{publisher}/models/{model}:generateContent
+/{api_version}/projects/{project}/locations/{location}/publishers/{publisher}/models/{model}:streamGenerateContent
+/{api_version}/projects/{project}/locations/{location}/publishers/{publisher}/models/{model}:countTokens
+/{api_version}/projects/{project}/locations/{location}/publishers/{publisher}/models/{model}:rawPredict
+/{api_version}/projects/{project}/locations/{location}/publishers/{publisher}/models/{model}:streamRawPredict
+```
+
+Requests with `publisher=google` (Gemini models) go through Headroom's full
+Gemini optimization handler; `publisher=anthropic` (Claude on Vertex) routes
+through the same LiteLLM-Vertex path as `--backend vertex_ai`. Any client that
+already speaks the native Vertex REST API can simply point its endpoint at the
+proxy — this is the mechanism `headroom wrap claude` uses in
+[Vertex mode](/docs/claude-code-vertex).
 
 ### Bedrock via a local gateway
 

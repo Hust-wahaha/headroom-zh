@@ -49,7 +49,8 @@ COPY headroom/ headroom/
 
 ARG HEADROOM_EXTRAS=proxy,code
 RUN --mount=type=cache,target=/root/.cache/uv \
-    --mount=type=cache,target=/root/.cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/build/target \
     uv pip install --system ".[${HEADROOM_EXTRAS}]"
 

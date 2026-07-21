@@ -72,3 +72,15 @@ def test_input_tokens_never_negative() -> None:
         )
     )
     assert usage["input_tokens"] == 0
+
+
+def test_output_tokens_none_coerced_to_zero() -> None:
+    # A provider can carry the completion_tokens attribute but leave it None.
+    # The mapping must emit an int (0), not None, so RequestOutcome's int
+    # contract holds downstream (prometheus does tokens_output_total +=
+    # output_tokens, which would raise TypeError on None).
+    usage = _anthropic_usage_from_litellm(
+        SimpleNamespace(prompt_tokens=100, completion_tokens=None)
+    )
+    assert usage["output_tokens"] == 0
+    assert isinstance(usage["output_tokens"], int)

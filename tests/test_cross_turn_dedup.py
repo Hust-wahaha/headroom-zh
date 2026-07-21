@@ -130,6 +130,100 @@ def test_info_preserving_reconstruction_multiref():
 
 
 # --------------------------------------------------------------------------
+# Numbered (renumber-fold) path: a leading line-number lets the same content
+# fold across a uniform shift, with the offset carried in the pointer so the
+# original bytes recover as ``str(int(number) + delta)``. That recovery is
+# byte-exact ONLY for UNPADDED numbers: a leading-zero prefix (a timestamped
+# log row, ``08:00:01``) loses its pad on renumber (``int("08") + 1`` -> ``"9"``,
+# not ``"09"``), so it must not fold under a delta. The helper below renumbers
+# exactly as the module documents, so the round-trip assertion is faithful.
+# --------------------------------------------------------------------------
+def _reconstruct_numbered(orig_blocks, out_blocks):
+    """Like ``_reconstruct`` but honours a non-zero delta: recover each folded
+    span from the referenced msg, renumbering leading line numbers by the stated
+    offset (``str(int(number) + delta) + key``), then assert byte-exact bytes."""
+    by_turn = {b.turn: b.text.split("\n") for b in orig_blocks}
+
+    def _content(line):
+        return _num_and_key(line)[2].strip()
+
+    for orig, out in zip(orig_blocks, out_blocks):
+        if orig.protected:
+            assert out.text == orig.text
+            continue
+        rebuilt = []
+        for line in out.text.split("\n"):
+            m = _FOLD_RE.search(line)
+            if m and line.lstrip().startswith("[↑"):
+                n, ref = int(m.group(1)), int(m.group(2))
+                delta = int(m.group(3)) if m.group(3) else 0
+                anchor = m.group(4)
+                assert ref < orig.turn, "reference must point to an EARLIER msg"
+                core = anchor[:-3] if anchor.endswith("...") else anchor
+                ref_lines = by_turn[ref]
+                idx = next(i for i, rl in enumerate(ref_lines) if _content(rl).startswith(core))
+                for rl in ref_lines[idx : idx + n]:
+                    num, key, _c = _num_and_key(rl)  # key keeps the separator
+                    rebuilt.append(f"{num + delta}{key}" if (num is not None and delta) else rl)
+            else:
+                rebuilt.append(line)
+        assert "\n".join(rebuilt) == orig.text, f"turn {orig.turn} not faithfully reconstructable"
+
+
+def _log(prefixes):
+    # Timestamped probe rows: identical content, distinct LEADING-ZERO hour.
+    return "\n".join(f"{p}:00:01 probe ok latency=12ms region=us-east-1" for p in prefixes)
+
+
+def test_zero_padded_prefix_not_folded_lossily():
+    # A leading-zero numeric prefix shifted by a uniform +1 looks like a renumber
+    # (keys match, delta is uniform), but recovery via int(number)+delta drops the
+    # pad, so the fold would NOT round-trip. It must be left verbatim instead.
+    blocks = [
+        _blk("probe window A\n" + _log(["06", "07", "08"]) + "\ndone A", 1),
+        _blk("probe window B\n" + _log(["07", "08", "09"]) + "\ndone B", 5),
+    ]
+    out, stats = dedup_blocks(blocks)
+    assert stats["spans_folded"] == 0
+    assert out[1].text == blocks[1].text and "[↑" not in out[1].text
+    _reconstruct_numbered(blocks, out)  # trivially exact: nothing folded
+
+
+def test_unpadded_renumber_still_folds_and_recovers_exactly():
+    # The intended feature: an UNPADDED grep -n / sed -n read re-displayed after an
+    # edit shifted every line number by a constant still folds, and the pointer's
+    # delta recovers the exact numbered bytes. The fix must not regress this.
+    span = [
+        "    result_0 = compute_overdraft(business_id=0, amount=0)",
+        "    result_1 = compute_overdraft(business_id=1, amount=100)",
+        "    result_2 = compute_overdraft(business_id=2, amount=200)",
+    ]
+    b1 = "read A\n" + "\n".join(f"{10 + i}:{s}" for i, s in enumerate(span)) + "\nend A"
+    b2 = "read B\n" + "\n".join(f"{15 + i}:{s}" for i, s in enumerate(span)) + "\nend B"
+    blocks = [_blk(b1, 1), _blk(b2, 3)]
+    out, stats = dedup_blocks(blocks)
+    assert stats["spans_folded"] == 1
+    assert "+5L" in out[1].text  # uniform +5 shift carried in the pointer
+    _reconstruct_numbered(blocks, out)
+
+
+def test_padded_content_exact_redisplay_still_folds():
+    # Surgical-scope guard: the fix only blocks the LOSSY renumbered fold. The same
+    # zero-padded rows re-displayed VERBATIM (delta 0) are still a byte-identical
+    # fold and must continue to compress.
+    log = _log(["06", "07", "08"])
+    blocks = [
+        _blk("probe window A\n" + log + "\ndone A", 1),
+        _blk("re-check\n" + log + "\ntail", 4),
+    ]
+    out, stats = dedup_blocks(blocks)
+    assert stats["spans_folded"] == 1
+    m = _FOLD_RE.search(out[1].text)
+    assert m is not None and m.group(3) is None  # folded, delta-free (byte-identical)
+    _reconstruct_numbered(blocks, out)
+
+
+# --------------------------------------------------------------------------
 # Integration: full router.apply() path (content-block tool_result format)
 # --------------------------------------------------------------------------
 def _mk_tok():

@@ -23,6 +23,7 @@ from headroom.ccr.context_tracker import (
     ContextTrackerConfig,
     ExpansionRecommendation,
     get_context_tracker,
+    looks_like_claude_code_compact_summary,
     reset_context_tracker,
 )
 
@@ -57,6 +58,37 @@ class TestContextTrackerBasics:
         assert "abc123" in tracker.get_tracked_hashes()
         stats = tracker.get_stats()
         assert stats["tracked_contexts"] == 1
+
+    def test_claude_code_compact_summary_not_tracked(self):
+        """Claude Code `/compact` summaries are not proactively re-expanded."""
+        tracker = ContextTracker()
+
+        tracker.track_compression(
+            hash_key="compact_summary",
+            turn_number=1,
+            tool_name="Claude Code",
+            original_count=1,
+            compressed_count=1,
+            query_context="Claude Code /compact summary",
+            sample_content=(
+                "This session is being continued from a previous conversation "
+                "that ran out of context. The conversation is summarized below: "
+                "We changed the auth middleware and still need to run tests."
+            ),
+            workspace_key="ws-test",
+        )
+
+        assert tracker.get_tracked_hashes() == []
+
+    def test_claude_code_compact_summary_detector_is_narrow(self):
+        """The compact-summary detector does not reject ordinary summaries."""
+        assert looks_like_claude_code_compact_summary(
+            "This session is being continued from a previous conversation. "
+            "The conversation is summarized below."
+        )
+        assert not looks_like_claude_code_compact_summary(
+            "search results summary for auth middleware files"
+        )
 
     def test_track_multiple_compressions(self):
         """Track multiple compression events."""

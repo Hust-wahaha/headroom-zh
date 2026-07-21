@@ -47,6 +47,7 @@
 //! for those specifically; not preemptively.
 
 use crate::transforms::content_detector::ContentType;
+#[cfg(feature = "ml")]
 use crate::transforms::magika_detector::magika_detect;
 use crate::transforms::unidiff_detector::is_diff;
 
@@ -61,6 +62,10 @@ pub fn detect(content: &str) -> ContentType {
     }
 
     // ── Tier 1: Magika ──────────────────────────────────────────
+    // Only present in the `ml` build. Without the ML crates the magika
+    // detector is compiled out; the chain skips Tier 1 and begins at
+    // Tier 2, exactly as it would when magika returns PlainText.
+    #[cfg(feature = "ml")]
     match magika_detect(content) {
         Ok(ContentType::PlainText) => {
             // Magika says "I don't know" or "plain text". Continue
@@ -92,10 +97,21 @@ pub fn detect(content: &str) -> ContentType {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "ml")]
     use crate::transforms::magika_detector::magika_runtime_available_for_session_init;
 
+    #[cfg(feature = "ml")]
     fn magika_available() -> bool {
         magika_runtime_available_for_session_init().is_ok()
+    }
+
+    // Without the ML crates there is no magika session at all, so the
+    // detection chain always starts at Tier 2. Report "unavailable" so
+    // the shared assertions below exercise the same fallthrough path
+    // they use on a host where magika can't initialize.
+    #[cfg(not(feature = "ml"))]
+    fn magika_available() -> bool {
+        false
     }
 
     #[test]

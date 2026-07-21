@@ -26,8 +26,10 @@
 //! kernels, same weights — embeddings agree to floating-point
 //! representation. Cosine similarity agrees to ~1e-6.
 
+#[cfg(feature = "ml")]
 use std::sync::Mutex;
 
+#[cfg(feature = "ml")]
 use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
 
 use super::base::{RelevanceScore, RelevanceScorer};
@@ -39,6 +41,7 @@ use super::base::{RelevanceScore, RelevanceScorer};
 /// for backwards compatibility but `is_available()` returns `false`
 /// when the inner model failed to load (mimicking Python's
 /// "sentence-transformers not installed" branch).
+#[cfg(feature = "ml")]
 pub struct EmbeddingScorer {
     pub model_name: String,
     /// `None` when model load failed — `is_available()` returns false
@@ -55,6 +58,7 @@ pub struct EmbeddingScorer {
     model: Option<Mutex<TextEmbedding>>,
 }
 
+#[cfg(feature = "ml")]
 impl Default for EmbeddingScorer {
     /// Returns an unloaded scorer (model = None, is_available = false).
     ///
@@ -75,6 +79,7 @@ impl Default for EmbeddingScorer {
     }
 }
 
+#[cfg(feature = "ml")]
 impl EmbeddingScorer {
     /// Construct the scorer with the default model
     /// (BAAI/bge-small-en-v1.5). May trigger a one-time HF Hub
@@ -118,6 +123,7 @@ impl EmbeddingScorer {
     }
 }
 
+#[cfg(feature = "ml")]
 impl RelevanceScorer for EmbeddingScorer {
     fn score(&self, item: &str, context: &str) -> RelevanceScore {
         if item.is_empty() || context.is_empty() {
@@ -207,8 +213,66 @@ impl RelevanceScorer for EmbeddingScorer {
     }
 }
 
+/// Lexical-only build stub.
+///
+/// Without the `ml` feature the fastembed/ONNX backend is compiled out
+/// entirely. `EmbeddingScorer` still exists so `HybridScorer` and
+/// `create_scorer` compile unchanged, but it carries no model and is
+/// permanently unavailable: `is_available()` is always `false` and the
+/// scoring methods return the same empty scores the ml build produces
+/// when its model failed to load. `HybridScorer` therefore takes its
+/// BM25 fallback path exactly as it does when embeddings are stubbed.
+#[cfg(not(feature = "ml"))]
+pub struct EmbeddingScorer {
+    pub model_name: String,
+}
+
+#[cfg(not(feature = "ml"))]
+impl Default for EmbeddingScorer {
+    fn default() -> Self {
+        EmbeddingScorer {
+            model_name: "BAAI/bge-small-en-v1.5".to_string(),
+        }
+    }
+}
+
+#[cfg(not(feature = "ml"))]
+impl RelevanceScorer for EmbeddingScorer {
+    fn score(&self, item: &str, context: &str) -> RelevanceScore {
+        if item.is_empty() || context.is_empty() {
+            return RelevanceScore::empty("Embedding: empty input");
+        }
+        RelevanceScore::empty("Embedding: model not available")
+    }
+
+    fn score_batch(&self, items: &[&str], context: &str) -> Vec<RelevanceScore> {
+        if items.is_empty() {
+            return Vec::new();
+        }
+        if context.is_empty() {
+            return items
+                .iter()
+                .map(|_| RelevanceScore::empty("Embedding: empty context"))
+                .collect();
+        }
+        items
+            .iter()
+            .map(|_| RelevanceScore::empty("Embedding: model not available"))
+            .collect()
+    }
+
+    fn is_available(&self) -> bool {
+        false
+    }
+}
+
 /// Cosine similarity for two vectors. Clamped to `[0, 1]` since we
 /// only care about positive similarity (mirrors Python `_cosine_similarity`).
+///
+/// Only the `ml` build calls this at runtime (from the fastembed-backed
+/// scorer); the lexical-only build keeps it solely for the unit tests
+/// that pin its numeric behavior.
+#[cfg(any(feature = "ml", test))]
 fn cosine_similarity(a: &[f32], b: &[f32]) -> f64 {
     if a.is_empty() || b.is_empty() || a.len() != b.len() {
         return 0.0;
@@ -239,17 +303,26 @@ mod tests {
     // download). Without the env var, only the offline-safe stub
     // path is exercised.
 
+    #[cfg(feature = "ml")]
     fn fastembed_enabled() -> bool {
         std::env::var("RUN_FASTEMBED_TESTS").is_ok()
     }
 
     /// Construct a stub scorer with `model = None` for offline-safe
     /// tests of the unavailable-path behavior.
+    #[cfg(feature = "ml")]
     fn unavailable_scorer() -> EmbeddingScorer {
         EmbeddingScorer {
             model_name: "test".to_string(),
             model: None,
         }
+    }
+
+    /// In the lexical-only build the scorer is always unavailable, so
+    /// `default()` already gives the stub we want to exercise.
+    #[cfg(not(feature = "ml"))]
+    fn unavailable_scorer() -> EmbeddingScorer {
+        EmbeddingScorer::default()
     }
 
     #[test]
@@ -327,6 +400,7 @@ mod tests {
 
     // ---------- AVX2 CPU guard (issue #1723) ----------
 
+    #[cfg(feature = "ml")]
     #[test]
     fn onnx_guard_matches_cpu_features() {
         let supported = crate::onnx_cpu::onnx_runtime_supported_by_cpu();
@@ -336,6 +410,7 @@ mod tests {
         assert!(supported);
     }
 
+    #[cfg(feature = "ml")]
     #[test]
     fn try_new_errors_on_unsupported_cpu_instead_of_sigill() {
         // On a no-AVX2 host the guard must turn the SIGILL into a plain Err
@@ -352,6 +427,7 @@ mod tests {
 
     // ---------- model-backed tests (gated on RUN_FASTEMBED_TESTS) ----------
 
+    #[cfg(feature = "ml")]
     #[test]
     fn fastembed_loads_default_model() {
         if !fastembed_enabled() {
@@ -362,6 +438,7 @@ mod tests {
         assert_eq!(s.model_name, "BGESmallENV15");
     }
 
+    #[cfg(feature = "ml")]
     #[test]
     fn fastembed_semantic_match_outranks_unrelated() {
         if !fastembed_enabled() {
@@ -378,6 +455,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "ml")]
     #[test]
     fn fastembed_batch_returns_one_score_per_item() {
         if !fastembed_enabled() {

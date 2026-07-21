@@ -10,6 +10,27 @@ from tests._mcp_stub import import_module_with_mcp_stub
 mcp_server_mod = import_module_with_mcp_stub("headroom.memory.mcp_server")
 
 
+class _CapturingServer:
+    def __init__(self, name: str) -> None:
+        self.name = name
+        self.list_tools_handler = None
+        self.call_tool_handler = None
+
+    def list_tools(self):
+        def decorator(handler):
+            self.list_tools_handler = handler
+            return handler
+
+        return decorator
+
+    def call_tool(self):
+        def decorator(handler):
+            self.call_tool_handler = handler
+            return handler
+
+        return decorator
+
+
 def test_warm_up_backend_batches_embedding_and_indexing() -> None:
     """Warm-up should batch missing embeddings and vector indexing."""
     warmup_embedding = np.ones(384, dtype=np.float32)
@@ -60,6 +81,142 @@ def test_warm_up_backend_batches_embedding_and_indexing() -> None:
     vector_index.index_batch.assert_awaited_once_with(memories)
     assert np.array_equal(memory_without_embedding_a.embedding, batch_embeddings[0])
     assert np.array_equal(memory_without_embedding_b.embedding, batch_embeddings[1])
+
+
+def test_tool_call_waits_for_handshake_warm_up(monkeypatch) -> None:
+    async def scenario() -> None:
+        warm_up_started = asyncio.Event()
+        release_warm_up = asyncio.Event()
+        backend = SimpleNamespace()
+
+        async def warm_up(candidate, user_id: str) -> None:
+            assert candidate is backend
+            assert user_id == "alice"
+            warm_up_started.set()
+            await release_warm_up.wait()
+
+        handle_search = AsyncMock(return_value=["search result"])
+        monkeypatch.setattr(mcp_server_mod, "Server", _CapturingServer)
+        monkeypatch.setattr(mcp_server_mod, "LocalBackend", lambda config: backend)
+        monkeypatch.setattr(mcp_server_mod, "_warm_up_backend", warm_up)
+        monkeypatch.setattr(mcp_server_mod, "_handle_search", handle_search)
+
+        server = mcp_server_mod.create_memory_server("memory.db", user_id="alice")
+        await server.list_tools_handler()
+        await warm_up_started.wait()
+
+        tool_call = asyncio.create_task(
+            server.call_tool_handler("memory_search", {"query": "preferences"})
+        )
+        await asyncio.sleep(0)
+
+        handle_search.assert_not_awaited()
+        assert not tool_call.done()
+
+        release_warm_up.set()
+        assert await tool_call == ["search result"]
+        handle_search.assert_awaited_once_with(
+            backend,
+            {"query": "preferences"},
+            "alice",
+        )
+
+    asyncio.run(scenario())
+
+
+def test_failed_handshake_init_is_discarded_and_retried(monkeypatch) -> None:
+    async def scenario() -> None:
+        first_warm_up_started = asyncio.Event()
+        fail_first_warm_up = asyncio.Event()
+        failed_backend_closed = asyncio.Event()
+
+        async def close_failed_backend() -> None:
+            failed_backend_closed.set()
+
+        failed_backend = SimpleNamespace(close=AsyncMock(side_effect=close_failed_backend))
+        ready_backend = SimpleNamespace(close=AsyncMock())
+        backends = iter([failed_backend, ready_backend])
+
+        async def warm_up(candidate, user_id: str) -> None:
+            assert user_id == "alice"
+            if candidate is failed_backend:
+                first_warm_up_started.set()
+                await fail_first_warm_up.wait()
+                raise RuntimeError("warm-up failed")
+
+        handle_search = AsyncMock(return_value=["search result"])
+        monkeypatch.setattr(mcp_server_mod, "Server", _CapturingServer)
+        monkeypatch.setattr(mcp_server_mod, "LocalBackend", lambda config: next(backends))
+        monkeypatch.setattr(mcp_server_mod, "_warm_up_backend", warm_up)
+        monkeypatch.setattr(mcp_server_mod, "_handle_search", handle_search)
+
+        server = mcp_server_mod.create_memory_server("memory.db", user_id="alice")
+        await server.list_tools_handler()
+        await first_warm_up_started.wait()
+
+        fail_first_warm_up.set()
+        await failed_backend_closed.wait()
+        await asyncio.sleep(0)
+
+        failed_backend.close.assert_awaited_once()
+        handle_search.assert_not_awaited()
+
+        assert await server.call_tool_handler("memory_search", {"query": "preferences"}) == [
+            "search result"
+        ]
+        handle_search.assert_awaited_once_with(
+            ready_backend,
+            {"query": "preferences"},
+            "alice",
+        )
+        ready_backend.close.assert_not_awaited()
+
+    asyncio.run(scenario())
+
+
+def test_concurrent_tool_calls_share_backend_initialization(monkeypatch) -> None:
+    async def scenario() -> None:
+        warm_up_started = asyncio.Event()
+        release_warm_up = asyncio.Event()
+        backend = SimpleNamespace()
+        created_backends = 0
+
+        def create_backend(config):
+            nonlocal created_backends
+            created_backends += 1
+            return backend
+
+        async def warm_up(candidate, user_id: str) -> None:
+            assert candidate is backend
+            assert user_id == "alice"
+            warm_up_started.set()
+            await release_warm_up.wait()
+
+        handle_search = AsyncMock(return_value=["search result"])
+        monkeypatch.setattr(mcp_server_mod, "Server", _CapturingServer)
+        monkeypatch.setattr(mcp_server_mod, "LocalBackend", create_backend)
+        monkeypatch.setattr(mcp_server_mod, "_warm_up_backend", warm_up)
+        monkeypatch.setattr(mcp_server_mod, "_handle_search", handle_search)
+
+        server = mcp_server_mod.create_memory_server("memory.db", user_id="alice")
+        calls = [
+            asyncio.create_task(
+                server.call_tool_handler("memory_search", {"query": f"query-{index}"})
+            )
+            for index in range(2)
+        ]
+        await warm_up_started.wait()
+        await asyncio.sleep(0)
+
+        assert created_backends == 1
+        handle_search.assert_not_awaited()
+
+        release_warm_up.set()
+        assert await asyncio.gather(*calls) == [["search result"], ["search result"]]
+        assert handle_search.await_count == 2
+        assert all(call.args[0] is backend for call in handle_search.await_args_list)
+
+    asyncio.run(scenario())
 
 
 def test_memory_mcp_startup_context_reports_dynamic_project_db(tmp_path) -> None:
@@ -228,3 +385,30 @@ def test_search_fails_open_when_access_tracking_fails() -> None:
     result = asyncio.run(mcp_server_mod._handle_search(backend, {"query": "preference"}, "alice"))
 
     assert "Useful preference" in result[0].kwargs["text"]
+
+
+def test_save_does_not_supersede_a_semantically_similar_memory() -> None:
+    existing = Memory(content="Use compact output by default", user_id="alice")
+    saved = Memory(content="Keep semantic compression disabled", user_id="alice")
+    backend = SimpleNamespace(
+        search_memories=AsyncMock(return_value=[SimpleNamespace(memory=existing, score=0.91)]),
+        update_memory=AsyncMock(),
+        save_memory=AsyncMock(return_value=saved),
+    )
+
+    result = asyncio.run(
+        mcp_server_mod._handle_save(
+            backend,
+            {"facts": ["Keep semantic compression disabled"], "importance": 0.9},
+            "alice",
+        )
+    )
+
+    backend.search_memories.assert_not_awaited()
+    backend.update_memory.assert_not_awaited()
+    backend.save_memory.assert_awaited_once_with(
+        content="Keep semantic compression disabled",
+        user_id="alice",
+        importance=0.9,
+    )
+    assert result[0].kwargs["text"].startswith("Saved 1 new, updated 0 existing")

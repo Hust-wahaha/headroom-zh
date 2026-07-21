@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -191,6 +192,44 @@ def test_mixed_content_section_splitting_and_json_extraction() -> None:
     assert _extract_json_block(["{", '"a": 1'], 0) == (None, 0)
 
 
+def test_short_instruction_with_embedded_json_compresses_without_kompress() -> None:
+    rows = [
+        {
+            "id": i,
+            "source": "opencode",
+            "status": "ok",
+            "message": "routine event with repeated fields",
+            "needle": "CRITICAL_NEEDLE_42" if i == 17 else "ordinary",
+        }
+        for i in range(40)
+    ]
+    content = "\n".join(
+        [
+            "Compress this OpenCode context. Preserve critical values.",
+            json.dumps(rows, indent=2),
+            "Return a concise answer.",
+        ]
+    )
+    router = ContentRouter(
+        ContentRouterConfig(
+            enable_kompress=False,
+            skip_user_messages=False,
+        )
+    )
+
+    assert is_mixed_content(content) is True
+    assert router._determine_strategy(content) is CompressionStrategy.MIXED
+
+    result = router.compress(content, context="CRITICAL_NEEDLE_42 opencode")
+
+    assert result.strategy_used is CompressionStrategy.MIXED
+    assert result.tokens_saved > 0
+    assert "CRITICAL_NEEDLE_42" in result.compressed
+    assert any(
+        decision.strategy is CompressionStrategy.SMART_CRUSHER for decision in result.routing_log
+    )
+
+
 def test_extract_json_block_ignores_brackets_inside_strings() -> None:
     """Brackets/braces inside JSON string values must not end the block early.
 
@@ -260,7 +299,7 @@ def test_content_router_strategy_and_compress_paths(monkeypatch: pytest.MonkeyPa
         "_detect_content",
         lambda content: DetectionResult(ContentType.SOURCE_CODE, 1.0, {}),
     )
-    assert router._determine_strategy("code") is CompressionStrategy.KOMPRESS
+    assert router._determine_strategy("code") is CompressionStrategy.PASSTHROUGH
     assert (
         router._strategy_from_detection(DetectionResult(ContentType.SEARCH_RESULTS, 1.0, {}))
         is CompressionStrategy.SEARCH
@@ -284,10 +323,14 @@ def test_content_router_strategy_and_compress_paths(monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(router, "_compress_mixed", lambda *args, **kwargs: mixed_result)
     monkeypatch.setattr(router, "_compress_pure", lambda *args, **kwargs: pure_result)
 
-    monkeypatch.setattr(router, "_determine_strategy", lambda content: CompressionStrategy.MIXED)
+    monkeypatch.setattr(
+        router, "_determine_strategy", lambda content, **_kwargs: CompressionStrategy.MIXED
+    )
     assert router.compress("mixed") is mixed_result
 
-    monkeypatch.setattr(router, "_determine_strategy", lambda content: CompressionStrategy.TEXT)
+    monkeypatch.setattr(
+        router, "_determine_strategy", lambda content, **_kwargs: CompressionStrategy.TEXT
+    )
     assert router.compress("pure") is pure_result
     assert router.compress("   ").strategy_used is CompressionStrategy.PASSTHROUGH
 
@@ -582,6 +625,253 @@ def test_log_strategy_does_not_fallback_to_kompress_when_log_is_noop(
     assert compressed == log
     assert compressed_tokens == _estimate_tokens(log)
     assert strategy_chain == ["log"]
+
+
+def test_smart_crusher_log_fallback_skipped_for_invalid_json(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Truncated/invalid JSON must not reach the Log fallback (#1306).
+
+    The native magika detector tags content by shape, so a truncated JSON
+    tool output is classified as ``json_array`` and routed to SMART_CRUSHER.
+    SmartCrusher returns it unchanged (can't parse broken JSON); Kompress
+    passes it through. Without the JSON-validity guard, the LogCompressor
+    would then collapse the whole thing to a single CCR-retrieval marker —
+    99.9% data loss when CCR retrieval isn't configured. The guard skips
+    the Log fallback for invalid JSON so the content passes through verbatim.
+    """
+    router = ContentRouter(ContentRouterConfig())
+    # Truncated JSON object: starts valid, cut mid-string so json.loads fails.
+    truncated = '{"rows": [{"address": "Addr1", "name": "PoolA"}, {"address": "Addr2", "nam'
+
+    # SmartCrusher returns no savings (can't parse) → Kompress is a no-op
+    # (model not loaded in tests) → Log fallback must be SKIPPED.
+    class CollapsingLogCompressor:
+        def compress(self, content: str, bias: float = 1.0) -> SimpleNamespace:
+            # Simulate the collapse: LogCompressor treats the broken JSON as
+            # a multi-line "log" and reduces it to a retrieval marker.
+            return SimpleNamespace(
+                compressed="\n[2 lines compressed to 0. Retrieve more: hash=deadbeef]"
+            )
+
+    monkeypatch.setattr(router, "_get_log_compressor", lambda: CollapsingLogCompressor())
+    # Kompress not ready → returns content unchanged (real behavior in tests).
+    monkeypatch.setattr(
+        router,
+        "_try_ml_compressor",
+        lambda content, context, question=None: (content, len(content.split())),
+    )
+
+    compressed, compressed_tokens, strategy_chain = router._apply_strategy_to_content(
+        truncated,
+        CompressionStrategy.SMART_CRUSHER,
+        context="",
+    )
+
+    # Content preserved verbatim — no collapse.
+    assert compressed == truncated
+    assert CompressionStrategy.LOG.value not in strategy_chain
+    assert CompressionStrategy.KOMPRESS.value in strategy_chain
+
+
+def test_smart_crusher_log_fallback_runs_for_valid_json(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Valid JSON arrays still reach the Log fallback when SmartCrusher no-ops.
+
+    The JSON-validity guard (#1306) only blocks the Log fallback for
+    *invalid* JSON. Valid JSON arrays that SmartCrusher can't shrink (e.g.
+    repetitive JSONL the proxy's own log dumps) still get the Log fallback,
+    which is the intended "repetitive JSONL" path.
+    """
+    router = ContentRouter(ContentRouterConfig())
+    valid_json = '[{"a": 1}, {"a": 1}, {"a": 1}, {"a": 1}]'
+
+    class NoopSmartCrusher:
+        def crush(self, content: str, query: str = "", bias: float = 1.0) -> SimpleNamespace:
+            return SimpleNamespace(compressed=content)
+
+    class ShrinkingLogCompressor:
+        def compress(self, content: str, bias: float = 1.0) -> SimpleNamespace:
+            return SimpleNamespace(compressed="[compressed]")
+
+    monkeypatch.setattr(router, "_get_smart_crusher", lambda: NoopSmartCrusher())
+    monkeypatch.setattr(router, "_get_log_compressor", lambda: ShrinkingLogCompressor())
+    # Kompress no-op → Log fallback fires. A faithful no-op reports the same
+    # token count the router computed for the (unchanged) content — using
+    # _estimate_tokens, not a naive word split, so it isn't mistaken for a
+    # saving once #1857's whitespace-aware counting rates the JSON above 8.
+    monkeypatch.setattr(
+        router,
+        "_try_ml_compressor",
+        lambda content, context, question=None: (content, _estimate_tokens(content)),
+    )
+
+    compressed, _compressed_tokens, strategy_chain = router._apply_strategy_to_content(
+        valid_json,
+        CompressionStrategy.SMART_CRUSHER,
+        context="",
+    )
+
+    assert CompressionStrategy.LOG.value in strategy_chain
+    assert compressed == "[compressed]"
+
+
+# ---------------------------------------------------------------------------
+# MIXED false-positive on source code: Python with dict literals + docstrings
+# triggers ``has_json_blocks`` and ``has_prose`` in ``is_mixed_content``,
+# misclassifying pure code as MIXED.  The native detector (magika) correctly
+# identifies it as SOURCE_CODE.  ``_determine_strategy`` must trust the
+# detector over the regex heuristics when confidence is high.
+# ---------------------------------------------------------------------------
+
+
+def test_mixed_false_positive_on_source_code_overridden_by_detector(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Python code with dicts + docstrings must not be routed to MIXED.
+
+    ``is_mixed_content`` returns True (dict literals → has_json_blocks,
+    docstrings → has_prose), but the native detector says SOURCE_CODE
+    with high confidence.  The detector must win.
+    """
+    router = ContentRouter(ContentRouterConfig())
+
+    # Simulate the false positive: is_mixed_content says True, detector
+    # says SOURCE_CODE with confidence 1.0 (real magika behaviour).
+    monkeypatch.setattr(content_router_module, "is_mixed_content", lambda content: True)
+    monkeypatch.setattr(
+        content_router_module,
+        "_detect_content",
+        lambda content: DetectionResult(ContentType.SOURCE_CODE, 1.0, {}),
+    )
+
+    strategy = router._determine_strategy("python code with dicts")
+    # With prefer_code_aware_for_code=True (default), source code routes to CodeAware.
+    assert strategy is CompressionStrategy.CODE_AWARE
+    assert strategy is not CompressionStrategy.MIXED
+
+
+def test_mixed_still_used_when_detector_says_plain_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Genuine mixed content (detector says PLAIN_TEXT) still uses MIXED.
+
+    The override only fires when the detector says SOURCE_CODE.  For
+    actual mixed content (prose + JSON + code fences), the detector
+    returns PLAIN_TEXT or another non-code type, and MIXED is correct.
+    """
+    router = ContentRouter(ContentRouterConfig())
+
+    monkeypatch.setattr(content_router_module, "is_mixed_content", lambda content: True)
+    monkeypatch.setattr(
+        content_router_module,
+        "_detect_content",
+        lambda content: DetectionResult(ContentType.PLAIN_TEXT, 0.9, {}),
+    )
+
+    strategy = router._determine_strategy("genuinely mixed content")
+    assert strategy is CompressionStrategy.MIXED
+
+
+def test_mixed_still_used_when_detector_confidence_below_threshold(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Low-confidence SOURCE_CODE detection does not override MIXED.
+
+    If the detector is uncertain (confidence < 0.8), we keep the MIXED
+    path rather than risking a false override.
+    """
+    router = ContentRouter(ContentRouterConfig())
+
+    monkeypatch.setattr(content_router_module, "is_mixed_content", lambda content: True)
+    monkeypatch.setattr(
+        content_router_module,
+        "_detect_content",
+        lambda content: DetectionResult(ContentType.SOURCE_CODE, 0.5, {}),
+    )
+
+    strategy = router._determine_strategy("uncertain code")
+    assert strategy is CompressionStrategy.MIXED
+
+
+def test_source_code_passthrough_preserves_content_verbatim(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Code detected as SOURCE_CODE with CodeAware disabled → passthrough.
+
+    When ``prefer_code_aware_for_code=False`` (default), code must pass
+    through unmangled.  Previously it fell to KOMPRESS which can destroy
+    code semantics (98% compression, 11% recall on large blobs).  Now
+    it explicitly uses PASSTHROUGH.
+    """
+    router = ContentRouter(ContentRouterConfig(prefer_code_aware_for_code=False))
+
+    monkeypatch.setattr(content_router_module, "is_mixed_content", lambda content: False)
+    monkeypatch.setattr(
+        content_router_module,
+        "_detect_content",
+        lambda content: DetectionResult(ContentType.SOURCE_CODE, 1.0, {}),
+    )
+
+    code = "def hello():\n    print('world')\n"
+    result = router.compress(code)
+    assert result.compressed == code
+    assert result.strategy_used is CompressionStrategy.PASSTHROUGH
+
+
+def test_source_code_code_aware_enabled_uses_code_aware(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When CodeAware is explicitly enabled, it is used for source code.
+
+    The PASSTHROUGH fallback only applies when ``prefer_code_aware_for_code``
+    is False.  If a user explicitly enables it, CODE_AWARE is used.
+    """
+    router = ContentRouter(
+        ContentRouterConfig(
+            enable_code_aware=True,
+            prefer_code_aware_for_code=True,
+        )
+    )
+
+    monkeypatch.setattr(content_router_module, "is_mixed_content", lambda content: False)
+    monkeypatch.setattr(
+        content_router_module,
+        "_detect_content",
+        lambda content: DetectionResult(ContentType.SOURCE_CODE, 1.0, {}),
+    )
+
+    strategy = router._determine_strategy("def foo(): pass")
+    assert strategy is CompressionStrategy.CODE_AWARE
+
+
+def test_source_code_passthrough_does_not_invoke_kompress(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """PASSTHROUGH for code must never call _try_ml_compressor.
+
+    KOMPRESS on large code blobs can destroy semantics.  The PASSTHROUGH
+    path must be a pure passthrough — no ML compressor invocation.
+    """
+    router = ContentRouter(ContentRouterConfig(prefer_code_aware_for_code=False))
+
+    monkeypatch.setattr(content_router_module, "is_mixed_content", lambda content: False)
+    monkeypatch.setattr(
+        content_router_module,
+        "_detect_content",
+        lambda content: DetectionResult(ContentType.SOURCE_CODE, 1.0, {}),
+    )
+
+    def fail_kompress(*_args: object, **_kwargs: object) -> tuple[str, int]:
+        raise AssertionError("PASSTHROUGH must not invoke Kompress")
+
+    monkeypatch.setattr(router, "_try_ml_compressor", fail_kompress)
+
+    code = "def hello():\n    return 42\n"
+    result = router.compress(code)
+    assert result.compressed == code
+    assert result.strategy_used is CompressionStrategy.PASSTHROUGH
 
 
 # ---------------------------------------------------------------------------

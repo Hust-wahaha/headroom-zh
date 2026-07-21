@@ -29,6 +29,12 @@ DEFAULT_CLOUDCODE_API_URL = "https://cloudcode-pa.googleapis.com"
 ANTIGRAVITY_DAILY_API_URL = "https://daily-cloudcode-pa.sandbox.googleapis.com"
 
 
+def _usage_int(value: Any, default: int = 0) -> int:
+    if value is None:
+        return default
+    return int(value)
+
+
 class GeminiHandlerMixin:
     """Mixin providing Gemini API handler methods for HeadroomProxy."""
 
@@ -336,7 +342,7 @@ class GeminiHandlerMixin:
         # Pre-PR-this Gemini's memory site silently ignored
         # `x-headroom-bypass: true`, mutating request bytes under the
         # user's "don't touch my bytes" signal.
-        from headroom.proxy.helpers import get_memory_injection_mode
+        from headroom.proxy.helpers import get_memory_injection_mode, log_memory_injection
         from headroom.proxy.memory_decision import MemoryDecision
         from headroom.proxy.memory_query import MemoryQuery
 
@@ -423,9 +429,15 @@ class GeminiHandlerMixin:
                 try:
                     resp_json = response.json()
                     usage = resp_json.get("usageMetadata", {})
-                    total_input_tokens = usage.get("promptTokenCount", 0)
-                    output_tokens = usage.get("candidatesTokenCount", 0)
-                    cache_read_tokens = usage.get("cachedContentTokenCount", 0)
+                    # Gemini omits or nulls these counts on some responses
+                    # (e.g. a safety-blocked turn with no candidates). A
+                    # present-null leaves .get returning None, and the max(0,
+                    # prompt - cache_read) below (and RequestOutcome's int
+                    # output_tokens) would then raise TypeError on the non-error
+                    # path. Mirrors the streaming _usage_int guard.
+                    total_input_tokens = _usage_int(usage.get("promptTokenCount"))
+                    output_tokens = _usage_int(usage.get("candidatesTokenCount"))
+                    cache_read_tokens = _usage_int(usage.get("cachedContentTokenCount"))
                 except (json.JSONDecodeError, ValueError, KeyError, TypeError, AttributeError):
                     pass
                 await self._record_request_outcome(
@@ -574,6 +586,14 @@ class GeminiHandlerMixin:
                                 f"[{request_id}] Memory: Injected {bytes_appended} chars "
                                 f"into latest user message tail for user {memory_user_id} (gemini)"
                             )
+                            log_memory_injection(
+                                request_id=request_id,
+                                session_id=None,
+                                decision="injected_live_zone_tail_gemini",
+                                bytes_injected=bytes_appended,
+                                query=None,
+                                tags=tags,
+                            )
                         else:
                             logger.debug(
                                 f"[{request_id}] Memory: no eligible user message; "
@@ -658,11 +678,21 @@ class GeminiHandlerMixin:
                 try:
                     resp_json = response.json()
                     usage = resp_json.get("usageMetadata", {})
-                    total_input_tokens = usage.get("promptTokenCount", optimized_tokens)
-                    output_tokens = usage.get("candidatesTokenCount", 0)
+                    # Gemini omits or nulls these counts on some responses
+                    # (e.g. a safety-blocked turn with no candidates). A
+                    # present-null leaves .get returning None, and the max(0,
+                    # prompt - cache_read) below (plus RequestOutcome's int
+                    # output_tokens) would then raise TypeError on the non-error
+                    # path. Mirrors the streaming _usage_int guard.
+                    total_input_tokens = int(
+                        optimized_tokens
+                        if usage.get("promptTokenCount") is None
+                        else usage["promptTokenCount"]
+                    )
+                    output_tokens = _usage_int(usage.get("candidatesTokenCount"))
                     # Gemini returns cachedContentTokenCount for context-cached tokens
                     # These are charged at 10-25% of the input price depending on model
-                    cache_read_tokens = usage.get("cachedContentTokenCount", 0)
+                    cache_read_tokens = _usage_int(usage.get("cachedContentTokenCount"))
                 except (json.JSONDecodeError, ValueError, KeyError, TypeError, AttributeError) as e:
                     # A non-JSON upstream body (HTML/empty error page from an
                     # overloaded Google/Vertex frontend) makes response.json()

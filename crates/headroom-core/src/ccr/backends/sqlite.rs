@@ -49,7 +49,7 @@ use crate::ccr::CcrStore;
 pub struct SqliteCcrStore {
     conn: Mutex<Connection>,
     /// Default TTL applied on every `put`. Mirrors Python's
-    /// `compression_store` 5-minute window.
+    /// `compression_store` 30-minute window.
     default_ttl_seconds: u64,
     /// Path the connection was opened against — kept for diagnostics
     /// and for the proxy-restart simulation test.

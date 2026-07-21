@@ -16,6 +16,9 @@ class _FakeSavingsTracker:
     def record_request(self, **kwargs: Any) -> None:
         pass
 
+    def record_lifetime_request(self, **kwargs: Any) -> None:
+        pass
+
 
 class _FakeOtelMetrics:
     def record_proxy_request(self, **kwargs: Any) -> None:

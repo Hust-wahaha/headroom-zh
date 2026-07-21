@@ -85,3 +85,117 @@ def test_gemini_generate_content_threads_savings_profile_kwargs_into_apply():
     assert captured.get("target_ratio") == 0.10
     assert captured.get("min_tokens_to_compress") == 120
     assert captured.get("compress_system_messages") is True
+
+
+def test_gemini_null_usage_counts_do_not_crash():
+    """A Gemini response whose usageMetadata carries a null token count (e.g. a
+    safety-blocked turn with no candidates) must not crash outcome recording:
+    the counts are coerced to int, not left as None."""
+    config = ProxyConfig(
+        optimize=True,
+        cache_enabled=False,
+        rate_limit_enabled=False,
+        cost_tracking_enabled=False,
+    )
+
+    def passthrough_apply(**kwargs):
+        return SimpleNamespace(
+            messages=kwargs["messages"],
+            transforms_applied=[],
+            timing={},
+            tokens_before=10,
+            tokens_after=10,
+            waste_signals=None,
+        )
+
+    resp = MagicMock()
+    resp.status_code = 200
+    resp.headers = {"content-type": "application/json"}
+    resp.content = (
+        b'{"candidates":[{"content":{"parts":[{"text":"ok"}]}}],'
+        b'"usageMetadata":{"promptTokenCount":20,"candidatesTokenCount":null}}'
+    )
+    resp.json.return_value = {
+        "candidates": [{"content": {"parts": [{"text": "ok"}]}}],
+        "usageMetadata": {"promptTokenCount": 20, "candidatesTokenCount": None},
+    }
+
+    captured: dict[str, object] = {}
+
+    async def recording_outcome(outcome):  # noqa: ANN001
+        captured["outcome"] = outcome
+
+    big = "word " * 4000
+    app = create_app(config)
+    with TestClient(app) as client:
+        proxy = client.app.state.proxy
+        proxy.openai_pipeline.apply = MagicMock(side_effect=passthrough_apply)
+        proxy._retry_request = AsyncMock(return_value=resp)
+        proxy._record_request_outcome = AsyncMock(side_effect=recording_outcome)
+
+        r = client.post(
+            "/v1beta/models/gemini-2.0-flash:generateContent?key=test-key",
+            json={"contents": [{"parts": [{"text": big}]}]},
+        )
+
+    assert r.status_code == 200, r.text
+    outcome = captured["outcome"]
+    assert outcome.output_tokens == 0
+    assert isinstance(outcome.output_tokens, int)
+    # max(0, promptTokenCount - cache_read) with a null candidate count must not raise.
+    assert outcome.uncached_input_tokens == 20
+
+
+def test_gemini_zero_usage_prompt_count_is_preserved():
+    """A real zero promptTokenCount must stay zero, not fall back to estimates."""
+    config = ProxyConfig(
+        optimize=True,
+        cache_enabled=False,
+        rate_limit_enabled=False,
+        cost_tracking_enabled=False,
+    )
+
+    def passthrough_apply(**kwargs):
+        return SimpleNamespace(
+            messages=kwargs["messages"],
+            transforms_applied=[],
+            timing={},
+            tokens_before=10,
+            tokens_after=10,
+            waste_signals=None,
+        )
+
+    resp = MagicMock()
+    resp.status_code = 200
+    resp.headers = {"content-type": "application/json"}
+    resp.content = (
+        b'{"candidates":[{"content":{"parts":[{"text":"ok"}]}}],'
+        b'"usageMetadata":{"promptTokenCount":0,"candidatesTokenCount":0}}'
+    )
+    resp.json.return_value = {
+        "candidates": [{"content": {"parts": [{"text": "ok"}]}}],
+        "usageMetadata": {"promptTokenCount": 0, "candidatesTokenCount": 0},
+    }
+
+    captured: dict[str, object] = {}
+
+    async def recording_outcome(outcome):  # noqa: ANN001
+        captured["outcome"] = outcome
+
+    big = "word " * 4000
+    app = create_app(config)
+    with TestClient(app) as client:
+        proxy = client.app.state.proxy
+        proxy.openai_pipeline.apply = MagicMock(side_effect=passthrough_apply)
+        proxy._retry_request = AsyncMock(return_value=resp)
+        proxy._record_request_outcome = AsyncMock(side_effect=recording_outcome)
+
+        r = client.post(
+            "/v1beta/models/gemini-2.0-flash:generateContent?key=test-key",
+            json={"contents": [{"parts": [{"text": big}]}]},
+        )
+
+    assert r.status_code == 200, r.text
+    outcome = captured["outcome"]
+    assert outcome.optimized_tokens == 0
+    assert outcome.uncached_input_tokens == 0

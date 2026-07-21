@@ -54,6 +54,8 @@ use crate::relevance::RelevanceScorer;
 use crate::transforms::adaptive_sizer::compute_optimal_k;
 use crate::transforms::anchor_selector::AnchorSelector;
 
+type ProseHook<'a> = dyn Fn(&str, &str) -> Option<(String, String)> + 'a;
+
 /// Return type for `crush_array`.
 ///
 /// Two operating paths feed the same result type:
@@ -138,6 +140,43 @@ pub struct SmartCrusher {
 }
 
 impl SmartCrusher {
+    /// Opt-in variant used by structured pipeline owners that want to
+    /// transform plain string leaves while preserving default callers.
+    pub fn crush_with_prose_hook(
+        &self,
+        content: &str,
+        query: &str,
+        bias: f64,
+        hook: &ProseHook<'_>,
+    ) -> CrushResult {
+        let start = std::time::Instant::now();
+        let (compressed, was_modified, info) =
+            self.smart_crush_content_with_hook(content, query, bias, Some(hook));
+        let strategy = if info.is_empty() {
+            "passthrough".to_string()
+        } else {
+            info
+        };
+        if !self.observers.is_empty() {
+            let event = CrushEvent {
+                strategy: strategy.clone(),
+                input_bytes: content.len(),
+                output_bytes: compressed.len(),
+                elapsed_ns: start.elapsed().as_nanos() as u64,
+                was_modified,
+            };
+            for observer in &self.observers {
+                observer.on_event(&event);
+            }
+        }
+        CrushResult {
+            compressed,
+            original: content.to_string(),
+            was_modified,
+            strategy,
+        }
+    }
+
     /// Construct with the OSS default composition: scorer + constraints +
     /// observer + **lossless-first compaction stage**. Calling
     /// `crush_array` runs the dispatch:
@@ -390,12 +429,22 @@ impl SmartCrusher {
         query_context: &str,
         bias: f64,
     ) -> (String, bool, String) {
-        // Parse — non-JSON content passes through unchanged.
+        self.smart_crush_content_with_hook(content, query_context, bias, None)
+    }
+
+    fn smart_crush_content_with_hook(
+        &self,
+        content: &str,
+        query_context: &str,
+        bias: f64,
+        prose_hook: Option<&ProseHook<'_>>,
+    ) -> (String, bool, String) {
         let Ok(parsed) = serde_json::from_str::<Value>(content) else {
             return (content.to_string(), false, String::new());
         };
 
-        let (crushed, info) = self.process_value(&parsed, 0, query_context, bias);
+        let (crushed, info) =
+            self.process_value_with_hook(&parsed, 0, query_context, bias, prose_hook);
 
         // Re-serialize with Python `safe_json_dumps` formatting:
         // compact `(",", ":")` separators + `ensure_ascii=False`,
@@ -423,6 +472,17 @@ impl SmartCrusher {
         query_context: &str,
         bias: f64,
     ) -> (Value, String) {
+        self.process_value_with_hook(value, depth, query_context, bias, None)
+    }
+
+    fn process_value_with_hook(
+        &self,
+        value: &Value,
+        depth: usize,
+        query_context: &str,
+        bias: f64,
+        prose_hook: Option<&ProseHook<'_>>,
+    ) -> (Value, String) {
         if depth >= Self::MAX_PROCESS_DEPTH {
             return (value.clone(), String::new());
         }
@@ -436,7 +496,34 @@ impl SmartCrusher {
                     let arr_type = classify_array(arr);
                     match arr_type {
                         ArrayType::DictArray => {
-                            let result = self.crush_array(arr, query_context, bias);
+                            let mut rows: Vec<Value> = Vec::with_capacity(n);
+                            if let Some(hook) = prose_hook {
+                                for item in arr {
+                                    if let Value::Object(map) = item {
+                                        let mut processed = serde_json::Map::new();
+                                        for (k, v) in map {
+                                            let (p_val, p_info) = self.process_value_with_hook(
+                                                v,
+                                                depth + 1,
+                                                query_context,
+                                                bias,
+                                                Some(hook),
+                                            );
+                                            processed.insert(k.clone(), p_val);
+                                            if !p_info.is_empty() {
+                                                info_parts.push(p_info);
+                                            }
+                                        }
+                                        rows.push(Value::Object(processed));
+                                    } else {
+                                        rows.push(item.clone());
+                                    }
+                                }
+                            } else {
+                                rows.extend(arr.iter().cloned());
+                            }
+
+                            let result = self.crush_array(&rows, query_context, bias);
                             // Lossless path won → substitute the array
                             // with the compacted string in place. This
                             // makes the lossless win visible to the
@@ -512,7 +599,13 @@ impl SmartCrusher {
                 // Below threshold or not crushable → recurse into items.
                 let mut processed: Vec<Value> = Vec::with_capacity(n);
                 for item in arr {
-                    let (p_item, p_info) = self.process_value(item, depth + 1, query_context, bias);
+                    let (p_item, p_info) = self.process_value_with_hook(
+                        item,
+                        depth + 1,
+                        query_context,
+                        bias,
+                        prose_hook,
+                    );
                     processed.push(p_item);
                     if !p_info.is_empty() {
                         info_parts.push(p_info);
@@ -524,7 +617,8 @@ impl SmartCrusher {
                 // First pass: recurse into values to compress nested arrays.
                 let mut processed = serde_json::Map::new();
                 for (k, v) in map {
-                    let (p_val, p_info) = self.process_value(v, depth + 1, query_context, bias);
+                    let (p_val, p_info) =
+                        self.process_value_with_hook(v, depth + 1, query_context, bias, prose_hook);
                     processed.insert(k.clone(), p_val);
                     if !p_info.is_empty() {
                         info_parts.push(p_info);
@@ -547,7 +641,9 @@ impl SmartCrusher {
             // `process_string` which parses stringified-JSON containers
             // (recursing through `process_value`) and CCR-substitutes
             // opaque blobs (with store-write so retrieval works).
-            Value::String(s) => self.process_string(s, depth, query_context, bias),
+            Value::String(s) => {
+                self.process_string_with_hook(s, depth, query_context, bias, prose_hook)
+            }
             // Other scalars — passthrough.
             _ => (value.clone(), String::new()),
         }
@@ -569,16 +665,19 @@ impl SmartCrusher {
     ///    format as `compaction::walker::format_ccr_marker` so
     ///    downstream consumers can pattern-match markers regardless
     ///    of which path emitted them.
-    fn process_string(
+    fn process_string_with_hook(
         &self,
         s: &str,
         depth: usize,
         query_context: &str,
         bias: f64,
+        prose_hook: Option<&ProseHook<'_>>,
     ) -> (Value, String) {
+        let mut parsed_container_unchanged = false;
         // 1. Stringified-JSON: parse, recurse, re-render.
         if let Some(parsed) = try_parse_json_container(s) {
-            let (processed, sub_info) = self.process_value(&parsed, depth + 1, query_context, bias);
+            let (processed, sub_info) =
+                self.process_value_with_hook(&parsed, depth + 1, query_context, bias, prose_hook);
             // If recursion produced something different, re-emit.
             // Special case: if the recursion returned a `Value::String`
             // (lossless compaction substituted the array with a
@@ -598,6 +697,7 @@ impl SmartCrusher {
                 };
                 return (Value::String(rendered), info);
             }
+            parsed_container_unchanged = true;
         }
 
         // 2. Opaque blob: substitute with CCR marker AND stash the
@@ -610,12 +710,32 @@ impl SmartCrusher {
             ..ClassifyConfig::default()
         };
         if let CellClass::Opaque(kind) = classify_cell(&Value::String(s.to_string()), &cfg) {
+            match kind {
+                super::compaction::OpaqueKind::Base64Blob
+                | super::compaction::OpaqueKind::HtmlChunk => {
+                    let marker = emit_opaque_ccr_marker(s, &kind, self.ccr_store.as_ref());
+                    let kind_label = opaque_kind_label(&kind);
+                    return (Value::String(marker), format!("string_ccr:{kind_label}"));
+                }
+                super::compaction::OpaqueKind::LongString
+                | super::compaction::OpaqueKind::Other(_) => {}
+            }
+        }
+        if !parsed_container_unchanged {
+            if let Some(hook) = prose_hook {
+                if let Some((compressed, key)) = hook(s, query_context) {
+                    return (Value::String(compressed), format!("string_prose:{key}"));
+                }
+            }
+        }
+
+        if let CellClass::Opaque(kind) = classify_cell(&Value::String(s.to_string()), &cfg) {
             let marker = emit_opaque_ccr_marker(s, &kind, self.ccr_store.as_ref());
             let kind_label = opaque_kind_label(&kind);
             return (Value::String(marker), format!("string_ccr:{kind_label}"));
         }
 
-        // 3. Plain string — passthrough.
+        // 4. Plain string — passthrough.
         (Value::String(s.to_string()), String::new())
     }
 
@@ -1073,6 +1193,20 @@ fn opaque_kind_label(kind: &super::compaction::OpaqueKind) -> &str {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn default_crush_ignores_opt_in_prose_hook() {
+        let crusher = SmartCrusher::new(SmartCrusherConfig::default());
+        let input = serde_json::json!({
+            "summary": (0..8)
+                .map(|i| format!("Segment {i} keeps the default route stable."))
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .to_string();
+        let result = crusher.crush(&input, "default route", 0.0);
+        assert!(!result.strategy.contains("string_prose:"));
+    }
 
     fn crusher() -> SmartCrusher {
         SmartCrusher::new(SmartCrusherConfig::default())
@@ -1599,6 +1733,63 @@ mod tests {
         let blob = out.pointer("/blob").and_then(|v| v.as_str()).unwrap();
         assert!(blob.starts_with("<<ccr:"), "got: {blob}");
         assert!(blob.contains(",base64,"));
+    }
+
+    #[test]
+    fn prose_hook_preserves_html_opaque_routing() {
+        let c = SmartCrusher::new(SmartCrusherConfig::default());
+        let html = "<html><body><p>".to_string() + &"x".repeat(300) + "</p></body></html>";
+        let hook = |_leaf: &str, _query: &str| -> Option<(String, String)> {
+            Some(("compressed prose".to_string(), "prose-key".to_string()))
+        };
+        let (out, info) = c.process_string_with_hook(&html, 0, "recovery", 1.0, Some(&hook));
+        let routed = out.as_str().expect("html stays string");
+        assert!(routed.contains(",html,"));
+        assert_eq!(info, "string_ccr:html");
+    }
+
+    #[test]
+    fn prose_hook_runs_for_dict_array_rows() {
+        let c = SmartCrusher::new(SmartCrusherConfig::default());
+        let prose = (0..12)
+            .map(|i| format!("Segment {i} documents recovery safeguards for this field."))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let rows = (0..5)
+            .map(|i| serde_json::json!({"id": i, "summary": prose}))
+            .collect::<Vec<_>>();
+        let input = Value::Array(rows);
+        let hook = |leaf: &str, _query: &str| -> Option<(String, String)> {
+            if leaf.contains("recovery safeguards") {
+                Some(("<<ccr:prose-key>>".to_string(), "prose-key".to_string()))
+            } else {
+                None
+            }
+        };
+
+        let (out, info) = c.process_value_with_hook(&input, 0, "recovery", 1.0, Some(&hook));
+        let rendered = out.to_string();
+        assert!(rendered.contains("<<ccr:prose-key>>"));
+        assert!(info.contains("string_prose:prose-key"));
+    }
+
+    #[test]
+    fn unchanged_stringified_json_container_skips_prose_hook() {
+        let c = SmartCrusher::new(SmartCrusherConfig::default());
+        let payload = serde_json::json!({
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "short",
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb": "still short",
+            "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc": "tiny",
+            "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd": "small"
+        })
+        .to_string();
+        let hook = |leaf: &str, _query: &str| -> Option<(String, String)> {
+            (leaf.len() > 256).then_some(("<<ccr:prose-key>>".to_string(), "prose-key".to_string()))
+        };
+        let (out, info) = c.process_string_with_hook(&payload, 0, "recovery", 1.0, Some(&hook));
+        let routed = out.as_str().expect("stringified JSON stays string");
+        assert_eq!(routed, payload);
+        assert!(info.is_empty());
     }
 
     #[test]

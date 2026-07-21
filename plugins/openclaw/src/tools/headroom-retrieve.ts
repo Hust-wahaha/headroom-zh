@@ -62,7 +62,7 @@ export function createHeadroomRetrieveTool(config: RetrieveToolConfig) {
       } catch (error) {
         return JSON.stringify({
           error: `Retrieval failed: ${error}`,
-          hint: "The compressed content may have expired (default TTL: 5 minutes)",
+          hint: "The compressed content may have expired (default TTL: 30 minutes)",
         });
       }
     },

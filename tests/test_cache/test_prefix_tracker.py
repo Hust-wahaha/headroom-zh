@@ -370,8 +370,8 @@ class TestSessionTrackerStore:
         id3 = store.compute_session_id(MockRequest(), "gpt-4", messages)
         assert id3 != id1
 
-    def test_compute_session_id_uses_all_system_messages(self, store):
-        """Different dynamic system messages should not collide."""
+    def test_compute_session_id_distinguishes_leading_system_run(self, store):
+        """Different dynamic LEADING system messages should not collide."""
 
         class MockRequest:
             headers = {}
@@ -453,6 +453,340 @@ class TestSessionTrackerStore:
         session_id = store.compute_session_id(MockRequest(), "claude-3", messages)
         assert isinstance(session_id, str)
         assert len(session_id) == 16
+
+    def test_mid_conversation_system_turns_do_not_rotate_session_id(self, store):
+        """Claude Code sends <system-reminder> turns as role:"system" MESSAGES
+        interleaved into the history (hook outputs, skills lists, truncation
+        notices). Hashing those into the fallback id rotates the session id
+        mid-conversation — orphaning the prefix tracker and every other
+        session-sticky subsystem (beta headers, CCR/memory registries, the
+        compression cache) each time a reminder lands. Only the LEADING run of
+        system messages is session identity; later system turns are content.
+        """
+
+        class MockRequest:
+            headers = {}
+
+        leading = {"role": "system", "content": "You are an agent. " * 40}
+        turn1 = [leading, {"role": "user", "content": "read file A"}]
+        turn2 = turn1 + [
+            {"role": "assistant", "content": "read it"},
+            {"role": "user", "content": "tool result ..."},
+            {
+                "role": "system",
+                "content": "<system-reminder>Truncated: PARTIAL view</system-reminder>",
+            },
+            {"role": "user", "content": "continue"},
+        ]
+
+        id1 = store.compute_session_id(MockRequest(), "claude-sonnet-5", turn1)
+        id2 = store.compute_session_id(MockRequest(), "claude-sonnet-5", turn2)
+        assert id1 == id2
+
+
+class TestConversationLineageResolution:
+    """resolve_tracker: one PrefixCacheTracker per conversation lineage (#2085).
+
+    Concurrent conversations that share a fallback session id (same model +
+    same system prompt — e.g. a Claude Code session and its parallel subagents)
+    must not thrash one tracker's frozen-prefix state: interleaved turns would
+    each see the *other* conversation's prefix, freeze never stabilizes, and
+    the provider prompt cache is re-written on every call.
+
+    resolve_tracker keys trackers by message lineage instead: an incoming
+    history that extends a known lineage reuses its tracker; a diverging or
+    rewritten history gets a fresh one. The session id itself is never changed,
+    so session-sticky state keyed on it elsewhere (beta headers, CCR/memory
+    registries, the compression cache) is unaffected.
+    """
+
+    @pytest.fixture
+    def store(self):
+        return SessionTrackerStore()
+
+    @staticmethod
+    def _history(name: str, turn: int) -> list[dict]:
+        """Client-shaped request messages for `turn` (1-based): u0,a0,...,u_{turn-1}."""
+        messages: list[dict] = []
+        for t in range(turn):
+            messages.append({"role": "user", "content": f"[{name}] user {t} " + "x" * 200})
+            if t < turn - 1:
+                messages.append(
+                    {"role": "assistant", "content": f"[{name}] assistant {t} " + "y" * 200}
+                )
+        return messages
+
+    @staticmethod
+    def _block_history(turn: int, cc_on: int | None) -> list[dict]:
+        """Block-content history; cache_control breakpoint on message `cc_on` (or none)."""
+        messages: list[dict] = []
+        for t in range(turn):
+            messages.append(
+                {"role": "user", "content": [{"type": "text", "text": f"user {t} " + "x" * 200}]}
+            )
+            if t < turn - 1:
+                messages.append(
+                    {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": f"assistant {t} " + "y" * 200}],
+                    }
+                )
+        if cc_on is not None:
+            msg = messages[cc_on]
+            blocks = [dict(b) for b in msg["content"]]
+            blocks[-1] = {**blocks[-1], "cache_control": {"type": "ephemeral"}}
+            messages[cc_on] = {**msg, "content": blocks}
+        return messages
+
+    def test_interleaved_conversations_resolve_to_independent_trackers(self, store):
+        """The #2085 production shape: two conversations, one session id,
+        alternating requests. Each must keep its own tracker and per-turn state
+        (on a shared tracker, _turn_number would count both conversations)."""
+        sid = "shared-fallback-id"
+        trackers: dict[str, PrefixCacheTracker] = {}
+        for turn in range(1, 5):
+            for name in ("A", "B"):
+                history = self._history(name, turn)
+                tracker = store.resolve_tracker(sid, "anthropic", messages=history)
+                trackers.setdefault(name, tracker)
+                assert tracker is trackers[name], f"[{name}] turn {turn} switched trackers"
+                tracker.update_from_response(
+                    cache_read_tokens=1000 * turn,
+                    cache_write_tokens=500,
+                    messages=history,
+                )
+        assert trackers["A"] is not trackers["B"]
+        assert trackers["A"]._turn_number == 4
+        assert trackers["B"]._turn_number == 4
+
+    def test_identical_first_turns_share_until_divergence_then_split(self, store):
+        """Templated fan-outs send byte-identical first turns. While histories
+        are identical, sharing a tracker is harmless (the provider cache line
+        is identical too); they must split as soon as the histories diverge."""
+        sid = "shared"
+        first = [{"role": "user", "content": "verify the fix " + "p" * 300}]
+        t_a1 = store.resolve_tracker(sid, "anthropic", messages=first)
+        t_b1 = store.resolve_tracker(sid, "anthropic", messages=first)
+        assert t_b1 is t_a1
+
+        a2 = first + [
+            {"role": "assistant", "content": "answer A"},
+            {"role": "user", "content": "next A"},
+        ]
+        b2 = first + [
+            {"role": "assistant", "content": "answer B"},
+            {"role": "user", "content": "next B"},
+        ]
+        t_a2 = store.resolve_tracker(sid, "anthropic", messages=a2)
+        t_b2 = store.resolve_tracker(sid, "anthropic", messages=b2)
+        assert t_a2 is not t_b2
+
+        a3 = a2 + [
+            {"role": "assistant", "content": "answer A2"},
+            {"role": "user", "content": "next A2"},
+        ]
+        assert store.resolve_tracker(sid, "anthropic", messages=a3) is t_a2
+
+    @pytest.mark.parametrize(
+        "cc_turn2",
+        [0, -1, None],
+        ids=["breakpoint-stays", "breakpoint-moved-to-last", "breakpoint-removed"],
+    )
+    def test_cache_control_movement_does_not_split_lineage(self, store, cc_turn2):
+        """Clients move the cache_control breakpoint every turn; that must not
+        read as a rewritten history."""
+        sid = "shared"
+        t1 = store.resolve_tracker(sid, "anthropic", messages=self._block_history(1, cc_on=0))
+        t2 = store.resolve_tracker(
+            sid, "anthropic", messages=self._block_history(2, cc_on=cc_turn2)
+        )
+        assert t2 is t1
+
+    @pytest.mark.parametrize(
+        "requote",
+        [
+            lambda m: {**m, "content": [{"type": "text", "text": m["content"]}]},
+            lambda m: {
+                **m,
+                "content": [{"type": "text", "text": m["content"], "index": 0}],
+            },
+            lambda m: {
+                **m,
+                "content": [
+                    {"type": "text", "text": m["content"]},
+                    {"cachePoint": {"type": "default"}},
+                ],
+            },
+        ],
+        ids=["string-to-block-sugar", "streaming-index-annotation", "bedrock-cachepoint-block"],
+    )
+    def test_representation_churn_does_not_split_lineage(self, store, requote):
+        """Clients re-encode history turn-to-turn without changing content
+        (litellm flips string<->block sugar, streaming assembly adds `index`,
+        Bedrock moves its cachePoint block). Lineage matching must use the
+        same canonical equivalence as the cache-stable delta path."""
+        sid = "shared"
+        first = {"role": "user", "content": "hello " + "x" * 200}
+        t1 = store.resolve_tracker(sid, "anthropic", messages=[first])
+        grown = [
+            requote(first),
+            {"role": "assistant", "content": "hi"},
+            {"role": "user", "content": "next"},
+        ]
+        assert store.resolve_tracker(sid, "anthropic", messages=grown) is t1
+
+    @pytest.mark.parametrize(
+        "rewrite",
+        [
+            lambda h: [{"role": "user", "content": "[summary of the conversation so far]"}],
+            lambda h: [h[0], {"role": "assistant", "content": "EDITED"}, *h[2:]],
+            lambda h: h[:-2],
+        ],
+        ids=["compacted", "middle-edited", "truncated"],
+    )
+    def test_rewritten_history_gets_fresh_tracker(self, store, rewrite):
+        """A rewritten history (client-side /compact, edits, truncation) means
+        the provider cache line is gone anyway: start a fresh lineage, keep the
+        old tracker until TTL, and never touch the session id."""
+        sid = "shared"
+        history = self._history("A", 3)
+        tracker = store.resolve_tracker(sid, "anthropic", messages=history)
+        fresh = store.resolve_tracker(sid, "anthropic", messages=rewrite(history))
+        assert fresh is not tracker
+        assert store.active_sessions == 2
+
+    @pytest.mark.parametrize("messages", [None, []], ids=["none", "empty"])
+    def test_resolve_without_messages_matches_legacy_get_or_create(self, store, messages):
+        tracker = store.resolve_tracker("sid", "anthropic", messages=messages)
+        assert tracker is store.get_or_create("sid", "anthropic")
+
+    def test_resolve_with_freeze_disabled_matches_legacy_get_or_create(self):
+        """With prefix freeze off there is no frozen state to protect — skip
+        lineage bookkeeping entirely."""
+        store = SessionTrackerStore(PrefixFreezeConfig(enabled=False))
+        t_a = store.resolve_tracker("sid", "anthropic", messages=self._history("A", 1))
+        t_b = store.resolve_tracker("sid", "anthropic", messages=self._history("B", 1))
+        assert t_a is t_b
+        assert t_a is store.get_or_create("sid", "anthropic")
+
+    def test_over_cap_conversations_share_one_overflow_tracker(self):
+        """A fan-out storm on one session id must not grow trackers unbounded:
+        past the cap, new conversations share one overflow tracker instead of
+        evicting an established lineage."""
+        store = SessionTrackerStore(PrefixFreezeConfig(max_lineages_per_session=4))
+        sid = "storm"
+        overflow = set()
+        for i in range(9):
+            tracker = store.resolve_tracker(
+                sid, "anthropic", messages=[{"role": "user", "content": f"task {i} " + "z" * 100}]
+            )
+            if i >= 4:
+                overflow.add(id(tracker))
+        assert store.active_sessions == 5  # 4 lineages + 1 shared overflow
+        assert len(overflow) == 1
+
+    def test_established_lineages_survive_cap_overflow(self):
+        """Filling the family must never evict an established conversation —
+        under round-robin any eviction victim is the next requester, which
+        would degrade EVERY conversation to a cold tracker per turn."""
+        store = SessionTrackerStore(PrefixFreezeConfig(max_lineages_per_session=2))
+        sid = "shared"
+        parent_history = self._history("parent", 4)
+        parent = store.resolve_tracker(sid, "anthropic", messages=parent_history)
+        shorty = store.resolve_tracker(sid, "anthropic", messages=self._history("shorty", 1))
+        # Third divergent conversation lands on the overflow tracker; both
+        # established lineages keep their trackers.
+        newcomer = store.resolve_tracker(sid, "anthropic", messages=self._history("new", 1))
+        assert newcomer is not parent
+        assert newcomer is not shorty
+        grown = parent_history + [
+            {"role": "assistant", "content": "[parent] assistant 3 " + "y" * 200},
+            {"role": "user", "content": "[parent] user 4 " + "x" * 200},
+        ]
+        assert store.resolve_tracker(sid, "anthropic", messages=grown) is parent
+        assert (
+            store.resolve_tracker(sid, "anthropic", messages=self._history("shorty", 2)) is shorty
+        )
+
+    def test_no_cliff_at_cap_plus_one_round_robin(self):
+        """cap+1 conversations round-robining turns: the in-cap conversations
+        keep their trackers on every round (no eviction churn); only the
+        over-cap tail shares the overflow tracker."""
+        store = SessionTrackerStore(PrefixFreezeConfig(max_lineages_per_session=3))
+        sid = "shared"
+        trackers: dict[str, PrefixCacheTracker] = {}
+        for turn in range(1, 4):
+            for name in ("A", "B", "C", "D"):
+                tracker = store.resolve_tracker(
+                    sid, "anthropic", messages=self._history(name, turn)
+                )
+                if turn == 1:
+                    trackers[name] = tracker
+                elif name != "D":
+                    assert tracker is trackers[name], f"[{name}] turn {turn} lost its tracker"
+                else:
+                    assert tracker is trackers["D"]  # stable overflow tracker
+
+    def test_empty_canonical_history_falls_back_to_legacy(self):
+        """A history whose every message projects away (pure directive
+        content) carries no lineage signal — behave like get_or_create."""
+        store = SessionTrackerStore()
+        tracker = store.resolve_tracker("sid", "anthropic", messages=[{}])
+        assert tracker is store.get_or_create("sid", "anthropic")
+
+    def test_nan_in_tool_payload_does_not_split_lineage(self):
+        """json.loads accepts bare NaN, and NaN != NaN — a resent history
+        containing one must still read as the same conversation."""
+        store = SessionTrackerStore()
+        sid = "shared"
+        turn1 = [
+            {"role": "user", "content": "run the tool " + "x" * 200},
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "tool_use", "id": "t1", "name": "score", "input": {"v": float("nan")}}
+                ],
+            },
+            {
+                "role": "user",
+                "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "ok"}],
+            },
+        ]
+        t1 = store.resolve_tracker(sid, "anthropic", messages=turn1)
+        turn2 = turn1 + [
+            {"role": "assistant", "content": "done"},
+            {"role": "user", "content": "next"},
+        ]
+        assert store.resolve_tracker(sid, "anthropic", messages=turn2) is t1
+
+    def test_expired_lineages_are_cleaned_up(self):
+        config = PrefixFreezeConfig(session_ttl_seconds=1)
+        store = SessionTrackerStore(default_config=config)
+        for name in ("A", "B"):
+            tracker = store.resolve_tracker("sid", "anthropic", messages=self._history(name, 1))
+            tracker._last_activity = time.time() - 2
+
+        store._last_cleanup = 0
+        store._maybe_cleanup()
+        assert store.active_sessions == 0
+
+        # The lineage index must not resurrect evicted trackers: extending an
+        # evicted conversation starts cold.
+        fresh = store.resolve_tracker("sid", "anthropic", messages=self._history("A", 2))
+        assert fresh._turn_number == 0
+
+    def test_shared_session_id_is_not_rotated(self, store):
+        """Composition guard: lineage resolution must not leak into session-id
+        derivation — beta stickiness and the compression cache key on it."""
+
+        class MockRequest:
+            headers = {}
+
+        msgs_a = [{"role": "system", "content": "S"}, *self._history("A", 1)]
+        msgs_b = [{"role": "system", "content": "S"}, *self._history("B", 1)]
+        id_a = store.compute_session_id(MockRequest(), "claude-3", msgs_a)
+        id_b = store.compute_session_id(MockRequest(), "claude-3", msgs_b)
+        assert id_a == id_b
 
 
 class TestMultiTurnScenario:

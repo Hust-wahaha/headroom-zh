@@ -10,6 +10,7 @@ import logging
 import math
 import os
 import time
+from contextvars import ContextVar
 from ctypes import wintypes
 from dataclasses import dataclass
 from datetime import datetime
@@ -177,7 +178,7 @@ def default_oauth_domain() -> str:
     return domain if domain else DEFAULT_GITHUB_HOST
 
 
-def _configured_api_url() -> str:
+def _configured_api_url_override() -> str | None:
     api_url = os.environ.get("GITHUB_COPILOT_API_URL", "").strip()
     if api_url:
         return api_url.rstrip("/")
@@ -186,6 +187,13 @@ def _configured_api_url() -> str:
     if enterprise_domain:
         return copilot_api_url_from_enterprise_url(enterprise_domain).rstrip("/")
 
+    return None
+
+
+def _configured_api_url() -> str:
+    configured = _configured_api_url_override()
+    if configured:
+        return configured
     return DEFAULT_API_URL
 
 
@@ -773,16 +781,25 @@ def _api_url_from_payload(payload: dict[str, Any] | None) -> str | None:
 
 
 def _subscription_api_url_from_user_info_payload(payload: dict[str, Any] | None) -> str:
+    configured = _configured_api_url_override()
+    if configured:
+        return configured
+
     api_url = _api_url_from_payload(payload)
     if not api_url:
-        return _configured_api_url()
+        return DEFAULT_API_URL
 
     host = urlparse(api_url).netloc.lower()
-    if host in {"api.githubcopilot.com", "api.individual.githubcopilot.com"}:
-        return _configured_api_url()
+    if host in {
+        "api.githubcopilot.com",
+        "api.individual.githubcopilot.com",
+        "api.business.githubcopilot.com",
+        "api.enterprise.githubcopilot.com",
+    }:
+        return DEFAULT_API_URL
     if host.endswith(".githubcopilot.com"):
         return api_url
-    return _configured_api_url()
+    return DEFAULT_API_URL
 
 
 def _subscription_api_url_from_user_info(oauth_token: str) -> str:
@@ -790,8 +807,8 @@ def _subscription_api_url_from_user_info(oauth_token: str) -> str:
 
 
 def _api_url_from_exchange_payload(payload: dict[str, Any], *, oauth_token: str) -> str:
-    configured = _configured_api_url()
-    if configured != DEFAULT_API_URL:
+    configured = _configured_api_url_override()
+    if configured:
         return configured
 
     api_url = _api_url_from_payload(payload)
@@ -952,13 +969,69 @@ def _is_ghe_copilot_api_host(host: str) -> bool:
     )
 
 
+# Per-request flag: set when a request is routed to the GitHub Copilot API so
+# the single outcome funnel can label the provider "copilot" regardless of the
+# wire shape (OpenAI or Anthropic) the request travelled on. A ContextVar is
+# task-local, so it never bleeds across concurrent requests. A ContextVar value
+# nonetheless persists until overwritten within a single execution context, so
+# the outcome funnel consumes it (read-and-clear) rather than just reading it —
+# otherwise a later non-Copilot outcome in the same context (e.g. successive
+# messages on one WebSocket task) would be mislabeled.
+_request_routed_to_copilot: ContextVar[bool] = ContextVar(
+    "_request_routed_to_copilot", default=False
+)
+
+
+def mark_request_routed_to_copilot() -> None:
+    """Flag the current request as routed to the GitHub Copilot API."""
+    _request_routed_to_copilot.set(True)
+
+
+def request_routed_to_copilot() -> bool:
+    """Return True when the current request was routed to the Copilot API.
+
+    Read-only; does not clear the flag. Prefer :func:`consume_request_routed_to_copilot`
+    at the point the label is applied so the flag cannot leak to a later outcome.
+    """
+    return _request_routed_to_copilot.get()
+
+
+def consume_request_routed_to_copilot() -> bool:
+    """Return whether the current request was routed to the Copilot API, and
+    clear the flag so a subsequent outcome emitted in the same execution context
+    is not mislabeled."""
+    routed = _request_routed_to_copilot.get()
+    if routed:
+        reset_request_routed_to_copilot()
+    return routed
+
+
+def reset_request_routed_to_copilot() -> None:
+    """Clear the Copilot routing flag. For test isolation and any explicit
+    request-boundary reset (build_copilot_upstream_url sets it as a side effect,
+    so callers outside a request task should reset it to avoid leaking state)."""
+    _request_routed_to_copilot.set(False)
+
+
 def build_copilot_upstream_url(base_url: str, path: str) -> str:
     """Build an upstream URL, normalizing GitHub Copilot's non-/v1 path layout."""
 
     normalized_base = base_url.rstrip("/")
     normalized_path = path if path.startswith("/") else f"/{path}"
-    if is_copilot_api_url(normalized_base) and normalized_path.startswith("/v1/"):
-        normalized_path = normalized_path[3:]
+    if is_copilot_api_url(normalized_base):
+        # Single routing chokepoint for every Copilot surface (OpenAI
+        # chat/responses and Anthropic messages all build their upstream URL
+        # here), so mark the request for provider relabeling downstream.
+        mark_request_routed_to_copilot()
+        # Copilot serves its OpenAI-compatible surface WITHOUT a ``/v1`` prefix
+        # (``/chat/completions``, ``/responses``, ...), so strip it there. But its
+        # Anthropic surface for Claude models IS ``/v1/messages`` (with the
+        # ``/v1``); stripping it forwarded ``/messages`` and Copilot returned 404
+        # for claude-* models (#2409). Keep ``/v1`` for the messages endpoint.
+        if normalized_path.startswith("/v1/") and not normalized_path.startswith("/v1/messages"):
+            normalized_path = normalized_path[3:]
+    else:
+        reset_request_routed_to_copilot()
     return f"{normalized_base}{normalized_path}"
 
 

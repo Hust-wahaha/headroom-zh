@@ -389,6 +389,22 @@ def test_json_file_handles_missing_empty_and_non_mapping(monkeypatch, tmp_path: 
     assert init_cli._json_file(array_payload) == {}
 
 
+def test_json_file_rejects_malformed_json(monkeypatch, tmp_path: Path) -> None:
+    # A user-owned settings file with a hand-edit typo (trailing comma) must
+    # fail with an actionable error rather than crashing init with a raw
+    # JSONDecodeError or silently overwriting the file (which the caller's
+    # subsequent _write_json would do if this returned {}).
+    init_cli, _ = _load_init_module(monkeypatch)
+    malformed = tmp_path / "settings.json"
+    malformed.write_text('{"env": {"A": "B",}}\n', encoding="utf-8")
+
+    with pytest.raises(click.ClickException, match="invalid JSON"):
+        init_cli._json_file(malformed)
+
+    # The file is left untouched (not overwritten).
+    assert malformed.read_text(encoding="utf-8") == '{"env": {"A": "B",}}\n'
+
+
 def test_ensure_claude_hooks_rewrites_existing_entries(monkeypatch, tmp_path: Path) -> None:
     init_cli, _ = _load_init_module(monkeypatch)
     settings_path = tmp_path / "settings.json"

@@ -102,6 +102,12 @@ class _DummyAnthropicHandler(AnthropicHandlerMixin):
                 get_last_forwarded_messages=lambda: [],
                 record_request=lambda *a, **k: None,
             ),
+            resolve_tracker=lambda *a, **k: SimpleNamespace(
+                get_frozen_message_count=lambda: 0,
+                get_last_original_messages=lambda: [],
+                get_last_forwarded_messages=lambda: [],
+                record_request=lambda *a, **k: None,
+            ),
         )
 
     async def _next_request_id(self) -> str:

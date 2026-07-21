@@ -1399,6 +1399,84 @@ class TrafficLearner:
 
         return results
 
+    def extract_tool_results_from_openai_messages(
+        self,
+        messages: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Extract tool results from OpenAI chat/completions-format messages.
+
+        The OpenAI counterpart of :meth:`extract_tool_results_from_messages`.
+        Chat/completions represents tool calls and their results differently
+        from Anthropic: the call lives on an assistant message's ``tool_calls``
+        array (``id`` -> function ``name`` + ``arguments``), and each result is
+        a separate ``role: "tool"`` message keyed by ``tool_call_id``.
+
+        Returns the same ``{tool_name, input, output, is_error}`` shape as the
+        Anthropic extractor so :meth:`on_tool_result` stays format-agnostic. The
+        OpenAI ``arguments`` JSON string is parsed into a dict so the downstream
+        environment/recovery extractors (which call ``input.get(...)``) see the
+        same shape as an Anthropic ``tool_use.input``.
+        """
+        results: list[dict[str, Any]] = []
+
+        # Build tool_call_id -> function (name, arguments) from assistant turns.
+        tool_calls: dict[str, dict[str, Any]] = {}
+        for msg in messages:
+            if not isinstance(msg, dict) or msg.get("role") != "assistant":
+                continue
+            calls = msg.get("tool_calls")
+            if not isinstance(calls, list):
+                continue
+            for call in calls:
+                if not isinstance(call, dict):
+                    continue
+                call_id = call.get("id", "")
+                function = call.get("function")
+                if isinstance(function, dict) and call_id:
+                    tool_calls[call_id] = function
+
+        for msg in messages:
+            if not isinstance(msg, dict) or msg.get("role") != "tool":
+                continue
+            function = tool_calls.get(msg.get("tool_call_id", ""), {})
+
+            # Tool-message content is usually a string, but the spec also allows
+            # a list of content parts.
+            result_content = msg.get("content", "")
+            if isinstance(result_content, list):
+                result_content = " ".join(
+                    b.get("text", "")
+                    for b in result_content
+                    if isinstance(b, dict) and b.get("type") == "text"
+                )
+            output = str(result_content)
+
+            # Normalize the OpenAI ``arguments`` JSON string into a dict so the
+            # downstream extractors that call ``input.get(...)`` don't blow up.
+            raw_args = function.get("arguments", {})
+            if isinstance(raw_args, dict):
+                tool_input: dict[str, Any] = raw_args
+            elif isinstance(raw_args, str) and raw_args:
+                try:
+                    parsed = json.loads(raw_args)
+                except (ValueError, TypeError):
+                    parsed = None
+                tool_input = parsed if isinstance(parsed, dict) else {}
+            else:
+                tool_input = {}
+
+            # OpenAI tool messages carry no is_error flag; sniff the output.
+            results.append(
+                {
+                    "tool_name": function.get("name", "unknown"),
+                    "input": tool_input,
+                    "output": output,
+                    "is_error": _is_error(output),
+                }
+            )
+
+        return results
+
 
 # =============================================================================
 # Module helpers: project routing, memory.db loading, recommendation build

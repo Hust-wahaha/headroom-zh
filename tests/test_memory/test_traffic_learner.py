@@ -416,6 +416,82 @@ class TestTrafficLearner:
         assert "file1.py" in results[0]["output"]
         assert not results[0]["is_error"]
 
+    def test_extract_tool_results_from_openai_messages(self, learner: TrafficLearner):
+        """OpenAI chat/completions tool results: assistant tool_calls + role:tool.
+
+        Regression for the chat-path portion of #2060 — the extractor must
+        resolve the tool name from the assistant ``tool_calls`` id map, parse the
+        ``arguments`` JSON string into a dict (so downstream ``input.get(...)``
+        works), join list content, and sniff errors from the output.
+        """
+        messages = [
+            {"role": "user", "content": "run the tests"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "bash", "arguments": '{"command": "pytest -q"}'},
+                    },
+                    {
+                        "id": "call_2",
+                        "type": "function",
+                        "function": {"name": "read_file", "arguments": '{"file_path": "/a/b.py"}'},
+                    },
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_1",
+                "content": "Traceback (most recent call last):\nModuleNotFoundError: No module named x",
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_2",
+                "content": [{"type": "text", "text": "file body"}],
+            },
+        ]
+
+        results = learner.extract_tool_results_from_openai_messages(messages)
+        assert len(results) == 2
+
+        by_name = {r["tool_name"]: r for r in results}
+        assert by_name["bash"]["input"] == {"command": "pytest -q"}  # parsed to dict
+        assert by_name["bash"]["input"].get("command") == "pytest -q"  # downstream .get works
+        assert by_name["bash"]["is_error"] is True
+
+        assert by_name["read_file"]["input"] == {"file_path": "/a/b.py"}
+        assert by_name["read_file"]["output"] == "file body"  # list content joined
+        assert by_name["read_file"]["is_error"] is False
+
+    def test_extract_openai_tool_results_handles_malformed_and_orphans(
+        self, learner: TrafficLearner
+    ):
+        """Malformed arguments become an empty dict; an unmatched tool_call_id
+        yields ``unknown`` — neither raises, so on_tool_result stays safe."""
+        messages = [
+            {
+                "role": "assistant",
+                "tool_calls": [{"id": "c1", "function": {"name": "grep", "arguments": "not json"}}],
+            },
+            {"role": "tool", "tool_call_id": "c1", "content": "ok"},
+            {"role": "tool", "tool_call_id": "missing", "content": "orphan"},
+        ]
+
+        results = learner.extract_tool_results_from_openai_messages(messages)
+        assert results[0]["tool_name"] == "grep"
+        assert results[0]["input"] == {}
+        assert results[1]["tool_name"] == "unknown"
+        assert results[1]["input"] == {}
+
+    def test_extract_openai_tool_results_empty_without_tool_messages(self, learner: TrafficLearner):
+        assert (
+            learner.extract_tool_results_from_openai_messages([{"role": "user", "content": "hi"}])
+            == []
+        )
+
     @pytest.mark.asyncio
     async def test_tool_history_bounded(self, learner: TrafficLearner):
         """Test that tool history stays within max_history."""

@@ -188,3 +188,39 @@ def test_normalize_is_noop_when_no_block_markers():
     # places exactly one breakpoint (so the prefix gets cached), content stable
     assert _markers(out) == 1
     assert _strip_cache_control(out) == _strip_cache_control(plain)
+
+
+# ── fix-3 (#2375): consolidation must not silently drop the client's ttl ─────
+
+
+def B_ttl(role, text, ttl):
+    """Block-style message whose marker carries an explicit ttl (1h caching)."""
+    blk = {"type": "text", "text": text, "cache_control": {"type": "ephemeral", "ttl": ttl}}
+    return {"role": role, "content": [blk]}
+
+
+def test_normalize_preserves_ttl_of_newest_marker():
+    """A 1h-ttl client must not be silently downgraded to the 5m default."""
+    msgs = [B("user", "a", cc=True), B_ttl("user", "b", "1h")]
+    out = normalize_message_cache_control(msgs)
+    assert _markers(out) == 1
+    assert out[-1]["content"][-1]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
+
+
+def test_normalize_newest_marker_wins_over_stale_ttl():
+    # Older replayed markers still carry 1h, but the client's NEWEST marker has
+    # no ttl — the client switched back to the default; don't resurrect 1h.
+    msgs = [B_ttl("user", "a", "1h"), B_ttl("assistant", "b", "1h"), B("user", "c", cc=True)]
+    out = normalize_message_cache_control(msgs)
+    assert _markers(out) == 1
+    assert out[-1]["content"][-1]["cache_control"] == {"type": "ephemeral"}
+
+
+def test_normalize_ttl_survives_many_turns():
+    """The #2375 scenario: ttl held for one turn, gone on every later turn."""
+    conv = []
+    for t in range(1, 8):
+        conv = conv + [B_ttl("user", f"turn-{t}", "1h")]  # client always asks 1h
+        conv = normalize_message_cache_control(conv)
+        assert _markers(conv) == 1
+        assert conv[-1]["content"][-1]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}

@@ -229,6 +229,23 @@ Some settings can be configured via environment variables:
 | `HEADROOM_BETA_HEADER_STICKY` | Controls per-session `anthropic-beta` / `OpenAI-Beta` re-echo. `enabled` (default): the proxy unions beta tokens across turns within a session — if the client sends a token in turn N and omits it in turn N+1, the proxy re-injects it to preserve prefix-cache stability. `disabled`: the client's value is forwarded verbatim with no accumulation. Any other value raises at request time. See [Session Beta Header Tracking](#session-beta-header-tracking). | `enabled` |
 | `HEADROOM_BETA_TRACKER_MAX_SESSIONS` | LRU capacity of the in-memory session beta tracker. Once full, the oldest session entry is evicted. | `1000` |
 
+## Settings GUI
+
+A web-based settings interface is available at `http://127.0.0.1:<port>/dashboard/settings` for configuring every safe `HEADROOM_*` proxy knob without hand-exporting environment variables, plus an **Endpoints** group for custom Anthropic/OpenAI upstream base URLs (`ANTHROPIC_TARGET_API_URL` / `OPENAI_TARGET_API_URL`) and extra headers merged into (and overriding) forwarded requests -- e.g. for a corporate gateway or Azure Foundry deployment that needs a different endpoint plus one extra auth header. Fields are split into a **Settings** tab (commonly-tuned: compression ratio, budget, rate limits, verbosity) and an **Advanced** tab (everything else, including Endpoints). Third-party credentials such as `OPENAI_API_KEY`/`AWS_*` are never exposed here; the two extra-headers fields are the only secret-typed fields in the panel and render masked once set, with a "Clear stored value" action to remove them -- resaving the page without touching a masked field never overwrites the real stored value.
+
+- **Persistence**: Settings are saved to `~/.headroom/settings.json` (merged with existing values, not replaced) and loaded into the process environment at startup.
+- **Precedence** (highest to lowest):
+  - Explicit shell export (`export HEADROOM_FOO=bar`)
+  - Settings from `~/.headroom/settings.json`
+  - Code default
+- **Activation**: Click "Save" to persist without restarting, or "Apply & Restart" to persist and take effect immediately. Apply & Restart behavior depends on how the proxy is running:
+  - **Service** (supervised launchd/systemd install): self-restarts in one click.
+  - **Docker**: cannot self-restart from inside the container; the GUI surfaces the host-side `headroom install restart --profile <p>` command to run instead.
+  - **Task** (Windows Task Scheduler / cron-managed install): `headroom install` does not support lifecycle operations for task deployments; the GUI shows an instruction to restart via the OS task scheduler or by stopping the process so it relaunches on its next trigger.
+  - **Foreground** (plain `headroom proxy`): shows a manual-restart instruction.
+- **Provenance / locking**: a field currently shadowed by an explicit environment variable export is rendered read-only with a tooltip, since editing it here would have no effect until the env var is unset. Manifest-baked settings (`HEADROOM_PORT`, `HEADROOM_HOST`) are similarly locked on supervised (Docker/Service) installs — managed by the install manifest, not the settings interface.
+- **CSRF protection**: `/settings` and `/settings/apply` reject requests whose `Origin` header (when present) doesn't resolve to a loopback host, in addition to the existing loopback-only + Host-header DNS-rebinding guard shared by all admin endpoints.
+
 ## Session Beta Header Tracking
 
 When running as a proxy, Headroom maintains a per-session union of `anthropic-beta` (and `OpenAI-Beta`) tokens via `SessionBetaTracker`. The session key is derived from the `x-headroom-session-id` header if present, otherwise from `md5(model + system_prompt[:500])[:16]` — stable across turns of the same conversation.

@@ -168,6 +168,23 @@ def test_detect_claude_code_version_parses_wrapper_output(monkeypatch) -> None:
     assert detect_claude_code_version("claude") == (2, 1, 196)
 
 
+def test_detect_claude_code_version_nonzero_exit_is_none(monkeypatch) -> None:
+    # Review follow-up (PR #1883, @JerrettDavis): a non-zero exit is a detection
+    # failure even when the failing command still prints a version-shaped string.
+    # Trusting it would emit a false *exact*-version Remote Control warning
+    # instead of the self-qualified "2.1.196+ / unknown" path. Must return None.
+    from types import SimpleNamespace
+
+    import headroom._subprocess as _sub
+
+    monkeypatch.setattr(
+        _sub,
+        "run",
+        lambda *a, **k: SimpleNamespace(returncode=1, stdout="2.1.196 (Claude Code)\n", stderr=""),
+    )
+    assert detect_claude_code_version("claude") is None
+
+
 # ---------------------------------------------------------------------------
 # Sibling co-report (#746 / #1158)
 # ---------------------------------------------------------------------------

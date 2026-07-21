@@ -369,3 +369,86 @@ def test_issue_327_openai_handler_does_not_call_walker_functions() -> None:
     # Sanity: the safe positional methods DID fire.
     assert "compute_frozen_count" in method_names
     assert "apply_cached" in method_names
+
+
+def test_openai_chat_completions_compacts_tools_when_profile_enabled() -> None:
+    captured = {}
+    with _make_proxy_client() as client:
+        proxy = client.app.state.proxy
+        proxy.config.optimize = True
+        proxy.config.mode = "token"
+        proxy.config.savings_profile = "agent-90"
+
+        def _fake_apply(**kwargs):  # noqa: ANN003
+            return SimpleNamespace(
+                messages=kwargs["messages"],
+                transforms_applied=[],
+                timing={},
+                tokens_before=10,
+                tokens_after=10,
+                waste_signals=None,
+            )
+
+        proxy.openai_pipeline.apply = _fake_apply
+
+        async def _fake_retry(method, url, headers, body, stream=False, **kwargs):  # noqa: ANN001
+            captured["body"] = body
+            return httpx.Response(
+                200,
+                json={
+                    "id": "chatcmpl_tools",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "message": {"role": "assistant", "content": "ok"},
+                            "finish_reason": "stop",
+                        }
+                    ],
+                    "usage": {"prompt_tokens": 500, "completion_tokens": 3, "total_tokens": 503},
+                },
+            )
+
+        proxy._retry_request = _fake_retry
+        verbose_schema_note = "schema annotation repeated for opencode tool definitions " * 50
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "read_file",
+                    "description": "read file helper",
+                    "parameters": {
+                        "$schema": "https://json-schema.org/draft/2020-12/schema",
+                        "title": "ReadFileParameters",
+                        "type": "object",
+                        "properties": {
+                            "path": {
+                                "type": "string",
+                                "title": "Path",
+                                "description": verbose_schema_note,
+                                "examples": [verbose_schema_note],
+                            }
+                        },
+                        "required": ["path"],
+                    },
+                },
+            }
+        ]
+
+        response = client.post(
+            "/v1/chat/completions",
+            headers={"authorization": "Bearer test-key"},
+            json={
+                "model": "gpt-4o-mini",
+                "messages": [{"role": "user", "content": "inspect this file"}],
+                "tools": tools,
+            },
+        )
+
+        assert response.status_code == 200
+        assert "openai:chat:tool_schema_compaction" in response.headers["x-headroom-transforms"]
+        assert int(response.headers["x-headroom-tokens-saved"]) > 0
+        sent_params = captured["body"]["tools"][0]["function"]["parameters"]
+        assert "$schema" not in sent_params
+        assert "title" not in sent_params
+        assert "title" not in sent_params["properties"]["path"]
+        assert "examples" not in sent_params["properties"]["path"]

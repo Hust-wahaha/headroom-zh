@@ -113,6 +113,14 @@ def test_count_messages_fails_open_to_estimation(monkeypatch: pytest.MonkeyPatch
     assert tokens > 0  # estimation fallback, no exception, no hang
 
 
+def test_deepseek_model_aliases_resolve_to_expected_tokenizers() -> None:
+    assert get_tokenizer_name("deepseek-v3.2") == "deepseek-ai/DeepSeek-V3.2"
+    assert get_tokenizer_name("deepseek-v4-pro") == "deepseek-ai/DeepSeek-V4-Pro"
+    assert get_tokenizer_name("deepseek-v4-flash") == "deepseek-ai/DeepSeek-V4-Flash"
+    assert get_tokenizer_name("deepseek-r1") == "deepseek-ai/DeepSeek-R1"
+    assert get_tokenizer_name("deepseek-r1-0528") == "deepseek-ai/DeepSeek-R1-0528"
+
+
 def test_invalid_timeout_env_falls_back_to_default(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("HEADROOM_HF_TOKENIZER_LOAD_TIMEOUT_SECS", "not-a-number")
     assert hf_mod._load_timeout_secs() == hf_mod._LOAD_TIMEOUT_DEFAULT
@@ -130,6 +138,7 @@ def test_get_tokenizer_name_prefers_most_specific_prefix() -> None:
     assert get_tokenizer_name("qwen2-7b-instruct") == "Qwen/Qwen2-7B"
     assert get_tokenizer_name("qwen2.5-turbo") == "Qwen/Qwen2.5-7B"
     assert get_tokenizer_name("deepseek-v2.5") == "deepseek-ai/DeepSeek-V2"
-    # Direct hits and the shorter family fallback still resolve as before.
+    # Direct hits and shorter family fallbacks still resolve through their
+    # longest matching tokenizer aliases.
     assert get_tokenizer_name("qwen-14b") == "Qwen/Qwen-14B"
-    assert get_tokenizer_name("deepseek-chat") == "deepseek-ai/deepseek-llm-7b-base"
+    assert get_tokenizer_name("deepseek-chat") == "deepseek-ai/DeepSeek-V3"

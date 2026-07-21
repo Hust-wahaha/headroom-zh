@@ -1375,3 +1375,59 @@ class TestCLIProxyRpmTpm:
 
         assert result.exit_code == 0, result.output
         assert captured_config["config"].rate_limit_tokens_per_minute == 80000
+
+
+class TestSettingsFileToEnv:
+    """settings.json is applied to os.environ before Click parses envvar options.
+
+    Proves the file reaches both a parse-time ``envvar=`` option (HEADROOM_PORT)
+    and a body-resolved env read (HEADROOM_CODE_AWARE_ENABLED, which has no
+    Click ``envvar=``), and that an explicit shell export still wins.
+    """
+
+    def test_settings_file_reaches_parse_time_and_body_options(self, runner, tmp_path):
+        (tmp_path / "settings.json").write_text(
+            '{"port": 9898, "code_aware_enabled": false}', encoding="utf-8"
+        )
+        captured_config = {}
+
+        def mock_run_server(config, **kwargs):
+            captured_config["config"] = config
+
+        with patch("headroom.proxy.server.run_server", mock_run_server):
+            result = runner.invoke(
+                main,
+                ["proxy"],
+                env={
+                    "HEADROOM_WORKSPACE_DIR": str(tmp_path),
+                    # Ensure nothing ambient shadows the file-applied values.
+                    "HEADROOM_PORT": None,
+                    "HEADROOM_CODE_AWARE_ENABLED": None,
+                },
+                catch_exceptions=False,
+            )
+
+        assert result.exit_code == 0, result.output
+        assert captured_config["config"].port == 9898
+        assert captured_config["config"].code_aware_enabled is False
+
+    def test_explicit_export_overrides_settings_file(self, runner, tmp_path):
+        (tmp_path / "settings.json").write_text('{"port": 9898}', encoding="utf-8")
+        captured_config = {}
+
+        def mock_run_server(config, **kwargs):
+            captured_config["config"] = config
+
+        with patch("headroom.proxy.server.run_server", mock_run_server):
+            result = runner.invoke(
+                main,
+                ["proxy"],
+                env={
+                    "HEADROOM_WORKSPACE_DIR": str(tmp_path),
+                    "HEADROOM_PORT": "7777",
+                },
+                catch_exceptions=False,
+            )
+
+        assert result.exit_code == 0, result.output
+        assert captured_config["config"].port == 7777

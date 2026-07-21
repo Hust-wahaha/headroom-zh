@@ -52,7 +52,7 @@ class _AgentChoice(click.ParamType):
 _AGENT_HELP = """Which coding agent to analyze. Auto-detects by default.
 
 \b
-Built-in: claude, codex, gemini.
+Built-in: claude, codex, gemini, grok.
 External plugins register via 'headroom.learn_plugin' entry point.
 Use 'auto' (default) to scan all detected agents."""
 

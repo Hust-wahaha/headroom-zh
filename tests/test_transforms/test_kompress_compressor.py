@@ -485,3 +485,57 @@ class TestUnloadKompressModel:
 
         # Should return False when no model is loaded
         assert unload_kompress_model() is False
+
+
+# ── onnx_coreml backend gating (issue #2442) ────────────────────────────
+
+
+class TestOnnxBackendPrefixGating:
+    """Non-CPU ONNX backends (onnx_coreml, onnx_cpu) must take the ONNX path.
+
+    The bug: sites gated on the exact string ``backend == "onnx"`` misclassified
+    ``onnx_coreml`` as PyTorch and called ``next(model.parameters())`` on the
+    ``_OnnxModel`` wrapper, which has no ``.parameters()`` — crashing every call
+    and silently disabling Kompress. The fix uses ``backend.startswith("onnx")``.
+    """
+
+    class _FakeOnnxModel:
+        """Mimics the ONNX wrapper: has get_keep_mask but no .parameters()."""
+
+        def get_keep_mask(self, input_ids, attention_mask):  # noqa: ANN001, ANN201
+            return [[True]]
+
+    @staticmethod
+    def _fake_tokenizer(words, **kwargs):  # noqa: ANN001, ANN205
+        # ONNX path must request numpy tensors, never torch.
+        assert kwargs.get("return_tensors") == "np"
+        return {"input_ids": [[1, 2]], "attention_mask": [[1, 1]]}
+
+    def test_timed_canary_onnx_coreml_skips_pytorch_device_dispatch(self) -> None:
+        from headroom.transforms.kompress_compressor import KompressCompressor
+
+        compressor = KompressCompressor()
+        model = self._FakeOnnxModel()  # no .parameters()
+
+        # Must not raise AttributeError: '_OnnxModel' object has no attribute
+        # 'parameters'; returns a float wall-clock duration.
+        elapsed = compressor._timed_canary(model, self._fake_tokenizer, "onnx_coreml")
+        assert isinstance(elapsed, float)
+
+    def test_timed_canary_pytorch_still_dispatches_to_device(self) -> None:
+        # Negative control: the PyTorch branch DOES touch .parameters(), so the
+        # paramless fake model raises there — proving the test above is only
+        # green because onnx_coreml correctly skips that branch.
+        import pytest
+
+        from headroom.transforms.kompress_compressor import KompressCompressor
+
+        compressor = KompressCompressor()
+        model = self._FakeOnnxModel()
+
+        def pt_tokenizer(words, **kwargs):  # noqa: ANN001, ANN202
+            assert kwargs.get("return_tensors") == "pt"
+            return {"input_ids": [[1, 2]], "attention_mask": [[1, 1]]}
+
+        with pytest.raises(AttributeError):
+            compressor._timed_canary(model, pt_tokenizer, "pytorch")

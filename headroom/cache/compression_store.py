@@ -480,6 +480,7 @@ class CompressionStore:
                 "compressed_item_count": entry.compressed_item_count,
                 "query_context": entry.query_context,
                 "compressed_content": entry.compressed_content,
+                "original_content_preview": entry.original_content[:2000],
                 "created_at": entry.created_at,
                 "ttl": entry.ttl,
             }

@@ -5,6 +5,8 @@ for the TypeScript SDK and other HTTP clients.
 """
 
 import json
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -250,6 +252,100 @@ class TestCompressEndpointCompression:
         assert data["tokens_before"] >= 0
         assert data["tokens_after"] >= 0
         assert isinstance(data["transforms_applied"], list)
+
+    def test_success_records_request_outcome(self, client, monkeypatch):
+        """A completed compression should update request metrics."""
+        proxy = client.app.state.proxy
+        result = SimpleNamespace(
+            messages=[{"role": "user", "content": "compressed"}],
+            tokens_before=12,
+            tokens_after=7,
+            transforms_applied=["test_transform"],
+            transforms_summary={"test_transform": 1},
+            markers_inserted=[],
+        )
+        run_compression = AsyncMock(return_value=result)
+        record_outcome = AsyncMock()
+        monkeypatch.setattr(proxy, "_run_compression_in_executor", run_compression)
+        monkeypatch.setattr(proxy, "_record_request_outcome", record_outcome)
+
+        response = client.post(
+            "/v1/compress",
+            json={
+                "messages": [{"role": "user", "content": "compress me"}],
+                "model": "gpt-4",
+            },
+        )
+
+        assert response.status_code == 200
+        record_outcome.assert_awaited_once()
+        outcome = record_outcome.await_args.args[0]
+        assert outcome.provider == "compress"
+        assert outcome.model == "gpt-4"
+        assert outcome.original_tokens == 12
+        assert outcome.optimized_tokens == 7
+        assert outcome.tokens_saved == 5
+        assert outcome.attempted_input_tokens == 12
+        assert outcome.num_messages == 1
+        assert outcome.transforms_applied == ("test_transform",)
+        assert outcome.total_latency_ms >= 0
+
+    def test_compression_error_records_failed_request(self, client, monkeypatch):
+        """A hard compression failure should increment failed metrics."""
+        proxy = client.app.state.proxy
+        run_compression = AsyncMock(side_effect=RuntimeError("compression broke"))
+        record_failed = AsyncMock()
+        monkeypatch.setattr(proxy, "_run_compression_in_executor", run_compression)
+        monkeypatch.setattr(proxy.metrics, "record_failed", record_failed)
+
+        response = client.post(
+            "/v1/compress",
+            json={
+                "messages": [{"role": "user", "content": "compress me"}],
+                "model": "gpt-4",
+            },
+        )
+
+        assert response.status_code == 503
+        assert response.json() == {
+            "error": {
+                "type": "compression_error",
+                "message": "compression broke",
+            }
+        }
+        record_failed.assert_awaited_once_with(provider="compress")
+
+    def test_compression_timeout_records_fail_open_outcome(self, client, monkeypatch):
+        """A timeout should count as a zero-savings completed request."""
+        proxy = client.app.state.proxy
+        run_compression = AsyncMock(side_effect=TimeoutError)
+        record_outcome = AsyncMock()
+        record_compression_failed = Mock()
+        monkeypatch.setattr(proxy, "_run_compression_in_executor", run_compression)
+        monkeypatch.setattr(proxy, "_record_request_outcome", record_outcome)
+        monkeypatch.setattr(
+            proxy.metrics,
+            "record_compression_failed",
+            record_compression_failed,
+        )
+        messages = [{"role": "user", "content": "compress me"}]
+
+        response = client.post(
+            "/v1/compress",
+            json={"messages": messages, "model": "gpt-4"},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["messages"] == messages
+        assert response.json()["skip_reason"] == "compression_timeout"
+        record_compression_failed.assert_called_once_with("timeout")
+        record_outcome.assert_awaited_once()
+        outcome = record_outcome.await_args.args[0]
+        assert outcome.provider == "compress"
+        assert outcome.model == "gpt-4"
+        assert outcome.original_tokens == 0
+        assert outcome.optimized_tokens == 0
+        assert outcome.tokens_saved == 0
 
 
 class TestCompressEndpointDoesNotBlockLoop:

@@ -150,7 +150,18 @@ def _json_file(path: Path) -> dict[str, Any]:
     content = path.read_text(encoding="utf-8").strip()
     if not content:
         return {}
-    payload = json.loads(content)
+    try:
+        payload = json.loads(content)
+    except json.JSONDecodeError as e:
+        # This is a user-owned file (e.g. ~/.claude/settings.json or Codex's
+        # hooks.json) that the callers read-merge-write. Returning {} would make
+        # the following _write_json overwrite it, silently discarding the user's
+        # settings; letting the raw JSONDecodeError propagate crashes `headroom
+        # init` with a traceback. Abort with an actionable message so the user
+        # can fix the JSON (or move it aside) without losing it.
+        raise click.ClickException(
+            f"{path} contains invalid JSON ({e}); fix it and re-run, or move it aside."
+        ) from e
     return payload if isinstance(payload, dict) else {}
 
 

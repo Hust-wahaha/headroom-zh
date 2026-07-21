@@ -82,6 +82,8 @@ def test_savings_tracker_helpers_normalize_inputs_and_paths(tmp_path, monkeypatc
         "cache_savings_usd": 0.0,
         "total_input_tokens": 0,
         "total_input_cost_usd": 0.0,
+        "output_tokens_saved": 0,
+        "output_savings_usd": 0.0,
     }
     assert savings_tracker_module._normalize_history_entry({"timestamp": "bad"}) is None
     assert savings_tracker_module._normalize_history_entry(object()) is None
@@ -123,7 +125,7 @@ def test_savings_tracker_sanitizes_legacy_state_and_applies_retention(tmp_path):
     )
     snapshot = tracker.snapshot()
 
-    assert snapshot["schema_version"] == 4
+    assert snapshot["schema_version"] == 5
     assert snapshot["lifetime"] == {
         "requests": 0,
         "tokens_saved": 30,
@@ -145,6 +147,8 @@ def test_savings_tracker_sanitizes_legacy_state_and_applies_retention(tmp_path):
             "cache_savings_usd": 0.0,
             "total_input_tokens": 0,
             "total_input_cost_usd": 0.0,
+            "output_tokens_saved": 0,
+            "output_savings_usd": 0.0,
         }
     ]
     assert snapshot["retention"] == {
@@ -1096,7 +1100,7 @@ def test_stats_history_persists_across_restarts_and_stats_stays_compatible(tmp_p
         history = client.get("/stats-history")
         assert history.status_code == 200
         history_data = history.json()
-        assert history_data["schema_version"] == 4
+        assert history_data["schema_version"] == 5
         assert history_data["storage_path"] == str(savings_path)
         assert history_data["lifetime"]["tokens_saved"] == 40
         assert history_data["lifetime"]["total_input_tokens"] == 120
@@ -1288,7 +1292,8 @@ def test_stats_history_csv_export_is_frontend_friendly(tmp_path, monkeypatch):
         assert lines[0] == (
             "timestamp,tokens_saved,compression_savings_usd_delta,total_tokens_saved,"
             "compression_savings_usd,total_input_tokens_delta,total_input_tokens,"
-            "total_input_cost_usd_delta,total_input_cost_usd"
+            "total_input_cost_usd_delta,total_input_cost_usd,"
+            "output_tokens_saved_delta,output_savings_usd_delta"
         )
         assert len(lines) >= 2
         assert "total_tokens_saved" in lines[0]
@@ -1654,7 +1659,7 @@ def test_v3_state_without_cache_fields_loads_clean_and_saves_v4(tmp_path):
         timestamp="2026-07-02T00:00:00Z",
     )
     persisted = json.loads(path.read_text(encoding="utf-8"))
-    assert persisted["schema_version"] == 4
+    assert persisted["schema_version"] == 5
     assert persisted["lifetime"]["cache_read_tokens"] == 5
     assert persisted["lifetime"]["tokens_saved"] == 42181
 

@@ -117,7 +117,10 @@ jobs:
           path: ~/.cache/pip
           key: ${{ runner.os }}-pip-lint-${{ hashFiles('pyproject.toml') }}
           restore-keys: ${{ runner.os }}-pip-lint-
-      - run: python -m pip install --upgrade pip "ruff==0.15.17" "mypy==1.20.2"
+      - name: Verify Ruff version alignment
+        id: ruff-version
+        run: echo "version=$(python scripts/verify-ruff-version.py --print-version)" >> "$GITHUB_OUTPUT"
+      - run: python -m pip install --upgrade pip "ruff==${{ steps.ruff-version.outputs.version }}" "mypy==1.20.2"
       - name: ruff check
         run: ruff check .
       - name: ruff format --check

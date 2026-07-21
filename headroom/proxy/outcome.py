@@ -339,9 +339,23 @@ async def emit_request_outcome(handler: Any, outcome: RequestOutcome) -> None:
     and is awaitable-compatible. We could lift this to a typing.Protocol
     if/when another contract surface emerges, but YAGNI.
     """
+    from headroom.copilot_auth import consume_request_routed_to_copilot
     from headroom.proxy.cost import _summarize_transforms
     from headroom.proxy.models import RequestLog
     from headroom.proxy.project_context import get_current_project
+
+    # GitHub Copilot: requests routed to the Copilot API travel on the OpenAI or
+    # Anthropic wire, so the handlers stamp the wire provider. Relabel to
+    # "copilot" here — the single outcome funnel — so the dashboard shows the
+    # real upstream instead of "openai"/"anthropic". Keyed on the per-request
+    # flag set in build_copilot_upstream_url; never touches non-Copilot traffic.
+    # Done before the 5xx guard so a failed Copilot request is attributed too.
+    # consume_* reads AND clears the flag (called unconditionally via short-circuit
+    # order) so it cannot leak onto a later outcome in the same execution context.
+    if consume_request_routed_to_copilot() and outcome.provider in ("openai", "anthropic"):
+        import dataclasses
+
+        outcome = dataclasses.replace(outcome, provider="copilot")
 
     # Upstream failure (>= 500, e.g. a 529 Overloaded surfaced after retry
     # exhaustion) must not feed the savings/cost/log success stats; that would
@@ -357,11 +371,16 @@ async def emit_request_outcome(handler: Any, outcome: RequestOutcome) -> None:
     # tags each request's (arm, stratum) onto ``transforms_applied``; feed the
     # observed output tokens to the recorder so it can produce an honest
     # reduction estimate. Best-effort: never let bookkeeping break a response.
+    output_tokens_saved_est = 0
     if any(str(t).startswith("output_shaper:") for t in outcome.transforms_applied):
         try:
             from headroom.proxy.output_savings import get_recorder
 
-            get_recorder().record_from_labels(outcome.transforms_applied, outcome.output_tokens)
+            _rec = get_recorder()
+            _rec.record_from_labels(outcome.transforms_applied, outcome.output_tokens)
+            output_tokens_saved_est = _rec.estimate_request_savings(
+                outcome.transforms_applied, outcome.output_tokens
+            )
         except Exception:  # pragma: no cover - defensive
             pass
 
@@ -388,6 +407,7 @@ async def emit_request_outcome(handler: Any, outcome: RequestOutcome) -> None:
         cache_write_1h_tokens=outcome.cache_write_1h_tokens,
         uncached_input_tokens=outcome.uncached_input_tokens,
         attempted_input_tokens=outcome.attempted_input_tokens,
+        output_tokens_saved=output_tokens_saved_est,
         project=project,
         client=outcome.client,
     )
@@ -434,6 +454,9 @@ async def emit_request_outcome(handler: Any, outcome: RequestOutcome) -> None:
                 total_latency_ms=outcome.total_latency_ms,
                 tags=log_tags,
                 cache_hit=outcome.cache_hit,
+                cache_read_tokens=outcome.cache_read_tokens,
+                cache_write_tokens=outcome.cache_write_tokens,
+                uncached_input_tokens=outcome.uncached_input_tokens,
                 transforms_applied=list(outcome.transforms_applied),
                 waste_signals=outcome.waste_signals,
                 request_messages=outcome.request_messages,

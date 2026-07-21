@@ -208,7 +208,12 @@ class ClaudeCodePlugin(LearnPlugin, ConversationScanner):
 
                     if line_type == "assistant":
                         self._extract_tool_uses(d, tool_uses)
-                        usage = d.get("message", {}).get("usage", {})
+                        # `get("message", {})` returns None for an explicit
+                        # {"message": null} line (the default only applies to a
+                        # missing key); `.get` on None then raises AttributeError,
+                        # which the OSError/UnicodeDecodeError guard does not catch
+                        # — so one malformed line crashed the whole learn run.
+                        usage = (d.get("message") or {}).get("usage", {})
                         total_input_tokens += usage.get("input_tokens", 0)
                         total_input_tokens += usage.get("cache_read_input_tokens", 0)
                         total_input_tokens += usage.get("cache_creation_input_tokens", 0)
@@ -237,7 +242,7 @@ class ClaudeCodePlugin(LearnPlugin, ConversationScanner):
 
     def _extract_tool_uses(self, d: dict, tool_uses: dict[str, tuple[str, dict]]) -> None:
         """Extract tool_use blocks from an assistant message."""
-        msg = d.get("message", {})
+        msg = d.get("message") or {}
         content = msg.get("content", [])
         if not isinstance(content, list):
             return
@@ -261,7 +266,7 @@ class ClaudeCodePlugin(LearnPlugin, ConversationScanner):
         timestamp: str | None = None,
     ) -> None:
         """Extract tool_result blocks from a user message and match to tool_uses."""
-        msg = d.get("message", {})
+        msg = d.get("message") or {}
         content = msg.get("content", [])
         if not isinstance(content, list):
             return
@@ -327,7 +332,7 @@ class ClaudeCodePlugin(LearnPlugin, ConversationScanner):
         timestamp: str | None = None,
     ) -> None:
         """Extract user text messages and interruptions from a user line."""
-        msg = d.get("message", {})
+        msg = d.get("message") or {}
         content = msg.get("content", "")
 
         if isinstance(content, str) and content.strip():

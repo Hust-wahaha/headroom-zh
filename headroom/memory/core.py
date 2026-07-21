@@ -585,6 +585,39 @@ class HierarchicalMemory:
         logger.debug(f"Superseded memory {old_memory_id} with {new_memory.id}")
         return new_memory
 
+    async def detach_supersession(
+        self,
+        old_memory_id: str,
+        new_memory_id: str,
+    ) -> tuple[Memory, Memory]:
+        """Detach one explicit, reciprocal supersession edge.
+
+        The store performs the atomic lineage repair. Both affected memories
+        are then re-indexed so the restored old memory is immediately
+        searchable and index metadata reflects the repaired lineage.
+        """
+        old_memory, new_memory = await self._store.detach_supersession(
+            old_memory_id,
+            new_memory_id,
+        )
+
+        for memory in (old_memory, new_memory):
+            if memory.embedding is not None:
+                await self._vector_index.index(memory)
+            await self._index_for_text_search(memory)
+
+        if self._cache is not None:
+            memory_ids = [old_memory.id, new_memory.id]
+            await self._cache.invalidate_batch(memory_ids)
+            await self._cache.put_batch([old_memory, new_memory])
+
+        logger.info(
+            "Detached supersession edge %s -> %s",
+            old_memory_id,
+            new_memory_id,
+        )
+        return old_memory, new_memory
+
     async def get_history(
         self,
         memory_id: str,

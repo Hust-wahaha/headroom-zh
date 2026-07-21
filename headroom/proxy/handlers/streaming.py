@@ -70,7 +70,12 @@ class StreamingMixin:
     def _get_session_key(body: dict, session_header: str | None = None) -> str:
         """Return session identity from an explicit header or a body-derived hash.
 
-        Fallback mirrors prefix_tracker.compute_session_id: md5(model:system[:500]).
+        The fallback is a coarse, self-contained hash (md5 of
+        ``model:system[:500]``) used ONLY to key the mid-turn steering state
+        below. It is NOT the same derivation as
+        ``prefix_tracker.compute_session_id`` (which json-encodes the full
+        leading system-text run) — do not key cross-subsystem state on the
+        assumption that the two fallbacks agree.
         """
         if session_header:
             return session_header
@@ -438,6 +443,15 @@ class StreamingMixin:
                     # signature validation to pass.
                     if "data" in block:
                         current_block["data"] = block["data"]
+                elif btype:
+                    # Non-standard block (server_tool_use, web_search_tool_result,
+                    # ...): copy through all of the block's fields so the
+                    # reconstruction doesn't silently drop them to a bare
+                    # {type, index}. Mirrors the sibling reconstructor
+                    # `_reconstruct_anthropic_response`, which does `dict(block)`.
+                    for _k, _v in block.items():
+                        if _k != "type":
+                            current_block[_k] = _v
                 blocks_by_index[block_index] = current_block
 
             elif event_type == "content_block_delta":
@@ -480,13 +494,20 @@ class StreamingMixin:
                 idx = data.get("index")
                 target = (blocks_by_index.get(idx) if idx is not None else None) or current_block
                 if target is not None:
-                    # Parse accumulated JSON for tool_use blocks.
-                    if target.get("type") == "tool_use" and "_partial_json" in target:
+                    # Parse accumulated JSON into `input` for any block that
+                    # streamed `input_json_delta` — tool_use AND server_tool_use
+                    # (and future tool-ish blocks). Gating on the block type
+                    # missed server_tool_use, leaving its `input` at the empty
+                    # start-event value and leaking the `_partial_json` scratch
+                    # key into replayed assistant history, which Anthropic then
+                    # rejects with `server_tool_use.input: Input should be an
+                    # object` (#2438). Always strip the scratch key.
+                    if "_partial_json" in target:
+                        raw = target.pop("_partial_json")
                         try:
-                            target["input"] = json.loads(target["_partial_json"])
+                            target["input"] = json.loads(raw) if raw else {}
                         except json.JSONDecodeError:
                             target["input"] = {}
-                        del target["_partial_json"]
                     # Materialize the thinking buffer into the
                     # canonical `thinking` field expected by the
                     # Anthropic API.
@@ -845,12 +866,17 @@ class StreamingMixin:
                     stream_state[key] = late_usage[key]
 
         output_tokens = stream_state["output_tokens"]
+        output_tokens_source = "provider"
         if output_tokens is None:
             output_tokens = stream_state["total_bytes"] // 40
+            output_tokens_source = "estimated_bytes"
             logger.warning(
                 f"[{request_id}] Could not parse output_tokens from SSE, "
                 f"estimating {output_tokens} from {stream_state['total_bytes']} bytes"
             )
+
+        outcome_tags = dict(tags or {})
+        outcome_tags["output_tokens_source"] = output_tokens_source
 
         provider_input_tokens = stream_state.get("input_tokens")
         effective_optimized_tokens = optimized_tokens
@@ -940,7 +966,7 @@ class StreamingMixin:
             transforms_applied=transforms_applied,
             total_latency_ms=total_latency,
             overhead_ms=optimization_latency,
-            tags=tags,
+            tags=outcome_tags,
             client=client,
             log_full_messages=getattr(self.config, "log_full_messages", False),
             cache_read_tokens=cache_read_tokens,
@@ -1638,10 +1664,21 @@ class StreamingMixin:
         optimization_latency: float,
         pipeline_timing: dict[str, float] | None = None,
         original_messages: list[dict] | None = None,
+        prefix_tracker: Any | None = None,
+        optimized_messages: list[dict] | None = None,
     ) -> StreamingResponse:
         """Stream response from Bedrock backend with metrics tracking.
 
         Translates Bedrock streaming events to Anthropic SSE format.
+
+        ``prefix_tracker``/``optimized_messages`` carry the
+        :class:`PrefixCacheTracker` for the session so cache stats from
+        this turn update the tracker for the next one — mirrors the
+        direct streaming path (``_finalize_stream_response``) and the
+        OpenAI-via-backend sibling (``_stream_openai_via_backend``).
+        Without this, ``extract_cache_stable_delta()`` always sees no
+        previous turn on the Bedrock path and cache mode never compresses
+        anything past the first request in a session.
         """
         from fastapi.responses import StreamingResponse
 
@@ -1663,6 +1700,11 @@ class StreamingMixin:
             "cache_creation_ephemeral_5m_input_tokens": 0,
             "cache_creation_ephemeral_1h_input_tokens": 0,
         }
+        # Bytes-level mirror of the SSE stream, used only to reconstruct
+        # the final assistant message for the prefix tracker once the
+        # stream closes (see finally: block below). Not on the hot path
+        # for anything the client sees.
+        full_sse_bytes = bytearray()
 
         async def generate():
             try:
@@ -1690,10 +1732,13 @@ class StreamingMixin:
 
                     # Format as SSE
                     if event.raw_sse:
-                        yield event.raw_sse.encode()
+                        chunk_bytes = event.raw_sse.encode()
                     else:
                         sse_line = f"event: {event.event_type}\ndata: {json.dumps(event.data)}\n\n"
-                        yield sse_line.encode()
+                        chunk_bytes = sse_line.encode()
+                    if prefix_tracker is not None:
+                        full_sse_bytes.extend(chunk_bytes)
+                    yield chunk_bytes
 
                     # Track usage from message_start event
                     if event.event_type == "message_start":
@@ -1744,6 +1789,53 @@ class StreamingMixin:
                 _backend_name = (
                     self.anthropic_backend.name if self.anthropic_backend else "anthropic"
                 )
+
+                # Update prefix cache tracker for the next turn — mirrors
+                # _finalize_stream_response (direct-API streaming path)
+                # and _stream_openai_via_backend (OpenAI-via-backend
+                # sibling). Run before the outcome funnel so prefix state
+                # is consistent regardless of metric path.
+                if prefix_tracker is not None:
+                    import copy as _copy
+
+                    tracker_messages = (
+                        optimized_messages
+                        if optimized_messages is not None
+                        else body.get("messages", [])
+                    )
+                    next_forwarded = _copy.deepcopy(tracker_messages)
+                    next_original = _copy.deepcopy(original_messages or tracker_messages)
+                    if full_sse_bytes:
+                        parsed = self._parse_sse_to_response(
+                            full_sse_bytes.decode("utf-8", errors="replace"), provider
+                        )
+                        asst_msg = self._assistant_message_from_response_json(parsed)
+                        if asst_msg is not None:
+                            next_forwarded.append(_copy.deepcopy(asst_msg))
+                            next_original.append(_copy.deepcopy(asst_msg))
+                    cache_read_tokens = stream_state["cache_read_input_tokens"] or 0
+                    cache_write_tokens = stream_state["cache_creation_input_tokens"] or 0
+                    if provider == "anthropic" and hasattr(prefix_tracker, "classify_cache_miss"):
+                        miss = prefix_tracker.classify_cache_miss(
+                            cache_read_tokens=cache_read_tokens,
+                            current_forwarded_messages=tracker_messages,
+                        )
+                        if miss.is_miss:
+                            logger.info(
+                                f"[{request_id}] CACHE-MISS-ATTRIBUTION: reason={miss.reason} "
+                                f"idle={miss.idle_seconds:.0f}s ttl={miss.cache_ttl_seconds}s "
+                                f"expected_cached={miss.expected_cached_tokens:,} "
+                                f"prefix_changed={miss.prefix_changed} "
+                                f"ttl_exceeded={miss.ttl_exceeded}"
+                            )
+                            await self.metrics.record_cache_miss_attribution(provider, miss.reason)
+                    prefix_tracker.update_from_response(
+                        cache_read_tokens=cache_read_tokens,
+                        cache_write_tokens=cache_write_tokens,
+                        messages=next_forwarded,
+                        original_messages=next_original,
+                    )
+
                 # Active-compression denominator derived inside
                 # ``from_stream`` as ``optimized + saved``. Bedrock
                 # doesn't propagate frozen_message_count either — same

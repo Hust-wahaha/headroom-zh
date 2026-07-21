@@ -788,6 +788,7 @@ jobs:
           # recommended pattern for release workflows that may run
           # multiple times against the same version.
           skip-existing: true
+          attestations: false
 
   publish-npm:
     needs: [detect-version, build]

@@ -22,6 +22,10 @@ from headroom.providers import OpenAIProvider
 from headroom.tokenizer import Tokenizer
 from headroom.transforms.content_router import ContentRouter, ContentRouterConfig
 from headroom.transforms.lossless_compaction import expand_runs, search_unheading, strip_ansi
+from headroom.transforms.lossless_provider import (
+    get_lossless_provider,
+    set_lossless_provider,
+)
 
 GREP = "".join(
     f"src/module_{f}.py:{ln * 3}:matched occurrence with some real content here\n"
@@ -117,3 +121,40 @@ def test_pipeline_minifies_json_read(tokenizer):
 def test_pipeline_leaves_source_read_untouched(tokenizer):
     out, _ = _run(CODE, "read", tokenizer)
     assert out == CODE
+
+
+# --- pluggable lossless provider seam ---------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _reset_provider():
+    """Never leak a registered provider between tests."""
+    yield
+    set_lossless_provider(None)
+
+
+def test_default_no_provider_uses_builtin():
+    # Unset (default) → built-in folds run; GREP compacts via search-heading.
+    assert get_lossless_provider() is None
+    out, kind = _compact(GREP)
+    assert kind == "search" and search_unheading(out) == GREP
+
+
+def test_registered_provider_is_authoritative():
+    # A registered provider fully owns excluded-tool compaction; the built-in
+    # search fold does NOT run (we'd get "search", not our sentinel).
+    set_lossless_provider(lambda content: ("<<folded>>", "custom"))
+    assert _compact(GREP) == ("<<folded>>", "custom")
+    # Authoritative on None too: provider says "leave it" → no built-in fallback.
+    set_lossless_provider(lambda content: None)
+    assert _compact(GREP) is None
+
+
+def test_provider_exception_falls_back_to_builtin():
+    def boom(content):
+        raise RuntimeError("provider blew up")
+
+    set_lossless_provider(boom)
+    # Falls back to the built-in fold rather than crashing or passing through raw.
+    out, kind = _compact(GREP)
+    assert kind == "search" and search_unheading(out) == GREP
