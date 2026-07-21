@@ -23,7 +23,7 @@
       
       
       <link rel="icon" href="../assets/images/favicon.png">
-      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
     
     
       
@@ -31,7 +31,7 @@
       
     
     
-      <link rel="stylesheet" href="../assets/stylesheets/main.484c7ddc.min.css">
+      <link rel="stylesheet" href="../assets/stylesheets/main.ec1eaa64.min.css">
       
         
         <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
@@ -1802,6 +1802,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#headroom-inspect" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        headroom inspect
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#headroom-evals" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2681,6 +2692,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#headroom-inspect" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        headroom inspect
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#headroom-evals" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -3218,6 +3240,11 @@
 <td><strong>native in container</strong></td>
 </tr>
 <tr>
+<td><code>headroom inspect</code></td>
+<td>Show original vs compressed content for recent requests</td>
+<td><strong>native in container</strong></td>
+</tr>
+<tr>
 <td><code>headroom evals ...</code></td>
 <td>Run memory evaluation workflows</td>
 <td><strong>native in container</strong></td>
@@ -3609,6 +3636,16 @@
 <td>Custom OpenAI passthrough API URL</td>
 </tr>
 <tr>
+<td><code>--anthropic-extra-headers</code></td>
+<td>unset</td>
+<td>JSON object of extra headers merged into (and overriding) forwarded Anthropic requests</td>
+</tr>
+<tr>
+<td><code>--openai-extra-headers</code></td>
+<td>unset</td>
+<td>JSON object of extra headers merged into (and overriding) forwarded OpenAI requests</td>
+</tr>
+<tr>
 <td><code>--gemini-api-url</code></td>
 <td>unset</td>
 <td>Custom Gemini passthrough API URL</td>
@@ -3643,7 +3680,7 @@
 <p>Notes:</p>
 <ul>
 <li><code>--learn</code> implies memory unless <code>--no-learn</code> is also set.</li>
-<li>Proxy startup can also read environment variables such as <code>HEADROOM_HOST</code>, <code>HEADROOM_PORT</code>, <code>HEADROOM_BUDGET</code>, <code>HEADROOM_MODE</code>, <code>HEADROOM_ANYLLM_PROVIDER</code>, <code>HEADROOM_ANTHROPIC_PRE_UPSTREAM_CONCURRENCY</code>, <code>HEADROOM_ANTHROPIC_PRE_UPSTREAM_ACQUIRE_TIMEOUT_SECONDS</code>, <code>HEADROOM_REQUEST_TIMEOUT</code>, <code>HEADROOM_ANTHROPIC_PRE_UPSTREAM_MEMORY_CONTEXT_TIMEOUT_SECONDS</code>, <code>ANTHROPIC_TARGET_API_URL</code>, <code>OPENAI_TARGET_API_URL</code>, and <code>GEMINI_TARGET_API_URL</code>. CLI flags take precedence over environment variables.</li>
+<li>Proxy startup can also read environment variables such as <code>HEADROOM_HOST</code>, <code>HEADROOM_PORT</code>, <code>HEADROOM_BUDGET</code>, <code>HEADROOM_MODE</code>, <code>HEADROOM_ANYLLM_PROVIDER</code>, <code>HEADROOM_ANTHROPIC_PRE_UPSTREAM_CONCURRENCY</code>, <code>HEADROOM_ANTHROPIC_PRE_UPSTREAM_ACQUIRE_TIMEOUT_SECONDS</code>, <code>HEADROOM_REQUEST_TIMEOUT</code>, <code>HEADROOM_ANTHROPIC_PRE_UPSTREAM_MEMORY_CONTEXT_TIMEOUT_SECONDS</code>, <code>ANTHROPIC_TARGET_API_URL</code>, <code>OPENAI_TARGET_API_URL</code>, <code>GEMINI_TARGET_API_URL</code>, <code>ANTHROPIC_TARGET_API_HEADERS</code>, and <code>OPENAI_TARGET_API_HEADERS</code>. CLI flags take precedence over environment variables.</li>
 <li>The default Anthropic pre-upstream cap is intentionally conservative for CPU/ONNX-heavy work. Larger containers may want to raise it after checking the resolved runtime values on <code>/readyz</code> or <code>/debug/warmup</code>.</li>
 </ul>
 <p>See also: <a href="../proxy/">Proxy Server</a>, <a href="../configuration/">Configuration</a></p>
@@ -3726,12 +3763,55 @@
 <p>The command reads <code>${HEADROOM_WORKSPACE_DIR}/logs/proxy.log</code> (defaults
 to <code>~/.headroom/logs/proxy.log</code> — see the
 <a href="../filesystem-contract/">Filesystem Contract</a>).</p>
+<h2 id="headroom-inspect"><code>headroom inspect</code><a class="headerlink" href="#headroom-inspect" title="Permanent link">&para;</a></h2>
+<p>Show the original vs compressed content for recent requests so you can <em>see</em>
+what the compressor changed (not just the token counts). Useful for building
+trust in compression and debugging quality regressions.</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-13-1"><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a>headroom<span class="w"> </span>inspect<span class="w">                 </span><span class="c1"># inspect the most recent request</span>
+</span><span id="__span-13-2"><a id="__codelineno-13-2" name="__codelineno-13-2" href="#__codelineno-13-2"></a>headroom<span class="w"> </span>inspect<span class="w"> </span>--last<span class="w"> </span><span class="m">5</span><span class="w">        </span><span class="c1"># inspect the 5 most recent requests</span>
+</span><span id="__span-13-3"><a id="__codelineno-13-3" name="__codelineno-13-3" href="#__codelineno-13-3"></a>headroom<span class="w"> </span>inspect<span class="w"> </span>--full<span class="w">          </span><span class="c1"># include unchanged messages</span>
+</span><span id="__span-13-4"><a id="__codelineno-13-4" name="__codelineno-13-4" href="#__codelineno-13-4"></a>headroom<span class="w"> </span>inspect<span class="w"> </span>--format<span class="w"> </span>json<span class="w">   </span><span class="c1"># raw feed for piping into another tool</span>
+</span></code></pre></div>
+<table>
+<thead>
+<tr>
+<th>Option</th>
+<th>Default</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--port</code> / <code>-p</code></td>
+<td><code>8787</code></td>
+<td>Proxy port to query (env: <code>HEADROOM_PORT</code>)</td>
+</tr>
+<tr>
+<td><code>--last</code></td>
+<td><code>1</code></td>
+<td>Number of most-recent requests to show</td>
+</tr>
+<tr>
+<td><code>--format</code></td>
+<td><code>text</code></td>
+<td><code>text</code> renders a highlighted diff; <code>json</code> emits the raw feed</td>
+</tr>
+<tr>
+<td><code>--full</code></td>
+<td>off</td>
+<td>Include messages the compressor left unchanged</td>
+</tr>
+</tbody>
+</table>
+<p><code>inspect</code> queries the running proxy's loopback <code>/transformations/feed</code> endpoint,
+so the proxy must be started with <code>--log-messages</code> (or <code>--log-file</code>) for the
+pre/post-compression snapshots to be captured.</p>
 <h2 id="headroom-evals"><code>headroom evals</code><a class="headerlink" href="#headroom-evals" title="Permanent link">&para;</a></h2>
 <p>Memory evaluation command group.</p>
 <h3 id="headroom-evals-memory"><code>headroom evals memory</code><a class="headerlink" href="#headroom-evals-memory" title="Permanent link">&para;</a></h3>
 <p>Run the LoCoMo memory evaluation benchmark.</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-13-1"><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a>headroom<span class="w"> </span>evals<span class="w"> </span>memory<span class="w"> </span>-n<span class="w"> </span><span class="m">3</span>
-</span><span id="__span-13-2"><a id="__codelineno-13-2" name="__codelineno-13-2" href="#__codelineno-13-2"></a>headroom<span class="w"> </span>evals<span class="w"> </span>memory<span class="w"> </span>--answer-model<span class="w"> </span>gpt-4o<span class="w"> </span>--llm-judge
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-14-1"><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a>headroom<span class="w"> </span>evals<span class="w"> </span>memory<span class="w"> </span>-n<span class="w"> </span><span class="m">3</span>
+</span><span id="__span-14-2"><a id="__codelineno-14-2" name="__codelineno-14-2" href="#__codelineno-14-2"></a>headroom<span class="w"> </span>evals<span class="w"> </span>memory<span class="w"> </span>--answer-model<span class="w"> </span>gpt-4o<span class="w"> </span>--llm-judge
 </span></code></pre></div>
 <table>
 <thead>
@@ -3821,8 +3901,8 @@ to <code>~/.headroom/logs/proxy.log</code> — see the
 </table>
 <h3 id="headroom-evals-memory-v2"><code>headroom evals memory-v2</code><a class="headerlink" href="#headroom-evals-memory-v2" title="Permanent link">&para;</a></h3>
 <p>Run the V2 memory evaluation flow with LLM-controlled tools.</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-14-1"><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a>headroom<span class="w"> </span>evals<span class="w"> </span>memory-v2
-</span><span id="__span-14-2"><a id="__codelineno-14-2" name="__codelineno-14-2" href="#__codelineno-14-2"></a>headroom<span class="w"> </span>evals<span class="w"> </span>memory-v2<span class="w"> </span>--save-model<span class="w"> </span>gpt-4o-mini<span class="w"> </span>--llm-judge
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-15-1"><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a>headroom<span class="w"> </span>evals<span class="w"> </span>memory-v2
+</span><span id="__span-15-2"><a id="__codelineno-15-2" name="__codelineno-15-2" href="#__codelineno-15-2"></a>headroom<span class="w"> </span>evals<span class="w"> </span>memory-v2<span class="w"> </span>--save-model<span class="w"> </span>gpt-4o-mini<span class="w"> </span>--llm-judge
 </span></code></pre></div>
 <table>
 <thead>
@@ -3909,9 +3989,9 @@ to <code>~/.headroom/logs/proxy.log</code> — see the
 <h2 id="headroom-memory"><code>headroom memory</code><a class="headerlink" href="#headroom-memory" title="Permanent link">&para;</a></h2>
 <p>Memory management command group. This group is only registered when the optional memory dependencies import successfully.</p>
 <h3 id="headroom-memory-list"><code>headroom memory list</code><a class="headerlink" href="#headroom-memory-list" title="Permanent link">&para;</a></h3>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-15-1"><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a>headroom<span class="w"> </span>memory<span class="w"> </span>list
-</span><span id="__span-15-2"><a id="__codelineno-15-2" name="__codelineno-15-2" href="#__codelineno-15-2"></a>headroom<span class="w"> </span>memory<span class="w"> </span>list<span class="w"> </span>--scope<span class="w"> </span>USER<span class="w"> </span>--since<span class="w"> </span>7d
-</span><span id="__span-15-3"><a id="__codelineno-15-3" name="__codelineno-15-3" href="#__codelineno-15-3"></a>headroom<span class="w"> </span>memory<span class="w"> </span>list<span class="w"> </span>-q<span class="w"> </span><span class="s2">&quot;budget&quot;</span>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-16-1"><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a>headroom<span class="w"> </span>memory<span class="w"> </span>list
+</span><span id="__span-16-2"><a id="__codelineno-16-2" name="__codelineno-16-2" href="#__codelineno-16-2"></a>headroom<span class="w"> </span>memory<span class="w"> </span>list<span class="w"> </span>--scope<span class="w"> </span>USER<span class="w"> </span>--since<span class="w"> </span>7d
+</span><span id="__span-16-3"><a id="__codelineno-16-3" name="__codelineno-16-3" href="#__codelineno-16-3"></a>headroom<span class="w"> </span>memory<span class="w"> </span>list<span class="w"> </span>-q<span class="w"> </span><span class="s2">&quot;budget&quot;</span>
 </span></code></pre></div>
 <table>
 <thead>
@@ -3955,8 +4035,8 @@ to <code>~/.headroom/logs/proxy.log</code> — see the
 </tbody>
 </table>
 <h3 id="headroom-memory-show-memory_id"><code>headroom memory show &lt;memory_id&gt;</code><a class="headerlink" href="#headroom-memory-show-memory_id" title="Permanent link">&para;</a></h3>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-16-1"><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a>headroom<span class="w"> </span>memory<span class="w"> </span>show<span class="w"> </span>1234abcd
-</span><span id="__span-16-2"><a id="__codelineno-16-2" name="__codelineno-16-2" href="#__codelineno-16-2"></a>headroom<span class="w"> </span>memory<span class="w"> </span>show<span class="w"> </span>1234abcd<span class="w"> </span>--json
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-17-1"><a id="__codelineno-17-1" name="__codelineno-17-1" href="#__codelineno-17-1"></a>headroom<span class="w"> </span>memory<span class="w"> </span>show<span class="w"> </span>1234abcd
+</span><span id="__span-17-2"><a id="__codelineno-17-2" name="__codelineno-17-2" href="#__codelineno-17-2"></a>headroom<span class="w"> </span>memory<span class="w"> </span>show<span class="w"> </span>1234abcd<span class="w"> </span>--json
 </span></code></pre></div>
 <table>
 <thead>
@@ -3985,7 +4065,7 @@ to <code>~/.headroom/logs/proxy.log</code> — see the
 </tbody>
 </table>
 <h3 id="headroom-memory-stats"><code>headroom memory stats</code><a class="headerlink" href="#headroom-memory-stats" title="Permanent link">&para;</a></h3>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-17-1"><a id="__codelineno-17-1" name="__codelineno-17-1" href="#__codelineno-17-1"></a>headroom<span class="w"> </span>memory<span class="w"> </span>stats
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-18-1"><a id="__codelineno-18-1" name="__codelineno-18-1" href="#__codelineno-18-1"></a>headroom<span class="w"> </span>memory<span class="w"> </span>stats
 </span></code></pre></div>
 <table>
 <thead>
@@ -4004,8 +4084,8 @@ to <code>~/.headroom/logs/proxy.log</code> — see the
 </tbody>
 </table>
 <h3 id="headroom-memory-edit-memory_id"><code>headroom memory edit &lt;memory_id&gt;</code><a class="headerlink" href="#headroom-memory-edit-memory_id" title="Permanent link">&para;</a></h3>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-18-1"><a id="__codelineno-18-1" name="__codelineno-18-1" href="#__codelineno-18-1"></a>headroom<span class="w"> </span>memory<span class="w"> </span>edit<span class="w"> </span>1234abcd<span class="w"> </span>--content<span class="w"> </span><span class="s2">&quot;Updated note&quot;</span>
-</span><span id="__span-18-2"><a id="__codelineno-18-2" name="__codelineno-18-2" href="#__codelineno-18-2"></a>headroom<span class="w"> </span>memory<span class="w"> </span>edit<span class="w"> </span>1234abcd<span class="w"> </span>--importance<span class="w"> </span><span class="m">0</span>.9
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-19-1"><a id="__codelineno-19-1" name="__codelineno-19-1" href="#__codelineno-19-1"></a>headroom<span class="w"> </span>memory<span class="w"> </span>edit<span class="w"> </span>1234abcd<span class="w"> </span>--content<span class="w"> </span><span class="s2">&quot;Updated note&quot;</span>
+</span><span id="__span-19-2"><a id="__codelineno-19-2" name="__codelineno-19-2" href="#__codelineno-19-2"></a>headroom<span class="w"> </span>memory<span class="w"> </span>edit<span class="w"> </span>1234abcd<span class="w"> </span>--importance<span class="w"> </span><span class="m">0</span>.9
 </span></code></pre></div>
 <table>
 <thead>
@@ -4040,8 +4120,8 @@ to <code>~/.headroom/logs/proxy.log</code> — see the
 </table>
 <p>At least one of <code>--content</code> or <code>--importance</code> is required.</p>
 <h3 id="headroom-memory-delete-memory_ids"><code>headroom memory delete &lt;memory_ids...&gt;</code><a class="headerlink" href="#headroom-memory-delete-memory_ids" title="Permanent link">&para;</a></h3>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-19-1"><a id="__codelineno-19-1" name="__codelineno-19-1" href="#__codelineno-19-1"></a>headroom<span class="w"> </span>memory<span class="w"> </span>delete<span class="w"> </span>1234abcd<span class="w"> </span>5678efgh
-</span><span id="__span-19-2"><a id="__codelineno-19-2" name="__codelineno-19-2" href="#__codelineno-19-2"></a>headroom<span class="w"> </span>memory<span class="w"> </span>delete<span class="w"> </span>1234abcd<span class="w"> </span>--force
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-20-1"><a id="__codelineno-20-1" name="__codelineno-20-1" href="#__codelineno-20-1"></a>headroom<span class="w"> </span>memory<span class="w"> </span>delete<span class="w"> </span>1234abcd<span class="w"> </span>5678efgh
+</span><span id="__span-20-2"><a id="__codelineno-20-2" name="__codelineno-20-2" href="#__codelineno-20-2"></a>headroom<span class="w"> </span>memory<span class="w"> </span>delete<span class="w"> </span>1234abcd<span class="w"> </span>--force
 </span></code></pre></div>
 <table>
 <thead>
@@ -4070,8 +4150,8 @@ to <code>~/.headroom/logs/proxy.log</code> — see the
 </tbody>
 </table>
 <h3 id="headroom-memory-prune"><code>headroom memory prune</code><a class="headerlink" href="#headroom-memory-prune" title="Permanent link">&para;</a></h3>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-20-1"><a id="__codelineno-20-1" name="__codelineno-20-1" href="#__codelineno-20-1"></a>headroom<span class="w"> </span>memory<span class="w"> </span>prune<span class="w"> </span>--older-than<span class="w"> </span>30d<span class="w"> </span>--dry-run
-</span><span id="__span-20-2"><a id="__codelineno-20-2" name="__codelineno-20-2" href="#__codelineno-20-2"></a>headroom<span class="w"> </span>memory<span class="w"> </span>prune<span class="w"> </span>--scope<span class="w"> </span>SESSION<span class="w"> </span>--force
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-21-1"><a id="__codelineno-21-1" name="__codelineno-21-1" href="#__codelineno-21-1"></a>headroom<span class="w"> </span>memory<span class="w"> </span>prune<span class="w"> </span>--older-than<span class="w"> </span>30d<span class="w"> </span>--dry-run
+</span><span id="__span-21-2"><a id="__codelineno-21-2" name="__codelineno-21-2" href="#__codelineno-21-2"></a>headroom<span class="w"> </span>memory<span class="w"> </span>prune<span class="w"> </span>--scope<span class="w"> </span>SESSION<span class="w"> </span>--force
 </span></code></pre></div>
 <table>
 <thead>
@@ -4121,7 +4201,7 @@ to <code>~/.headroom/logs/proxy.log</code> — see the
 </table>
 <p>At least one filter is required. Filters combine with <strong>AND</strong> semantics.</p>
 <h3 id="headroom-memory-purge"><code>headroom memory purge</code><a class="headerlink" href="#headroom-memory-purge" title="Permanent link">&para;</a></h3>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-21-1"><a id="__codelineno-21-1" name="__codelineno-21-1" href="#__codelineno-21-1"></a>headroom<span class="w"> </span>memory<span class="w"> </span>purge<span class="w"> </span>--confirm
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-22-1"><a id="__codelineno-22-1" name="__codelineno-22-1" href="#__codelineno-22-1"></a>headroom<span class="w"> </span>memory<span class="w"> </span>purge<span class="w"> </span>--confirm
 </span></code></pre></div>
 <table>
 <thead>
@@ -4145,8 +4225,8 @@ to <code>~/.headroom/logs/proxy.log</code> — see the
 </tbody>
 </table>
 <h3 id="headroom-memory-export"><code>headroom memory export</code><a class="headerlink" href="#headroom-memory-export" title="Permanent link">&para;</a></h3>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-22-1"><a id="__codelineno-22-1" name="__codelineno-22-1" href="#__codelineno-22-1"></a>headroom<span class="w"> </span>memory<span class="w"> </span><span class="nb">export</span>
-</span><span id="__span-22-2"><a id="__codelineno-22-2" name="__codelineno-22-2" href="#__codelineno-22-2"></a>headroom<span class="w"> </span>memory<span class="w"> </span><span class="nb">export</span><span class="w"> </span>--output<span class="w"> </span>export.json
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-23-1"><a id="__codelineno-23-1" name="__codelineno-23-1" href="#__codelineno-23-1"></a>headroom<span class="w"> </span>memory<span class="w"> </span><span class="nb">export</span>
+</span><span id="__span-23-2"><a id="__codelineno-23-2" name="__codelineno-23-2" href="#__codelineno-23-2"></a>headroom<span class="w"> </span>memory<span class="w"> </span><span class="nb">export</span><span class="w"> </span>--output<span class="w"> </span>export.json
 </span></code></pre></div>
 <table>
 <thead>
@@ -4170,8 +4250,8 @@ to <code>~/.headroom/logs/proxy.log</code> — see the
 </tbody>
 </table>
 <h3 id="headroom-memory-import-file"><code>headroom memory import &lt;file&gt;</code><a class="headerlink" href="#headroom-memory-import-file" title="Permanent link">&para;</a></h3>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-23-1"><a id="__codelineno-23-1" name="__codelineno-23-1" href="#__codelineno-23-1"></a>headroom<span class="w"> </span>memory<span class="w"> </span>import<span class="w"> </span>export.json
-</span><span id="__span-23-2"><a id="__codelineno-23-2" name="__codelineno-23-2" href="#__codelineno-23-2"></a>headroom<span class="w"> </span>memory<span class="w"> </span>import<span class="w"> </span>export.json<span class="w"> </span>--force
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-24-1"><a id="__codelineno-24-1" name="__codelineno-24-1" href="#__codelineno-24-1"></a>headroom<span class="w"> </span>memory<span class="w"> </span>import<span class="w"> </span>export.json
+</span><span id="__span-24-2"><a id="__codelineno-24-2" name="__codelineno-24-2" href="#__codelineno-24-2"></a>headroom<span class="w"> </span>memory<span class="w"> </span>import<span class="w"> </span>export.json<span class="w"> </span>--force
 </span></code></pre></div>
 <table>
 <thead>
@@ -4203,8 +4283,8 @@ to <code>~/.headroom/logs/proxy.log</code> — see the
 <h2 id="headroom-mcp"><code>headroom mcp</code><a class="headerlink" href="#headroom-mcp" title="Permanent link">&para;</a></h2>
 <p>Manage the Headroom MCP server integration.</p>
 <h3 id="headroom-mcp-install"><code>headroom mcp install</code><a class="headerlink" href="#headroom-mcp-install" title="Permanent link">&para;</a></h3>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-24-1"><a id="__codelineno-24-1" name="__codelineno-24-1" href="#__codelineno-24-1"></a>headroom<span class="w"> </span>mcp<span class="w"> </span>install
-</span><span id="__span-24-2"><a id="__codelineno-24-2" name="__codelineno-24-2" href="#__codelineno-24-2"></a>headroom<span class="w"> </span>mcp<span class="w"> </span>install<span class="w"> </span>--proxy-url<span class="w"> </span>http://127.0.0.1:9000
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-25-1"><a id="__codelineno-25-1" name="__codelineno-25-1" href="#__codelineno-25-1"></a>headroom<span class="w"> </span>mcp<span class="w"> </span>install
+</span><span id="__span-25-2"><a id="__codelineno-25-2" name="__codelineno-25-2" href="#__codelineno-25-2"></a>headroom<span class="w"> </span>mcp<span class="w"> </span>install<span class="w"> </span>--proxy-url<span class="w"> </span>http://127.0.0.1:9000
 </span></code></pre></div>
 <table>
 <thead>
@@ -4228,16 +4308,16 @@ to <code>~/.headroom/logs/proxy.log</code> — see the
 </tbody>
 </table>
 <h3 id="headroom-mcp-uninstall"><code>headroom mcp uninstall</code><a class="headerlink" href="#headroom-mcp-uninstall" title="Permanent link">&para;</a></h3>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-25-1"><a id="__codelineno-25-1" name="__codelineno-25-1" href="#__codelineno-25-1"></a>headroom<span class="w"> </span>mcp<span class="w"> </span>uninstall
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-26-1"><a id="__codelineno-26-1" name="__codelineno-26-1" href="#__codelineno-26-1"></a>headroom<span class="w"> </span>mcp<span class="w"> </span>uninstall
 </span></code></pre></div>
 <p>This removes the Headroom MCP server entry from the Claude configuration.</p>
 <h3 id="headroom-mcp-status"><code>headroom mcp status</code><a class="headerlink" href="#headroom-mcp-status" title="Permanent link">&para;</a></h3>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-26-1"><a id="__codelineno-26-1" name="__codelineno-26-1" href="#__codelineno-26-1"></a>headroom<span class="w"> </span>mcp<span class="w"> </span>status
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-27-1"><a id="__codelineno-27-1" name="__codelineno-27-1" href="#__codelineno-27-1"></a>headroom<span class="w"> </span>mcp<span class="w"> </span>status
 </span></code></pre></div>
 <p>This inspects MCP SDK availability, Claude config state, and proxy reachability.</p>
 <h3 id="headroom-mcp-serve"><code>headroom mcp serve</code><a class="headerlink" href="#headroom-mcp-serve" title="Permanent link">&para;</a></h3>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-27-1"><a id="__codelineno-27-1" name="__codelineno-27-1" href="#__codelineno-27-1"></a>headroom<span class="w"> </span>mcp<span class="w"> </span>serve
-</span><span id="__span-27-2"><a id="__codelineno-27-2" name="__codelineno-27-2" href="#__codelineno-27-2"></a>headroom<span class="w"> </span>mcp<span class="w"> </span>serve<span class="w"> </span>--proxy-url<span class="w"> </span>http://127.0.0.1:9000<span class="w"> </span>--debug
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-28-1"><a id="__codelineno-28-1" name="__codelineno-28-1" href="#__codelineno-28-1"></a>headroom<span class="w"> </span>mcp<span class="w"> </span>serve
+</span><span id="__span-28-2"><a id="__codelineno-28-2" name="__codelineno-28-2" href="#__codelineno-28-2"></a>headroom<span class="w"> </span>mcp<span class="w"> </span>serve<span class="w"> </span>--proxy-url<span class="w"> </span>http://127.0.0.1:9000<span class="w"> </span>--debug
 </span></code></pre></div>
 <table>
 <thead>
@@ -4270,46 +4350,46 @@ to <code>~/.headroom/logs/proxy.log</code> — see the
 <h2 id="headroom-install"><code>headroom install</code><a class="headerlink" href="#headroom-install" title="Permanent link">&para;</a></h2>
 <p>Install and manage persistent local Headroom deployments.</p>
 <h3 id="headroom-install-apply-help"><code>headroom install apply --help</code><a class="headerlink" href="#headroom-install-apply-help" title="Permanent link">&para;</a></h3>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-28-1"><a id="__codelineno-28-1" name="__codelineno-28-1" href="#__codelineno-28-1"></a>Usage: headroom install apply [OPTIONS]
-</span><span id="__span-28-2"><a id="__codelineno-28-2" name="__codelineno-28-2" href="#__codelineno-28-2"></a>
-</span><span id="__span-28-3"><a id="__codelineno-28-3" name="__codelineno-28-3" href="#__codelineno-28-3"></a>  Install a persistent Headroom deployment.
-</span><span id="__span-28-4"><a id="__codelineno-28-4" name="__codelineno-28-4" href="#__codelineno-28-4"></a>
-</span><span id="__span-28-5"><a id="__codelineno-28-5" name="__codelineno-28-5" href="#__codelineno-28-5"></a>Options:
-</span><span id="__span-28-6"><a id="__codelineno-28-6" name="__codelineno-28-6" href="#__codelineno-28-6"></a>  --preset [persistent-service|persistent-task|persistent-docker]
-</span><span id="__span-28-7"><a id="__codelineno-28-7" name="__codelineno-28-7" href="#__codelineno-28-7"></a>                                  Persistent runtime preset to install.
-</span><span id="__span-28-8"><a id="__codelineno-28-8" name="__codelineno-28-8" href="#__codelineno-28-8"></a>                                  [default: persistent-service]
-</span><span id="__span-28-9"><a id="__codelineno-28-9" name="__codelineno-28-9" href="#__codelineno-28-9"></a>  --runtime [python|docker]       Runtime used to execute Headroom for
-</span><span id="__span-28-10"><a id="__codelineno-28-10" name="__codelineno-28-10" href="#__codelineno-28-10"></a>                                  service/task modes.  [default: python]
-</span><span id="__span-28-11"><a id="__codelineno-28-11" name="__codelineno-28-11" href="#__codelineno-28-11"></a>  --scope [provider|user|system]  Where to apply persistent configuration.
-</span><span id="__span-28-12"><a id="__codelineno-28-12" name="__codelineno-28-12" href="#__codelineno-28-12"></a>                                  [default: user]
-</span><span id="__span-28-13"><a id="__codelineno-28-13" name="__codelineno-28-13" href="#__codelineno-28-13"></a>  --providers [auto|all|manual]   Target selection mode for direct tool
-</span><span id="__span-28-14"><a id="__codelineno-28-14" name="__codelineno-28-14" href="#__codelineno-28-14"></a>                                  configuration.  [default: auto]
-</span><span id="__span-28-15"><a id="__codelineno-28-15" name="__codelineno-28-15" href="#__codelineno-28-15"></a>  --target [claude|copilot|codex|aider|cursor|openclaw]
-</span><span id="__span-28-16"><a id="__codelineno-28-16" name="__codelineno-28-16" href="#__codelineno-28-16"></a>                                  Tool target to configure when --providers
-</span><span id="__span-28-17"><a id="__codelineno-28-17" name="__codelineno-28-17" href="#__codelineno-28-17"></a>                                  manual is used.
-</span><span id="__span-28-18"><a id="__codelineno-28-18" name="__codelineno-28-18" href="#__codelineno-28-18"></a>  --profile TEXT                  Deployment profile name.  [default: default]
-</span><span id="__span-28-19"><a id="__codelineno-28-19" name="__codelineno-28-19" href="#__codelineno-28-19"></a>  -p, --port INTEGER              Persistent proxy port.  [default: 8787]
-</span><span id="__span-28-20"><a id="__codelineno-28-20" name="__codelineno-28-20" href="#__codelineno-28-20"></a>  --backend TEXT                  Proxy backend for the persistent runtime.
-</span><span id="__span-28-21"><a id="__codelineno-28-21" name="__codelineno-28-21" href="#__codelineno-28-21"></a>                                  [default: anthropic]
-</span><span id="__span-28-22"><a id="__codelineno-28-22" name="__codelineno-28-22" href="#__codelineno-28-22"></a>  --anyllm-provider TEXT          Provider for any-llm backends when --backend
-</span><span id="__span-28-23"><a id="__codelineno-28-23" name="__codelineno-28-23" href="#__codelineno-28-23"></a>                                  anyllm is used.
-</span><span id="__span-28-24"><a id="__codelineno-28-24" name="__codelineno-28-24" href="#__codelineno-28-24"></a>  --region TEXT                   Cloud region for Bedrock / Vertex style
-</span><span id="__span-28-25"><a id="__codelineno-28-25" name="__codelineno-28-25" href="#__codelineno-28-25"></a>                                  backends.
-</span><span id="__span-28-26"><a id="__codelineno-28-26" name="__codelineno-28-26" href="#__codelineno-28-26"></a>  --mode TEXT                     Proxy optimization mode.  [default: token]
-</span><span id="__span-28-27"><a id="__codelineno-28-27" name="__codelineno-28-27" href="#__codelineno-28-27"></a>  --memory                        Enable persistent memory in the proxy runtime.
-</span><span id="__span-28-28"><a id="__codelineno-28-28" name="__codelineno-28-28" href="#__codelineno-28-28"></a>  --telemetry                     Opt in to anonymous telemetry in the runtime
-</span><span id="__span-28-29"><a id="__codelineno-28-29" name="__codelineno-28-29" href="#__codelineno-28-29"></a>                                  (off by default).
-</span><span id="__span-28-30"><a id="__codelineno-28-30" name="__codelineno-28-30" href="#__codelineno-28-30"></a>  --no-telemetry                  Force anonymous telemetry off in the runtime
-</span><span id="__span-28-31"><a id="__codelineno-28-31" name="__codelineno-28-31" href="#__codelineno-28-31"></a>                                  (already the default).
-</span><span id="__span-28-32"><a id="__codelineno-28-32" name="__codelineno-28-32" href="#__codelineno-28-32"></a>  --image TEXT                    Docker image to use when runtime=docker or
-</span><span id="__span-28-33"><a id="__codelineno-28-33" name="__codelineno-28-33" href="#__codelineno-28-33"></a>                                  preset=persistent-docker.  [default:
-</span><span id="__span-28-34"><a id="__codelineno-28-34" name="__codelineno-28-34" href="#__codelineno-28-34"></a>                                  ghcr.io/chopratejas/headroom:latest]
-</span><span id="__span-28-35"><a id="__codelineno-28-35" name="__codelineno-28-35" href="#__codelineno-28-35"></a>  -?, --help                      Show this message and exit.
+<div class="language-text highlight"><pre><span></span><code><span id="__span-29-1"><a id="__codelineno-29-1" name="__codelineno-29-1" href="#__codelineno-29-1"></a>Usage: headroom install apply [OPTIONS]
+</span><span id="__span-29-2"><a id="__codelineno-29-2" name="__codelineno-29-2" href="#__codelineno-29-2"></a>
+</span><span id="__span-29-3"><a id="__codelineno-29-3" name="__codelineno-29-3" href="#__codelineno-29-3"></a>  Install a persistent Headroom deployment.
+</span><span id="__span-29-4"><a id="__codelineno-29-4" name="__codelineno-29-4" href="#__codelineno-29-4"></a>
+</span><span id="__span-29-5"><a id="__codelineno-29-5" name="__codelineno-29-5" href="#__codelineno-29-5"></a>Options:
+</span><span id="__span-29-6"><a id="__codelineno-29-6" name="__codelineno-29-6" href="#__codelineno-29-6"></a>  --preset [persistent-service|persistent-task|persistent-docker]
+</span><span id="__span-29-7"><a id="__codelineno-29-7" name="__codelineno-29-7" href="#__codelineno-29-7"></a>                                  Persistent runtime preset to install.
+</span><span id="__span-29-8"><a id="__codelineno-29-8" name="__codelineno-29-8" href="#__codelineno-29-8"></a>                                  [default: persistent-service]
+</span><span id="__span-29-9"><a id="__codelineno-29-9" name="__codelineno-29-9" href="#__codelineno-29-9"></a>  --runtime [python|docker]       Runtime used to execute Headroom for
+</span><span id="__span-29-10"><a id="__codelineno-29-10" name="__codelineno-29-10" href="#__codelineno-29-10"></a>                                  service/task modes.  [default: python]
+</span><span id="__span-29-11"><a id="__codelineno-29-11" name="__codelineno-29-11" href="#__codelineno-29-11"></a>  --scope [provider|user|system]  Where to apply persistent configuration.
+</span><span id="__span-29-12"><a id="__codelineno-29-12" name="__codelineno-29-12" href="#__codelineno-29-12"></a>                                  [default: user]
+</span><span id="__span-29-13"><a id="__codelineno-29-13" name="__codelineno-29-13" href="#__codelineno-29-13"></a>  --providers [auto|all|manual]   Target selection mode for direct tool
+</span><span id="__span-29-14"><a id="__codelineno-29-14" name="__codelineno-29-14" href="#__codelineno-29-14"></a>                                  configuration.  [default: auto]
+</span><span id="__span-29-15"><a id="__codelineno-29-15" name="__codelineno-29-15" href="#__codelineno-29-15"></a>  --target [claude|copilot|codex|aider|cursor|openclaw]
+</span><span id="__span-29-16"><a id="__codelineno-29-16" name="__codelineno-29-16" href="#__codelineno-29-16"></a>                                  Tool target to configure when --providers
+</span><span id="__span-29-17"><a id="__codelineno-29-17" name="__codelineno-29-17" href="#__codelineno-29-17"></a>                                  manual is used.
+</span><span id="__span-29-18"><a id="__codelineno-29-18" name="__codelineno-29-18" href="#__codelineno-29-18"></a>  --profile TEXT                  Deployment profile name.  [default: default]
+</span><span id="__span-29-19"><a id="__codelineno-29-19" name="__codelineno-29-19" href="#__codelineno-29-19"></a>  -p, --port INTEGER              Persistent proxy port.  [default: 8787]
+</span><span id="__span-29-20"><a id="__codelineno-29-20" name="__codelineno-29-20" href="#__codelineno-29-20"></a>  --backend TEXT                  Proxy backend for the persistent runtime.
+</span><span id="__span-29-21"><a id="__codelineno-29-21" name="__codelineno-29-21" href="#__codelineno-29-21"></a>                                  [default: anthropic]
+</span><span id="__span-29-22"><a id="__codelineno-29-22" name="__codelineno-29-22" href="#__codelineno-29-22"></a>  --anyllm-provider TEXT          Provider for any-llm backends when --backend
+</span><span id="__span-29-23"><a id="__codelineno-29-23" name="__codelineno-29-23" href="#__codelineno-29-23"></a>                                  anyllm is used.
+</span><span id="__span-29-24"><a id="__codelineno-29-24" name="__codelineno-29-24" href="#__codelineno-29-24"></a>  --region TEXT                   Cloud region for Bedrock / Vertex style
+</span><span id="__span-29-25"><a id="__codelineno-29-25" name="__codelineno-29-25" href="#__codelineno-29-25"></a>                                  backends.
+</span><span id="__span-29-26"><a id="__codelineno-29-26" name="__codelineno-29-26" href="#__codelineno-29-26"></a>  --mode TEXT                     Proxy optimization mode.  [default: token]
+</span><span id="__span-29-27"><a id="__codelineno-29-27" name="__codelineno-29-27" href="#__codelineno-29-27"></a>  --memory                        Enable persistent memory in the proxy runtime.
+</span><span id="__span-29-28"><a id="__codelineno-29-28" name="__codelineno-29-28" href="#__codelineno-29-28"></a>  --telemetry                     Opt in to anonymous telemetry in the runtime
+</span><span id="__span-29-29"><a id="__codelineno-29-29" name="__codelineno-29-29" href="#__codelineno-29-29"></a>                                  (off by default).
+</span><span id="__span-29-30"><a id="__codelineno-29-30" name="__codelineno-29-30" href="#__codelineno-29-30"></a>  --no-telemetry                  Force anonymous telemetry off in the runtime
+</span><span id="__span-29-31"><a id="__codelineno-29-31" name="__codelineno-29-31" href="#__codelineno-29-31"></a>                                  (already the default).
+</span><span id="__span-29-32"><a id="__codelineno-29-32" name="__codelineno-29-32" href="#__codelineno-29-32"></a>  --image TEXT                    Docker image to use when runtime=docker or
+</span><span id="__span-29-33"><a id="__codelineno-29-33" name="__codelineno-29-33" href="#__codelineno-29-33"></a>                                  preset=persistent-docker.  [default:
+</span><span id="__span-29-34"><a id="__codelineno-29-34" name="__codelineno-29-34" href="#__codelineno-29-34"></a>                                  ghcr.io/chopratejas/headroom:latest]
+</span><span id="__span-29-35"><a id="__codelineno-29-35" name="__codelineno-29-35" href="#__codelineno-29-35"></a>  -?, --help                      Show this message and exit.
 </span></code></pre></div>
 <h3 id="headroom-install-apply"><code>headroom install apply</code><a class="headerlink" href="#headroom-install-apply" title="Permanent link">&para;</a></h3>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-29-1"><a id="__codelineno-29-1" name="__codelineno-29-1" href="#__codelineno-29-1"></a>headroom<span class="w"> </span>install<span class="w"> </span>apply<span class="w"> </span>--preset<span class="w"> </span>persistent-service<span class="w"> </span>--providers<span class="w"> </span>auto
-</span><span id="__span-29-2"><a id="__codelineno-29-2" name="__codelineno-29-2" href="#__codelineno-29-2"></a>headroom<span class="w"> </span>install<span class="w"> </span>apply<span class="w"> </span>--preset<span class="w"> </span>persistent-task<span class="w"> </span>--providers<span class="w"> </span>manual<span class="w"> </span>--target<span class="w"> </span>claude<span class="w"> </span>--target<span class="w"> </span>codex
-</span><span id="__span-29-3"><a id="__codelineno-29-3" name="__codelineno-29-3" href="#__codelineno-29-3"></a>headroom<span class="w"> </span>install<span class="w"> </span>apply<span class="w"> </span>--preset<span class="w"> </span>persistent-docker<span class="w"> </span>--scope<span class="w"> </span>user
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-30-1"><a id="__codelineno-30-1" name="__codelineno-30-1" href="#__codelineno-30-1"></a>headroom<span class="w"> </span>install<span class="w"> </span>apply<span class="w"> </span>--preset<span class="w"> </span>persistent-service<span class="w"> </span>--providers<span class="w"> </span>auto
+</span><span id="__span-30-2"><a id="__codelineno-30-2" name="__codelineno-30-2" href="#__codelineno-30-2"></a>headroom<span class="w"> </span>install<span class="w"> </span>apply<span class="w"> </span>--preset<span class="w"> </span>persistent-task<span class="w"> </span>--providers<span class="w"> </span>manual<span class="w"> </span>--target<span class="w"> </span>claude<span class="w"> </span>--target<span class="w"> </span>codex
+</span><span id="__span-30-3"><a id="__codelineno-30-3" name="__codelineno-30-3" href="#__codelineno-30-3"></a>headroom<span class="w"> </span>install<span class="w"> </span>apply<span class="w"> </span>--preset<span class="w"> </span>persistent-docker<span class="w"> </span>--scope<span class="w"> </span>user
 </span></code></pre></div>
 <table>
 <thead>
@@ -4403,25 +4483,25 @@ to <code>~/.headroom/logs/proxy.log</code> — see the
 configuration, starts the chosen runtime, and waits for <code>readyz</code>.</p>
 <p>Docker-native host wrappers expose a narrower <code>headroom install</code> subset for <code>persistent-docker</code> only: <code>apply</code>, <code>status</code>, <code>start</code>, <code>stop</code>, <code>restart</code>, and <code>remove</code>. Those wrapper flows preserve the same port and manifest behavior, but they intentionally reject <code>persistent-service</code>, <code>persistent-task</code>, and provider mutation flags like <code>--scope</code>, <code>--providers</code>, and <code>--target</code>.</p>
 <h3 id="headroom-install-status"><code>headroom install status</code><a class="headerlink" href="#headroom-install-status" title="Permanent link">&para;</a></h3>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-30-1"><a id="__codelineno-30-1" name="__codelineno-30-1" href="#__codelineno-30-1"></a>headroom<span class="w"> </span>install<span class="w"> </span>status
-</span><span id="__span-30-2"><a id="__codelineno-30-2" name="__codelineno-30-2" href="#__codelineno-30-2"></a>headroom<span class="w"> </span>install<span class="w"> </span>status<span class="w"> </span>--profile<span class="w"> </span>default
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-31-1"><a id="__codelineno-31-1" name="__codelineno-31-1" href="#__codelineno-31-1"></a>headroom<span class="w"> </span>install<span class="w"> </span>status
+</span><span id="__span-31-2"><a id="__codelineno-31-2" name="__codelineno-31-2" href="#__codelineno-31-2"></a>headroom<span class="w"> </span>install<span class="w"> </span>status<span class="w"> </span>--profile<span class="w"> </span>default
 </span></code></pre></div>
 <p>Shows the stored profile, preset, runtime, supervisor kind, scope, port, runtime status, readiness, and backend from <code>/health</code>.</p>
 <h3 id="headroom-install-start"><code>headroom install start</code><a class="headerlink" href="#headroom-install-start" title="Permanent link">&para;</a></h3>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-31-1"><a id="__codelineno-31-1" name="__codelineno-31-1" href="#__codelineno-31-1"></a>headroom<span class="w"> </span>install<span class="w"> </span>start
-</span><span id="__span-31-2"><a id="__codelineno-31-2" name="__codelineno-31-2" href="#__codelineno-31-2"></a>headroom<span class="w"> </span>install<span class="w"> </span>start<span class="w"> </span>--profile<span class="w"> </span>default
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-32-1"><a id="__codelineno-32-1" name="__codelineno-32-1" href="#__codelineno-32-1"></a>headroom<span class="w"> </span>install<span class="w"> </span>start
+</span><span id="__span-32-2"><a id="__codelineno-32-2" name="__codelineno-32-2" href="#__codelineno-32-2"></a>headroom<span class="w"> </span>install<span class="w"> </span>start<span class="w"> </span>--profile<span class="w"> </span>default
 </span></code></pre></div>
 <p>Starts a previously installed deployment profile without reapplying mutations.</p>
 <h3 id="headroom-install-stop"><code>headroom install stop</code><a class="headerlink" href="#headroom-install-stop" title="Permanent link">&para;</a></h3>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-32-1"><a id="__codelineno-32-1" name="__codelineno-32-1" href="#__codelineno-32-1"></a>headroom<span class="w"> </span>install<span class="w"> </span>stop
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-33-1"><a id="__codelineno-33-1" name="__codelineno-33-1" href="#__codelineno-33-1"></a>headroom<span class="w"> </span>install<span class="w"> </span>stop
 </span></code></pre></div>
 <p>Stops the managed runtime for an installed deployment profile.</p>
 <h3 id="headroom-install-restart"><code>headroom install restart</code><a class="headerlink" href="#headroom-install-restart" title="Permanent link">&para;</a></h3>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-33-1"><a id="__codelineno-33-1" name="__codelineno-33-1" href="#__codelineno-33-1"></a>headroom<span class="w"> </span>install<span class="w"> </span>restart
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-34-1"><a id="__codelineno-34-1" name="__codelineno-34-1" href="#__codelineno-34-1"></a>headroom<span class="w"> </span>install<span class="w"> </span>restart
 </span></code></pre></div>
 <p>Stops and starts the selected deployment profile.</p>
 <h3 id="headroom-install-remove"><code>headroom install remove</code><a class="headerlink" href="#headroom-install-remove" title="Permanent link">&para;</a></h3>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-34-1"><a id="__codelineno-34-1" name="__codelineno-34-1" href="#__codelineno-34-1"></a>headroom<span class="w"> </span>install<span class="w"> </span>remove
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-35-1"><a id="__codelineno-35-1" name="__codelineno-35-1" href="#__codelineno-35-1"></a>headroom<span class="w"> </span>install<span class="w"> </span>remove
 </span></code></pre></div>
 <p>Stops the runtime, removes installed supervisor artifacts, reverts managed configuration changes, and deletes the stored manifest.</p>
 <p>See also: <a href="../persistent-installs/">Persistent Installs</a></p>
@@ -4436,9 +4516,9 @@ configuration, starts the chosen runtime, and waits for <code>readyz</code>.</p>
 <li>Hidden <code>--prepare-only</code> exists for internal Docker-native bridge flows and is intentionally omitted from normal usage</li>
 </ul>
 <h3 id="headroom-wrap-claude"><code>headroom wrap claude</code><a class="headerlink" href="#headroom-wrap-claude" title="Permanent link">&para;</a></h3>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-35-1"><a id="__codelineno-35-1" name="__codelineno-35-1" href="#__codelineno-35-1"></a>headroom<span class="w"> </span>wrap<span class="w"> </span>claude
-</span><span id="__span-35-2"><a id="__codelineno-35-2" name="__codelineno-35-2" href="#__codelineno-35-2"></a>headroom<span class="w"> </span>wrap<span class="w"> </span>claude<span class="w"> </span>--resume<span class="w"> </span>&lt;session-id&gt;
-</span><span id="__span-35-3"><a id="__codelineno-35-3" name="__codelineno-35-3" href="#__codelineno-35-3"></a>headroom<span class="w"> </span>wrap<span class="w"> </span>claude<span class="w"> </span>--port<span class="w"> </span><span class="m">9999</span>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-36-1"><a id="__codelineno-36-1" name="__codelineno-36-1" href="#__codelineno-36-1"></a>headroom<span class="w"> </span>wrap<span class="w"> </span>claude
+</span><span id="__span-36-2"><a id="__codelineno-36-2" name="__codelineno-36-2" href="#__codelineno-36-2"></a>headroom<span class="w"> </span>wrap<span class="w"> </span>claude<span class="w"> </span>--resume<span class="w"> </span>&lt;session-id&gt;
+</span><span id="__span-36-3"><a id="__codelineno-36-3" name="__codelineno-36-3" href="#__codelineno-36-3"></a>headroom<span class="w"> </span>wrap<span class="w"> </span>claude<span class="w"> </span>--port<span class="w"> </span><span class="m">9999</span>
 </span></code></pre></div>
 <table>
 <thead>
@@ -4483,9 +4563,9 @@ configuration, starts the chosen runtime, and waits for <code>readyz</code>.</p>
 </table>
 <p>Requires the <code>claude</code> binary on the host.</p>
 <h3 id="headroom-wrap-codex"><code>headroom wrap codex</code><a class="headerlink" href="#headroom-wrap-codex" title="Permanent link">&para;</a></h3>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-36-1"><a id="__codelineno-36-1" name="__codelineno-36-1" href="#__codelineno-36-1"></a>headroom<span class="w"> </span>wrap<span class="w"> </span>codex
-</span><span id="__span-36-2"><a id="__codelineno-36-2" name="__codelineno-36-2" href="#__codelineno-36-2"></a>headroom<span class="w"> </span>wrap<span class="w"> </span>codex<span class="w"> </span>--<span class="w"> </span><span class="s2">&quot;fix the bug&quot;</span>
-</span><span id="__span-36-3"><a id="__codelineno-36-3" name="__codelineno-36-3" href="#__codelineno-36-3"></a>headroom<span class="w"> </span>wrap<span class="w"> </span>codex<span class="w"> </span>--backend<span class="w"> </span>anyllm<span class="w"> </span>--anyllm-provider<span class="w"> </span>groq
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-37-1"><a id="__codelineno-37-1" name="__codelineno-37-1" href="#__codelineno-37-1"></a>headroom<span class="w"> </span>wrap<span class="w"> </span>codex
+</span><span id="__span-37-2"><a id="__codelineno-37-2" name="__codelineno-37-2" href="#__codelineno-37-2"></a>headroom<span class="w"> </span>wrap<span class="w"> </span>codex<span class="w"> </span>--<span class="w"> </span><span class="s2">&quot;fix the bug&quot;</span>
+</span><span id="__span-37-3"><a id="__codelineno-37-3" name="__codelineno-37-3" href="#__codelineno-37-3"></a>headroom<span class="w"> </span>wrap<span class="w"> </span>codex<span class="w"> </span>--backend<span class="w"> </span>anyllm<span class="w"> </span>--anyllm-provider<span class="w"> </span>groq
 </span></code></pre></div>
 <table>
 <thead>
@@ -4545,8 +4625,8 @@ configuration, starts the chosen runtime, and waits for <code>readyz</code>.</p>
 </table>
 <p>Requires the <code>codex</code> binary on the host.</p>
 <h3 id="headroom-wrap-copilot"><code>headroom wrap copilot</code><a class="headerlink" href="#headroom-wrap-copilot" title="Permanent link">&para;</a></h3>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-37-1"><a id="__codelineno-37-1" name="__codelineno-37-1" href="#__codelineno-37-1"></a>headroom<span class="w"> </span>wrap<span class="w"> </span>copilot<span class="w"> </span>--<span class="w"> </span>--model<span class="w"> </span>claude-sonnet-4-20250514
-</span><span id="__span-37-2"><a id="__codelineno-37-2" name="__codelineno-37-2" href="#__codelineno-37-2"></a>headroom<span class="w"> </span>wrap<span class="w"> </span>copilot<span class="w"> </span>--backend<span class="w"> </span>anyllm<span class="w"> </span>--anyllm-provider<span class="w"> </span>groq<span class="w"> </span>--<span class="w"> </span>--model<span class="w"> </span>gpt-4o
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-38-1"><a id="__codelineno-38-1" name="__codelineno-38-1" href="#__codelineno-38-1"></a>headroom<span class="w"> </span>wrap<span class="w"> </span>copilot<span class="w"> </span>--<span class="w"> </span>--model<span class="w"> </span>claude-sonnet-4-20250514
+</span><span id="__span-38-2"><a id="__codelineno-38-2" name="__codelineno-38-2" href="#__codelineno-38-2"></a>headroom<span class="w"> </span>wrap<span class="w"> </span>copilot<span class="w"> </span>--backend<span class="w"> </span>anyllm<span class="w"> </span>--anyllm-provider<span class="w"> </span>groq<span class="w"> </span>--<span class="w"> </span>--model<span class="w"> </span>gpt-4o
 </span></code></pre></div>
 <table>
 <thead>
@@ -4616,9 +4696,9 @@ configuration, starts the chosen runtime, and waits for <code>readyz</code>.</p>
 </table>
 <p>Requires the <code>copilot</code> binary on the host. When a matching persistent deployment exists on the requested port, <code>wrap copilot</code> reuses or recovers it before falling back to an ephemeral proxy.</p>
 <h3 id="headroom-wrap-aider"><code>headroom wrap aider</code><a class="headerlink" href="#headroom-wrap-aider" title="Permanent link">&para;</a></h3>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-38-1"><a id="__codelineno-38-1" name="__codelineno-38-1" href="#__codelineno-38-1"></a>headroom<span class="w"> </span>wrap<span class="w"> </span>aider
-</span><span id="__span-38-2"><a id="__codelineno-38-2" name="__codelineno-38-2" href="#__codelineno-38-2"></a>headroom<span class="w"> </span>wrap<span class="w"> </span>aider<span class="w"> </span>--<span class="w"> </span>--model<span class="w"> </span>gpt-4o
-</span><span id="__span-38-3"><a id="__codelineno-38-3" name="__codelineno-38-3" href="#__codelineno-38-3"></a>headroom<span class="w"> </span>wrap<span class="w"> </span>aider<span class="w"> </span>--backend<span class="w"> </span>litellm-vertex<span class="w"> </span>--region<span class="w"> </span>us-central1
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-39-1"><a id="__codelineno-39-1" name="__codelineno-39-1" href="#__codelineno-39-1"></a>headroom<span class="w"> </span>wrap<span class="w"> </span>aider
+</span><span id="__span-39-2"><a id="__codelineno-39-2" name="__codelineno-39-2" href="#__codelineno-39-2"></a>headroom<span class="w"> </span>wrap<span class="w"> </span>aider<span class="w"> </span>--<span class="w"> </span>--model<span class="w"> </span>gpt-4o
+</span><span id="__span-39-3"><a id="__codelineno-39-3" name="__codelineno-39-3" href="#__codelineno-39-3"></a>headroom<span class="w"> </span>wrap<span class="w"> </span>aider<span class="w"> </span>--backend<span class="w"> </span>litellm-vertex<span class="w"> </span>--region<span class="w"> </span>us-central1
 </span></code></pre></div>
 <table>
 <thead>
@@ -4678,9 +4758,9 @@ configuration, starts the chosen runtime, and waits for <code>readyz</code>.</p>
 </table>
 <p>Requires the <code>aider</code> binary on the host.</p>
 <h3 id="headroom-wrap-cursor"><code>headroom wrap cursor</code><a class="headerlink" href="#headroom-wrap-cursor" title="Permanent link">&para;</a></h3>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-39-1"><a id="__codelineno-39-1" name="__codelineno-39-1" href="#__codelineno-39-1"></a>headroom<span class="w"> </span>wrap<span class="w"> </span>cursor
-</span><span id="__span-39-2"><a id="__codelineno-39-2" name="__codelineno-39-2" href="#__codelineno-39-2"></a>headroom<span class="w"> </span>wrap<span class="w"> </span>cursor<span class="w"> </span>--port<span class="w"> </span><span class="m">9999</span>
-</span><span id="__span-39-3"><a id="__codelineno-39-3" name="__codelineno-39-3" href="#__codelineno-39-3"></a>headroom<span class="w"> </span>wrap<span class="w"> </span>cursor<span class="w"> </span>--no-rtk
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-40-1"><a id="__codelineno-40-1" name="__codelineno-40-1" href="#__codelineno-40-1"></a>headroom<span class="w"> </span>wrap<span class="w"> </span>cursor
+</span><span id="__span-40-2"><a id="__codelineno-40-2" name="__codelineno-40-2" href="#__codelineno-40-2"></a>headroom<span class="w"> </span>wrap<span class="w"> </span>cursor<span class="w"> </span>--port<span class="w"> </span><span class="m">9999</span>
+</span><span id="__span-40-3"><a id="__codelineno-40-3" name="__codelineno-40-3" href="#__codelineno-40-3"></a>headroom<span class="w"> </span>wrap<span class="w"> </span>cursor<span class="w"> </span>--no-rtk
 </span></code></pre></div>
 <table>
 <thead>
@@ -4720,8 +4800,8 @@ configuration, starts the chosen runtime, and waits for <code>readyz</code>.</p>
 </table>
 <p>This command prints Cursor configuration instructions and waits while the proxy stays up. It does <strong>not</strong> launch Cursor directly.</p>
 <h3 id="headroom-wrap-openclaw"><code>headroom wrap openclaw</code><a class="headerlink" href="#headroom-wrap-openclaw" title="Permanent link">&para;</a></h3>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-40-1"><a id="__codelineno-40-1" name="__codelineno-40-1" href="#__codelineno-40-1"></a>headroom<span class="w"> </span>wrap<span class="w"> </span>openclaw
-</span><span id="__span-40-2"><a id="__codelineno-40-2" name="__codelineno-40-2" href="#__codelineno-40-2"></a>headroom<span class="w"> </span>wrap<span class="w"> </span>openclaw<span class="w"> </span>--plugin-path<span class="w"> </span>./plugins/openclaw
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-41-1"><a id="__codelineno-41-1" name="__codelineno-41-1" href="#__codelineno-41-1"></a>headroom<span class="w"> </span>wrap<span class="w"> </span>openclaw
+</span><span id="__span-41-2"><a id="__codelineno-41-2" name="__codelineno-41-2" href="#__codelineno-41-2"></a>headroom<span class="w"> </span>wrap<span class="w"> </span>openclaw<span class="w"> </span>--plugin-path<span class="w"> </span>./plugins/openclaw
 </span></code></pre></div>
 <table>
 <thead>
@@ -4793,8 +4873,8 @@ configuration, starts the chosen runtime, and waits for <code>readyz</code>.</p>
 <h2 id="headroom-unwrap"><code>headroom unwrap</code><a class="headerlink" href="#headroom-unwrap" title="Permanent link">&para;</a></h2>
 <p>Undo durable wrapping for supported tools.</p>
 <h3 id="headroom-unwrap-openclaw"><code>headroom unwrap openclaw</code><a class="headerlink" href="#headroom-unwrap-openclaw" title="Permanent link">&para;</a></h3>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-41-1"><a id="__codelineno-41-1" name="__codelineno-41-1" href="#__codelineno-41-1"></a>headroom<span class="w"> </span>unwrap<span class="w"> </span>openclaw
-</span><span id="__span-41-2"><a id="__codelineno-41-2" name="__codelineno-41-2" href="#__codelineno-41-2"></a>headroom<span class="w"> </span>unwrap<span class="w"> </span>openclaw<span class="w"> </span>--no-restart
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-42-1"><a id="__codelineno-42-1" name="__codelineno-42-1" href="#__codelineno-42-1"></a>headroom<span class="w"> </span>unwrap<span class="w"> </span>openclaw
+</span><span id="__span-42-2"><a id="__codelineno-42-2" name="__codelineno-42-2" href="#__codelineno-42-2"></a>headroom<span class="w"> </span>unwrap<span class="w"> </span>openclaw<span class="w"> </span>--no-restart
 </span></code></pre></div>
 <table>
 <thead>
@@ -5049,7 +5129,7 @@ configuration, starts the chosen runtime, and waits for <code>readyz</code>.</p>
       <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["content.code.copy", "content.code.annotate", "content.tabs.link", "navigation.instant", "navigation.instant.progress", "navigation.tabs", "navigation.tabs.sticky", "navigation.sections", "navigation.expand", "navigation.top", "navigation.indexes", "search.highlight", "search.suggest", "search.share", "toc.follow", "header.autohide"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
     
     
-      <script src="../assets/javascripts/bundle.79ae519e.min.js"></script>
+      <script src="../assets/javascripts/bundle.d7400e89.min.js"></script>
       
     
   </body>

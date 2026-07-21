@@ -23,7 +23,7 @@
       
       
       <link rel="icon" href="../assets/images/favicon.png">
-      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
     
     
       
@@ -31,7 +31,7 @@
       
     
     
-      <link rel="stylesheet" href="../assets/stylesheets/main.484c7ddc.min.css">
+      <link rel="stylesheet" href="../assets/stylesheets/main.ec1eaa64.min.css">
       
         
         <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
@@ -871,6 +871,17 @@
     <span class="md-ellipsis">
       
         Environment Variables
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#settings-gui" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Settings GUI
       
     </span>
   </a>
@@ -2498,6 +2509,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#settings-gui" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Settings GUI
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#session-beta-header-tracking" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2997,6 +3019,22 @@ of Headroom.</p>
 </tr>
 </tbody>
 </table>
+<h2 id="settings-gui">Settings GUI<a class="headerlink" href="#settings-gui" title="Permanent link">&para;</a></h2>
+<p>A web-based settings interface is available at <code>http://127.0.0.1:&lt;port&gt;/dashboard/settings</code> for configuring every safe <code>HEADROOM_*</code> proxy knob without hand-exporting environment variables, plus an <strong>Endpoints</strong> group for custom Anthropic/OpenAI upstream base URLs (<code>ANTHROPIC_TARGET_API_URL</code> / <code>OPENAI_TARGET_API_URL</code>) and extra headers merged into (and overriding) forwarded requests -- e.g. for a corporate gateway or Azure Foundry deployment that needs a different endpoint plus one extra auth header. Fields are split into a <strong>Settings</strong> tab (commonly-tuned: compression ratio, budget, rate limits, verbosity) and an <strong>Advanced</strong> tab (everything else, including Endpoints). Third-party credentials such as <code>OPENAI_API_KEY</code>/<code>AWS_*</code> are never exposed here; the two extra-headers fields are the only secret-typed fields in the panel and render masked once set, with a "Clear stored value" action to remove them -- resaving the page without touching a masked field never overwrites the real stored value.</p>
+<ul>
+<li><strong>Persistence</strong>: Settings are saved to <code>~/.headroom/settings.json</code> (merged with existing values, not replaced) and loaded into the process environment at startup.</li>
+<li><strong>Precedence</strong> (highest to lowest):</li>
+<li>Explicit shell export (<code>export HEADROOM_FOO=bar</code>)</li>
+<li>Settings from <code>~/.headroom/settings.json</code></li>
+<li>Code default</li>
+<li><strong>Activation</strong>: Click "Save" to persist without restarting, or "Apply &amp; Restart" to persist and take effect immediately. Apply &amp; Restart behavior depends on how the proxy is running:</li>
+<li><strong>Service</strong> (supervised launchd/systemd install): self-restarts in one click.</li>
+<li><strong>Docker</strong>: cannot self-restart from inside the container; the GUI surfaces the host-side <code>headroom install restart --profile &lt;p&gt;</code> command to run instead.</li>
+<li><strong>Task</strong> (Windows Task Scheduler / cron-managed install): <code>headroom install</code> does not support lifecycle operations for task deployments; the GUI shows an instruction to restart via the OS task scheduler or by stopping the process so it relaunches on its next trigger.</li>
+<li><strong>Foreground</strong> (plain <code>headroom proxy</code>): shows a manual-restart instruction.</li>
+<li><strong>Provenance / locking</strong>: a field currently shadowed by an explicit environment variable export is rendered read-only with a tooltip, since editing it here would have no effect until the env var is unset. Manifest-baked settings (<code>HEADROOM_PORT</code>, <code>HEADROOM_HOST</code>) are similarly locked on supervised (Docker/Service) installs — managed by the install manifest, not the settings interface.</li>
+<li><strong>CSRF protection</strong>: <code>/settings</code> and <code>/settings/apply</code> reject requests whose <code>Origin</code> header (when present) doesn't resolve to a loopback host, in addition to the existing loopback-only + Host-header DNS-rebinding guard shared by all admin endpoints.</li>
+</ul>
 <h2 id="session-beta-header-tracking">Session Beta Header Tracking<a class="headerlink" href="#session-beta-header-tracking" title="Permanent link">&para;</a></h2>
 <p>When running as a proxy, Headroom maintains a per-session union of <code>anthropic-beta</code> (and <code>OpenAI-Beta</code>) tokens via <code>SessionBetaTracker</code>. The session key is derived from the <code>x-headroom-session-id</code> header if present, otherwise from <code>md5(model + system_prompt[:500])[:16]</code> — stable across turns of the same conversation.</p>
 <p><strong>Why:</strong> clients such as Claude Code and Codex CLI may drop a beta token between consecutive turns. Because <code>anthropic-beta</code> is part of the request bytes that determine the upstream prefix-cache key, a dropped token would bust the cache mid-conversation. The tracker re-injects any token seen earlier in the session so the cache key stays stable.</p>
@@ -3292,7 +3330,7 @@ note (<code>HEADROOM_WORKSPACE</code> is <em>not</em> the same as <code>HEADROOM
       <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["content.code.copy", "content.code.annotate", "content.tabs.link", "navigation.instant", "navigation.instant.progress", "navigation.tabs", "navigation.tabs.sticky", "navigation.sections", "navigation.expand", "navigation.top", "navigation.indexes", "search.highlight", "search.suggest", "search.share", "toc.follow", "header.autohide"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
     
     
-      <script src="../assets/javascripts/bundle.79ae519e.min.js"></script>
+      <script src="../assets/javascripts/bundle.d7400e89.min.js"></script>
       
     
   </body>
