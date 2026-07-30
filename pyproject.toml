@@ -228,6 +228,11 @@ autogen = [
 # MCP server for Claude Code integration
 mcp = [
     "mcp>=1.28.1",
+    # The CLI imports its agent-integration registry at startup; that registry
+    # reaches proxy request-scope helpers even when the user runs MCP-only.
+    # Keep this lightweight framework dependency in the MCP extra so
+    # `headroom mcp serve` works without installing the full proxy bundle.
+    "fastapi>=0.100.0",
     "httpx>=0.24.0",
     "starlette>=0.27.0",
     "uvicorn>=0.23.0,<1.0",
