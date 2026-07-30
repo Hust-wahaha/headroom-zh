@@ -180,7 +180,7 @@ import importlib.metadata as metadata
 import headroom
 from headroom._core import DiffCompressor, SmartCrusher, hello
 
-version = metadata.version("headroom-ai")
+version = metadata.version("headroom-zh")
 assert version == {expected_version!r}, version
 assert headroom.__version__ == {expected_version!r}, headroom.__version__
 print(f"smoke-import OK: version={{version}} hello={{hello()}} diff={{DiffCompressor!r}} smart={{SmartCrusher!r}}")
@@ -222,8 +222,8 @@ def main() -> None:
     ensure_empty_dir(out_dir)
     build_artifacts(out_dir, python_exe, args.profile, args.release)
 
-    wheel = find_one_artifact(out_dir, "headroom_ai-*.whl")
-    sdist = find_one_artifact(out_dir, "headroom_ai-*.tar.gz")
+    wheel = find_one_artifact(out_dir, "headroom_zh-*.whl")
+    sdist = find_one_artifact(out_dir, "headroom_zh-*.tar.gz")
     verify_wheel(wheel, expected_version)
     verify_sdist_license_files(sdist)
     smoke_install_wheel(wheel, python_exe, expected_version)

@@ -117,7 +117,7 @@ def get_version() -> str:
         return build_version
 
     try:
-        return version("headroom-ai")
+        return version("headroom-zh")
     except PackageNotFoundError:
         return UNKNOWN_VERSION
 

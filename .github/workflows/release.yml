@@ -5,7 +5,7 @@ name: Release
 # All values are referenced via ${{ env.VAR }} throughout the workflow.
 env:
   # PyPI
-  PYPI_PACKAGE: headroom-ai
+  PYPI_PACKAGE: headroom-zh
   PYPI_ENVIRONMENT: pypi
 
   # npm (npmjs.org)
@@ -640,7 +640,7 @@ jobs:
                 aarch64-unknown-linux-gnu) arch_tag=manylinux_2_28_aarch64 ;;
                 *) echo "ERROR: unknown wheel target $WHEEL_TARGET" >&2; exit 1 ;;
               esac
-              whl=$(find /wheels -maxdepth 1 -type f -name "headroom_ai-*-${py_tag}-${py_tag}-${arch_tag}.whl" -print -quit)
+              whl=$(find /wheels -maxdepth 1 -type f -name "headroom_zh-*-${py_tag}-${py_tag}-${arch_tag}.whl" -print -quit)
               if [ -z "$whl" ]; then
                 # No version-specific wheel — fall back to a stable-ABI
                 # (abi3) wheel. A cp3<floor>-abi3 wheel installs on any
@@ -648,7 +648,7 @@ jobs:
                 # forward-compatible to 3.14+ (Cargo.toml pyo3 abi3-py310).
                 # Pick the abi3 wheel whose floor is <= the interpreter.
                 py_minor=${PYTHON_VERSION#*.}
-                abi3=$(find /wheels -maxdepth 1 -type f -name "headroom_ai-*-abi3-${arch_tag}.whl" -print -quit)
+                abi3=$(find /wheels -maxdepth 1 -type f -name "headroom_zh-*-abi3-${arch_tag}.whl" -print -quit)
                 if [ -n "$abi3" ]; then
                   abi3_base=${abi3##*/}
                   abi3_floor=${abi3_base#*-cp3}
@@ -690,12 +690,12 @@ jobs:
             x86_64-apple-darwin) mac_arch=x86_64 ;;
             *) echo "ERROR: unknown macOS wheel target $WHEEL_TARGET" >&2; exit 1 ;;
           esac
-          whl=$(find dist -maxdepth 1 -type f -name "headroom_ai-*-${py_tag}-${py_tag}-macosx_*_${mac_arch}.whl" -print -quit)
+          whl=$(find dist -maxdepth 1 -type f -name "headroom_zh-*-${py_tag}-${py_tag}-macosx_*_${mac_arch}.whl" -print -quit)
           if [ -z "$whl" ]; then
             # Stable-ABI (abi3) fallback — see the Linux path above. A
             # cp3<floor>-abi3 wheel installs on any CPython >= floor.
             py_minor=${PYTHON_VERSION#*.}
-            abi3=$(find dist -maxdepth 1 -type f -name "headroom_ai-*-abi3-macosx_*_${mac_arch}.whl" -print -quit)
+            abi3=$(find dist -maxdepth 1 -type f -name "headroom_zh-*-abi3-macosx_*_${mac_arch}.whl" -print -quit)
             if [ -n "$abi3" ]; then
               abi3_base=${abi3##*/}
               abi3_floor=${abi3_base#*-cp3}
@@ -732,11 +732,11 @@ jobs:
           # cp3XY wheel; fall back to a stable-ABI (abi3) wheel whose floor
           # is <= the interpreter minor — same selection logic as the Linux
           # and macOS paths, just expressed in PowerShell.
-          $whl = Get-ChildItem -Path dist -Filter "headroom_ai-*-$pyTag-$pyTag-win_amd64.whl" -File |
+          $whl = Get-ChildItem -Path dist -Filter "headroom_zh-*-$pyTag-$pyTag-win_amd64.whl" -File |
                  Select-Object -First 1
           if (-not $whl) {
             $pyMinor = [int]($env:PYTHON_VERSION -split '\.')[1]
-            $abi3 = Get-ChildItem -Path dist -Filter "headroom_ai-*-abi3-win_amd64.whl" -File |
+            $abi3 = Get-ChildItem -Path dist -Filter "headroom_zh-*-abi3-win_amd64.whl" -File |
                     Where-Object {
                       if ($_.Name -match '-cp3(\d+)-abi3-') { [int]$Matches[1] -le $pyMinor } else { $false }
                     } | Select-Object -First 1

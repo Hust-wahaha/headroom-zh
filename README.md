@@ -256,12 +256,14 @@ The `headroom` CLI ships **only** via the PyPI package. The npm `headroom-ai` is
 
 Granular extras: `[proxy]`, `[mcp]`, `[ml]`, `[code]`, `[memory]`, `[vector]` (optional HNSW backend — needs a C++ toolchain, not in `[all]`), `[relevance]`, `[image]`, `[agno]`, `[langchain]`, `[evals]`, `[pytorch-mps]` (Apple-GPU memory-embedder offload — set `HEADROOM_EMBEDDER_RUNTIME=pytorch_mps`). Requires **Python 3.10+**.
 
-### Codex / global install
+### Codex MCP-only install (keeps native ChatGPT/Codex routing)
 
-If Codex or another MCP client cannot inherit a shell `PATH` reliably, install Headroom as a persistent uv tool and point the client at the absolute binary path:
+The published Chinese fork is distributed as `headroom-zh` so it can coexist with upstream `headroom-ai`. This path starts only the local MCP server: it does **not** start the HTTP proxy, replace `base_url`, or change Codex's selected model/provider.
+
+If Codex or another MCP client cannot inherit a shell `PATH` reliably, install the fork as a persistent uv tool and point the client at the absolute binary path:
 
 ```bash
-uv tool install "headroom-ai[all]"
+uv tool install "headroom-zh[mcp]"
 command -v headroom
 ```
 
@@ -272,6 +274,14 @@ Then use the returned path in MCP config:
 command = "/absolute/path/from/command-v/headroom"
 args = ["mcp", "serve"]
 ```
+
+Or register only Codex from the CLI:
+
+```bash
+headroom mcp install --agent codex
+```
+
+Restart Codex after registration. The available tools are `headroom_compress`, `headroom_retrieve`, and `headroom_stats`; compression is on-demand and the original content stays in the local CCR store.
 
 `command = "headroom"` only works when the client starts with a `PATH` that already includes the uv tool directory.
 
