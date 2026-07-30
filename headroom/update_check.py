@@ -30,7 +30,7 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-PACKAGE_NAME = "headroom-ai"
+PACKAGE_NAME = "headroom-zh"
 _PYPI_JSON_URL = f"https://pypi.org/pypi/{PACKAGE_NAME}/json"
 _CACHE_FILE = "update_check.json"
 

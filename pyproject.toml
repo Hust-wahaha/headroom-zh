@@ -3,7 +3,7 @@ requires = ["maturin>=1.5,<2.0"]
 build-backend = "maturin"
 
 [project]
-name = "headroom-ai"
+name = "headroom-zh"
 version = "0.32.0"
 description = "The Context Optimization Layer for LLM Applications - Cut costs by 50-90%"
 readme = "README.md"
@@ -92,7 +92,7 @@ proxy = [
 # to install a non-functional package.  Production deployments should use:
 #   pip install headroom-ai[proxy,proxy-prod]
 proxy-prod = [
-    "headroom-ai[proxy]",
+    "headroom-zh[proxy]",
     "gunicorn>=21.0.0; sys_platform != 'win32'",
 ]
 # AST-based code compression (tree-sitter)
@@ -228,6 +228,11 @@ autogen = [
 # MCP server for Claude Code integration
 mcp = [
     "mcp>=1.28.1",
+    # The CLI imports its agent-integration registry at startup; that registry
+    # reaches proxy request-scope helpers even when the user runs MCP-only.
+    # Keep this lightweight framework dependency in the MCP extra so
+    # `headroom mcp serve` works without installing the full proxy bundle.
+    "fastapi>=0.100.0",
     "httpx>=0.24.0",
     "starlette>=0.27.0",
     "uvicorn>=0.23.0,<1.0",
@@ -240,7 +245,7 @@ voice = [
 ]
 # Voice training (includes voice deps + training extras)
 voice-train = [
-    "headroom-ai[voice]",
+    "headroom-zh[voice]",
     "datasets>=2.14.0",
     "accelerate>=0.20.0",
 ]
@@ -303,7 +308,7 @@ dev = [
 # who need standard accuracy benchmarks can install `lm-eval[api]` in their
 # benchmark environment separately.
 all = [
-    "headroom-ai[proxy,code,ml,memory,relevance,image,reports,otel,evals,voice,html,mcp,spreadsheet]",
+    "headroom-zh[proxy,code,ml,memory,relevance,image,reports,otel,evals,voice,html,mcp,spreadsheet]",
 ]
 # Sandbox: a lean proxy with ALL torch-free capability — for running Headroom in
 # a locked-down/low-resource sandbox and offloading heavy ML elsewhere.
@@ -322,7 +327,7 @@ all = [
 # Everything kept here is torch-free: code-aware compression (tree-sitter),
 # embedding relevance (fastembed), HTML/spreadsheet ingestion, reports, OTel.
 sandbox = [
-    "headroom-ai[proxy,code,relevance,reports,otel,html,mcp,spreadsheet]",
+    "headroom-zh[proxy,code,relevance,reports,otel,html,mcp,spreadsheet]",
 ]
 
 [project.scripts]
