@@ -4,9 +4,9 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Headroom Dashboard</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
-    <script src="https://unpkg.com/alpinejs@3.13.3/dist/cdn.min.js" defer></script>
+    <script src="/dashboard/static/tailwind.min.js"></script>
+    <script src="/dashboard/static/htmx.min.js"></script>
+    <script src="/dashboard/static/alpine.min.js" defer></script>
     <script>
         (function() {
             const saved = localStorage.getItem('headroom-theme');
@@ -209,7 +209,7 @@
                 <div class="grid grid-cols-1 gap-4 mb-6 md:grid-cols-2 lg:grid-cols-3">
                     <!-- Token Savings (%) -->
                     <div class="bg-surface rounded-lg p-4 border border-border">
-                        <div class="text-xs text-gray-500 uppercase tracking-wide mb-1">Token Savings</div>
+                        <div class="text-xs text-gray-500 uppercase tracking-wide mb-1">Tokens Saved</div>
                         <div class="flex items-baseline gap-2">
                             <span class="text-3xl font-light tabular-nums text-accent" x-text="formatNumber(stats.tokens?.saved || 0)"></span>
                             <!-- Active compression ratio: savings as a fraction of tokens we
@@ -222,8 +222,6 @@
                         </div>
                         <div class="mt-1 text-xs text-gray-500 leading-relaxed">
                             <span x-text="'Proxy ' + formatNumber(stats.tokens?.proxy_compression_saved || 0) + ' (' + proxyShareOfTotal.toFixed(1) + '%)'"></span>
-                            <span class="mx-1 text-gray-600">/</span>
-                            <span x-text="cliFilteringAvailable ? (cliFilteringLabel + ' ' + formatNumber(cliFilteringSaved) + ' this session (' + cliFilteringSessionPctDisplay.toFixed(1) + '%)') : (cliFilteringLabel + ' not installed')"></span>
                         </div>
                         <div class="mt-1 text-xs text-gray-600 leading-relaxed">
                             <span x-text="'Of total wire: ' + (stats.tokens?.savings_percent || 0).toFixed(2) + '%'" title="Savings as fraction of all input tokens including frozen prefix"></span>
@@ -266,23 +264,29 @@
                         <template x-if="!stats.tokens?.output_reduction?.available">
                             <div class="mt-1 text-xs text-gray-500 leading-relaxed">
                                 <span class="text-2xl font-light tabular-nums text-gray-600">—</span>
-                                <div class="mt-1">Enable the output shaper (HEADROOM_OUTPUT_SHAPER=1) and run
+                                <div class="mt-1">Enable the beta output shaper (HEADROOM_ROLLOUT_CHANNEL=beta HEADROOM_OUTPUT_SHAPER=1) and run
                                     <code class="text-gray-400">headroom learn --verbosity --apply</code> to start measuring.</div>
                             </div>
                         </template>
                     </div>
 
-                    <!-- Tool-Schema Deferral (tool search) — only rendered when there's a saving to show -->
-                    <template x-if="(stats.savings?.by_layer?.tool_search?.tokens || 0) > 0">
+                    <!-- Dynamic attribution for any named savings source. These
+                         rows explain the headline; they are not added to it. -->
+                    <template x-for="row in (stats.savings?.by_source || [])" :key="row.source + ':' + row.realized">
                         <div class="bg-surface rounded-lg p-4 border border-border">
-                            <div class="text-xs text-gray-500 uppercase tracking-wide mb-1">Tool-Schema Deferral</div>
-                            <div class="flex items-baseline gap-2">
-                                <span class="text-3xl font-light tabular-nums text-emerald-400" x-text="formatNumber(stats.savings?.by_layer?.tool_search?.tokens || 0)"></span>
+                            <div class="text-xs text-gray-500 uppercase tracking-wide mb-1"
+                                 x-text="'Savings · ' + row.source.replaceAll('_', ' ')"></div>
+                            <div class="flex items-baseline gap-2" x-show="(row.tokens || 0) > 0">
+                                <span class="text-3xl font-light tabular-nums text-emerald-400" x-text="formatNumber(row.tokens || 0)"></span>
                                 <span class="text-sm text-gray-400">tokens</span>
                             </div>
-                            <div class="mt-1 text-xs text-gray-600 leading-relaxed"
-                                 x-text="formatNumber(stats.savings?.by_layer?.tool_search?.requests || 0) + ' calls · tool schemas deferred (recent window)'">
+                            <div class="flex items-baseline gap-2" x-show="(row.usd || 0) !== 0">
+                                <span class="text-2xl font-light tabular-nums"
+                                      :class="row.usd >= 0 ? 'text-emerald-400' : 'text-red-400'"
+                                      x-text="(row.usd >= 0 ? '$' : '-$') + formatCurrency(Math.abs(row.usd || 0))"></span>
                             </div>
+                            <div class="mt-1 text-xs text-gray-600 leading-relaxed"
+                                 x-text="formatNumber(row.events || 0) + ' calls · ' + (row.realized ? 'realized' : 'projected')"></div>
                         </div>
                     </template>
                 </div>
@@ -389,14 +393,6 @@
                                 <span class="text-sm text-gray-400">Before Compression</span>
                                 <span class="font-mono text-sm" x-text="formatNumber(stats.tokens?.total_before_compression || 0)"></span>
                             </div>
-                            <div class="flex justify-between items-center" x-show="cliFilteringAvailable">
-                                <span class="text-sm text-gray-400" x-text="cliFilteringLabel + ' Filtered (this session)'"></span>
-                                <span class="font-mono text-sm text-emerald-400" x-text="formatNumber(cliFilteringSaved)"></span>
-                            </div>
-                            <div class="flex justify-between items-center" x-show="!cliFilteringAvailable">
-                                <span class="text-sm text-gray-400" x-text="cliFilteringLabel + ' Filtered (this session)'"></span>
-                                <span class="font-mono text-sm text-gray-600">not installed</span>
-                            </div>
                             <div class="flex justify-between items-center">
                                 <span class="text-sm text-gray-400">Proxy Removed</span>
                                 <span class="font-mono text-sm text-accent" x-text="formatNumber(stats.tokens?.proxy_compression_saved || 0)"></span>
@@ -468,8 +464,8 @@
                     </div>
                 </div>
 
-                <!-- Prefix Cache Impact: current process only -->
-                <template x-if="cacheSessionActive">
+                <!-- Prefix Cache Impact: current process plus durable cache reads after restart -->
+                <template x-if="cacheCardAvailable">
                     <div class="bg-surface rounded-lg p-4 border border-border mb-6">
                         <div class="flex justify-between items-center mb-3">
                             <div class="text-sm font-medium text-gray-300">Prefix Cache Impact</div>
@@ -479,6 +475,15 @@
                             <div class="text-xs text-gray-500 font-mono"
                                  x-show="!cacheSessionActive">no activity since restart</div>
                         </div>
+                        <template x-if="!cacheSessionActive && lifetimeCacheReadTokens > 0">
+                            <div class="mb-4 rounded-lg border border-cyan-500/20 bg-cyan-500/5 p-3">
+                                <div class="text-xs text-gray-500 uppercase tracking-wide mb-1">Cache Reads (lifetime)</div>
+                                <div class="text-2xl font-light tabular-nums text-cyan-400"
+                                     x-text="formatNumber(lifetimeCacheReadTokens)"></div>
+                                <div class="text-xs text-cyan-400/70"
+                                     x-text="'$' + formatCurrency(lifetimeCacheSavingsUsd) + ' saved'"></div>
+                            </div>
+                        </template>
                         <!-- Totals row -->
                         <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
                             <div>
@@ -783,7 +788,9 @@
 
                         <template x-if="agentRows.length === 0">
                             <div class="rounded-lg border border-dashed border-border p-6 text-center text-sm text-gray-500">
-                                Agent usage appears after Cursor, Claude, Codex, or another client sends traffic through this proxy.
+                                <div>Agent usage appears after Cursor, Claude, Codex, or another client sends traffic through this proxy.</div>
+                                <div class="mt-2 font-mono text-xs text-accent"
+                                     x-text="'ANTHROPIC_BASE_URL: ' + window.location.origin + '/p/&lt;project-name&gt;'"></div>
                             </div>
                         </template>
                     </div>
@@ -843,7 +850,7 @@
                                                     <span class="px-2 py-0.5 bg-border rounded text-xs" x-text="truncateModel(model)"></span>
                                                 </td>
                                                 <td class="px-4 py-3 text-right font-mono tabular-nums" x-text="info.requests"></td>
-                                                <td class="px-4 py-3 text-right font-mono tabular-nums text-accent" x-text="formatNumber(info.tokens_saved)"></td>
+                                                <td class="px-4 py-3 text-right font-mono tabular-nums text-accent" x-text="formatNumber(info.tokens_saved)" :title="formatNumber(info.compression_tokens_saved || 0) + ' from compression · ' + formatNumber(info.tool_tokens_saved || 0) + ' from deferred tool schemas'"></td>
                                                 <td class="px-4 py-3 text-right font-mono tabular-nums" x-text="formatNumber(info.tokens_sent)"></td>
                                                 <td class="px-4 py-3 text-right">
                                                     <span class="text-accent font-mono tabular-nums" x-text="info.reduction_pct.toFixed(1) + '%'"></span>
@@ -926,6 +933,17 @@
                                                         <div class="flex flex-wrap gap-1">
                                                             <template x-for="t in req.transforms_applied" :key="t">
                                                                 <span class="px-2 py-0.5 bg-border rounded text-xs font-mono" x-text="t"></span>
+                                                            </template>
+                                                        </div>
+                                                    </div>
+                                                </template>
+                                                <template x-if="(req.savings_breakdown || []).length > 0">
+                                                    <div class="mt-3">
+                                                        <div class="text-xs text-gray-500 uppercase tracking-wide mb-1">Savings Attribution</div>
+                                                        <div class="flex flex-wrap gap-1">
+                                                            <template x-for="item in req.savings_breakdown" :key="item.source + ':' + item.tokens + ':' + item.usd">
+                                                                <span class="px-2 py-0.5 bg-border rounded text-xs font-mono"
+                                                                      x-text="item.source + (item.tokens ? ' · ' + formatNumber(item.tokens) + ' tok' : '') + (item.usd ? ' · $' + formatCurrency(item.usd) : '') + (item.realized ? '' : ' · projected')"></span>
                                                             </template>
                                                         </div>
                                                     </div>
@@ -1323,8 +1341,7 @@
                         <div class="px-4 py-8 text-center">
                             <div class="text-xs text-gray-500 mb-3">No per-project data yet.</div>
                             <div class="text-xs text-gray-600 font-mono leading-relaxed">
-                                Route project traffic through
-                                <span class="text-accent" x-text="window.location.origin + '/p/&lt;project-name&gt;'"></span>
+                                <span class="text-accent" x-text="'ANTHROPIC_BASE_URL: ' + window.location.origin + '/p/&lt;project-name&gt;'"></span>
                             </div>
                         </div>
                     </template>
@@ -1456,17 +1473,6 @@
                         <div class="mt-2 text-xs text-gray-500">Based on persisted weekly buckets</div>
                     </div>
 
-                    <template x-if="historyStats.cli_filtering && historyCliFilteringAvailable">
-                        <div class="bg-surface rounded-lg p-4 border border-border">
-                            <div class="text-xs text-gray-500 uppercase tracking-wide mb-1"
-                                 x-text="(historyStats.cli_filtering?.label || cliFilteringLabel) + ' Lifetime Saved'"></div>
-                            <div class="flex items-baseline gap-2">
-                                <span class="text-3xl font-light tabular-nums text-cyan-400"
-                                      x-text="formatNumber(historyStats.cli_filtering?.lifetime?.tokens_saved || 0)"></span>
-                            </div>
-                            <div class="mt-2 text-xs text-gray-500">CLI output filtering (lifetime)</div>
-                        </div>
-                    </template>
                 </div>
 
                 <template x-if="hasHistoricalData">
@@ -2153,7 +2159,9 @@
 
                 truncateModel(model) {
                     if (!model) return '-';
-                    return model.replace(/^(anthropic\.|openai\.|bedrock\/)/, '')
+                    return model.replace(/^(bedrock\/)/, '')
+                               .replace(/^(au\.|us\.|eu\.|apac\.|global\.)/, '')
+                               .replace(/^(anthropic\.|openai\.)/, '')
                                .replace(/-\d{8}$/, '')
                                .substring(0, 20);
                 },
@@ -2478,6 +2486,18 @@
                     return (this.stats.prefix_cache?.totals?.requests || 0) > 0;
                 },
 
+                get lifetimeCacheReadTokens() {
+                    return this.stats.persistent_savings?.lifetime?.cache_read_tokens || 0;
+                },
+
+                get lifetimeCacheSavingsUsd() {
+                    return this.stats.persistent_savings?.lifetime?.cache_savings_usd || 0;
+                },
+
+                get cacheCardAvailable() {
+                    return this.cacheSessionActive || this.lifetimeCacheReadTokens > 0 || this.lifetimeCacheSavingsUsd > 0;
+                },
+
                 get cacheSavingsPercent() {
                     const t = this.stats.prefix_cache?.totals || {};
                     const total = (t.cache_read_tokens || 0) + (t.cache_write_tokens || 0);
@@ -2606,49 +2626,6 @@
                     const total = this.compressionTotalBefore;
                     if (total <= 0) return 0;
                     return (this.stats.tokens?.proxy_compression_saved || 0) / total * 100;
-                },
-
-                get cliFilteringLabel() {
-                    const raw = this.stats.savings?.by_layer?.cli_filtering?.label
-                        || this.stats.context_tool?.label
-                        || this.stats.context_tool?.configured
-                        || 'Context Tool';
-                    if (String(raw).toLowerCase() === 'lean-ctx') return 'Lean-ctx';
-                    return String(raw);
-                },
-
-                get cliFilteringSaved() {
-                    return this.stats.tokens?.cli_filtering_saved
-                        ?? this.stats.tokens?.cli_tokens_avoided
-                        ?? this.stats.tokens?.rtk_saved
-                        ?? 0;
-                },
-
-                get cliFilteringShareOfTotal() {
-                    const total = this.compressionTotalBefore;
-                    if (total <= 0) return 0;
-                    return this.cliFilteringSaved / total * 100;
-                },
-
-                get cliFilteringLifetime() {
-                    return this.stats.savings?.by_layer?.cli_filtering?.lifetime?.tokens_saved ?? 0;
-                },
-
-                get cliFilteringSessionPctDisplay() {
-                    const p = this.stats.savings?.by_layer?.cli_filtering?.session_savings_pct;
-                    return (p === null || p === undefined) ? this.cliFilteringShareOfTotal : p;
-                },
-
-                get cliFilteringAvailable() {
-                    const ct = this.stats.context_tool;
-                    if (ct && typeof ct.available === 'boolean') return ct.available;
-                    return true;
-                },
-
-                get historyCliFilteringAvailable() {
-                    const hf = this.historyStats?.cli_filtering;
-                    if (hf && typeof hf.available === 'boolean') return hf.available;
-                    return true;
                 },
 
                 // --- Headline savings percent ---

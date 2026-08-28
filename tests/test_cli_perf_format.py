@@ -5,6 +5,8 @@ from __future__ import annotations
 import csv
 import io
 import json
+import os
+from datetime import datetime, timedelta
 
 import pytest
 from click.testing import CliRunner
@@ -228,6 +230,70 @@ def test_parse_perf_line_preserves_client_field(monkeypatch, tmp_path):
 
     assert len(report.perf_records) == 1
     assert report.perf_records[0].client == "codex"
+
+
+def _perf_line(ts: datetime, client: str) -> str:
+    return (
+        f"{ts.strftime('%Y-%m-%d %H:%M:%S')},000 - headroom.proxy - INFO - "
+        f"[hr_x] PERF model=gpt-5 msgs=3 tok_before=1000 "
+        f"tok_after=90 tok_saved=910 cache_read=0 cache_write=0 "
+        f"cache_hit_pct=0 opt_ms=12 transforms=content_router client={client}\n"
+    )
+
+
+def _write_log(path, text: str, mtime: datetime) -> None:
+    path.write_text(text)
+    stamp = mtime.timestamp()
+    os.utime(path, (stamp, stamp))
+
+
+def test_windowed_parse_skips_rotated_logs_older_than_the_cutoff(monkeypatch, tmp_path):
+    """A windowed query must cost O(window), not O(total log history).
+
+    `/stats` recomputes throughput over the last hour on a 10s cache TTL, so
+    reading every rotated log each time made the endpoint slower the longer
+    the proxy had been running.
+    """
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir()
+    now = datetime.now()
+    _write_log(
+        log_dir / "proxy.log.1",
+        _perf_line(now - timedelta(days=3), "stale"),
+        now - timedelta(days=3),
+    )
+    _write_log(log_dir / "proxy.log", _perf_line(now - timedelta(minutes=5), "live"), now)
+    monkeypatch.setattr(analyzer, "LOG_DIR", log_dir)
+
+    report = analyzer.parse_log_files(last_n_hours=1.0)
+
+    assert [r.client for r in report.perf_records] == ["live"]
+    # The stale file was never opened, so its lines were never even counted.
+    # Asserted before the counters below because a read-then-filter
+    # implementation also yields the right records -- only the work differs.
+    assert report.total_lines_parsed == 1
+    assert report.log_files_read == 1
+    assert report.log_files_skipped == 1
+
+
+def test_unwindowed_parse_still_reads_every_rotated_log(monkeypatch, tmp_path):
+    """`--hours 0` means "all data" and must not prune anything."""
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir()
+    now = datetime.now()
+    _write_log(
+        log_dir / "proxy.log.1",
+        _perf_line(now - timedelta(days=3), "stale"),
+        now - timedelta(days=3),
+    )
+    _write_log(log_dir / "proxy.log", _perf_line(now - timedelta(minutes=5), "live"), now)
+    monkeypatch.setattr(analyzer, "LOG_DIR", log_dir)
+
+    report = analyzer.parse_log_files(last_n_hours=0)
+
+    assert {r.client for r in report.perf_records} == {"stale", "live"}
+    assert report.log_files_skipped == 0
+    assert report.log_files_read == 2
 
 
 def test_perf_csv_by_model(runner, monkeypatch):

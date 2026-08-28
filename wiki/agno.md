@@ -167,6 +167,7 @@ Full async support for high-throughput applications:
 import asyncio
 from headroom.integrations.agno import HeadroomAgnoModel
 
+
 async def process_async():
     model = HeadroomAgnoModel(OpenAIChat(id="gpt-4o"))
 
@@ -178,6 +179,7 @@ async def process_async():
         print(chunk, end="", flush=True)
 
     print(f"\nTokens saved: {model.total_tokens_saved}")
+
 
 asyncio.run(process_async())
 ```

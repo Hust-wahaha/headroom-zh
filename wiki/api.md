@@ -101,9 +101,9 @@ config = CacheAlignerConfig(
 from headroom import RelevanceScorerConfig
 
 config = RelevanceScorerConfig(
-    scorer_type="bm25",      # "bm25", "embedding", or "hybrid"
-    embedding_model=None,    # Model name for embedding scorer
-    hybrid_alpha=0.5,        # Weight for hybrid scoring
+    scorer_type="bm25",  # "bm25", "embedding", or "hybrid"
+    embedding_model=None,  # Model name for embedding scorer
+    hybrid_alpha=0.5,  # Weight for hybrid scoring
 )
 ```
 
@@ -286,10 +286,12 @@ result = aligner.align(messages)
 ```python
 from headroom import TransformPipeline
 
-pipeline = TransformPipeline([
-    SmartCrusher(),
-    CacheAligner(),
-])
+pipeline = TransformPipeline(
+    [
+        SmartCrusher(),
+        CacheAligner(),
+    ]
+)
 
 result = pipeline.transform(messages)
 ```

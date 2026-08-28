@@ -187,6 +187,8 @@ Install Headroom so it's globally on PATH — `uv tool install "headroom-ai[mcp]
 
 ## Architecture
 
+For user-managed Serena drift, run `headroom mcp reconcile` to inspect the current recommendation. Add `--adopt` only when you want Headroom to replace the Serena entry.
+
 ### MCP only (no proxy)
 
 The LLM calls `headroom_compress` on demand. Compression happens locally in the MCP process. Originals are stored in a local `CompressionStore` with 1-hour TTL.

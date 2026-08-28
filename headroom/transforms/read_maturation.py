@@ -343,12 +343,18 @@ def relocate_cache_breakpoint(
     stripped_any = False
 
     # 1. Strip breakpoints from the held region [earliest:].
+    held_marker: dict[str, Any] | None = None
     for i in range(earliest, len(out)):
         msg = out[i]
         content = msg.get("content")
         if not isinstance(content, list):
             continue
         if any(isinstance(b, dict) and "cache_control" in b for b in content):
+            for b in content:
+                # Carry the TTL forward: re-anchoring with a bare ephemeral marker
+                # would silently downgrade a 1h breakpoint to the 5m default.
+                if isinstance(b, dict) and isinstance(b.get("cache_control"), dict):
+                    held_marker = b["cache_control"]
             out[i] = {
                 **msg,
                 "content": [
@@ -371,7 +377,10 @@ def relocate_cache_breakpoint(
         content = out[i].get("content")
         if isinstance(content, list) and content and isinstance(content[-1], dict):
             new_content = list(content)
-            new_content[-1] = {**new_content[-1], "cache_control": {"type": "ephemeral"}}
+            new_content[-1] = {
+                **new_content[-1],
+                "cache_control": dict(held_marker) if held_marker else {"type": "ephemeral"},
+            }
             out[i] = {**out[i], "content": new_content}
             break
 

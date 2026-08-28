@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import threading
 from types import SimpleNamespace
 
 import pytest
 
+import headroom._ort as ort_runtime
 import headroom.transforms.content_router as content_router_module
 from headroom.transforms.content_detector import ContentType, DetectionResult
 from headroom.transforms.content_router import (
@@ -35,6 +37,11 @@ def _reset_detect_module_state(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(content_router_module, "_detect_native_unhealthy", False)
     monkeypatch.setattr(content_router_module, "_detect_backend_warned", False)
     monkeypatch.setattr(content_router_module, "_detect_panic_warned", False)
+    # Router unit tests replace ``headroom._core.detect_content_type`` with
+    # deterministic fakes. Keep the separate ORT API-compatibility preflight
+    # open so those fakes reach the watchdog/circuit-breaker behavior under
+    # test; incompatibility itself is covered in test_ort_dylib.py (#2960).
+    monkeypatch.setattr(ort_runtime, "rust_ort_runtime_compatible", lambda: True)
 
 
 def test_compression_cache_handles_hits_skips_evictions_and_clear(
@@ -152,6 +159,29 @@ def test_content_signature_and_detection_helpers(monkeypatch: pytest.MonkeyPatch
     assert result.content_type is ContentType.SOURCE_CODE
     assert result.confidence == 1.0
     assert result.metadata == {}
+
+
+def test_native_detection_remains_bounded_after_success(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A successful native call must not disable the watchdog for later calls."""
+    import headroom._core as _core
+
+    monkeypatch.setenv("HEADROOM_DETECT_BACKEND", "rust")
+    monkeypatch.setattr(content_router_module, "_detect_timeout_secs", lambda: 0.01)
+    calls = 0
+
+    def _succeeds_then_hangs(_content: str) -> SimpleNamespace:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return SimpleNamespace(content_type="plain_text")
+        threading.Event().wait()
+        raise AssertionError("unreachable")
+
+    monkeypatch.setattr(_core, "detect_content_type", _succeeds_then_hangs)
+
+    assert _detect_content("first").content_type is ContentType.PLAIN_TEXT
+    assert _detect_content("second").content_type is ContentType.PLAIN_TEXT
+    assert content_router_module._detect_native_unhealthy is True
 
 
 def test_mixed_content_section_splitting_and_json_extraction() -> None:
@@ -487,7 +517,7 @@ def test_content_router_mixed_pure_apply_and_toin(monkeypatch: pytest.MonkeyPatc
     monkeypatch.setattr(
         content_router_module,
         "split_into_sections",
-        lambda content: [
+        lambda content, isolate=(): [
             SimpleNamespace(
                 content="print('x')",
                 content_type=ContentType.SOURCE_CODE,
@@ -932,6 +962,7 @@ def test_text_block_cache_control_protected_with_assistant_optin(
         "",
         [],
         set(),
+        set(),
         route_counts=counts,
         compress_assistant_text_blocks=True,
     )
@@ -964,6 +995,7 @@ def test_tool_result_cache_control_protected(monkeypatch: pytest.MonkeyPatch) ->
         "",
         [],
         set(),
+        set(),
     )
     # cache_control hard-skip applies to tool_result too
     assert result["content"][0]["content"] == long_text
@@ -980,6 +1012,7 @@ def test_assistant_text_blocks_skipped_by_default(
         msg["content"],
         "",
         [],
+        set(),
         set(),
     )
     # Default OFF: assistant text untouched, restoring pre-#431 cache safety
@@ -998,6 +1031,7 @@ def test_assistant_text_blocks_opt_in_compresses(
         "",
         [],
         set(),
+        set(),
         compress_assistant_text_blocks=True,
     )
     assert "[compressed]" in result["content"][0]["text"]
@@ -1015,6 +1049,7 @@ def test_user_text_blocks_never_compressed_even_with_assistant_optin(
         "",
         [],
         set(),
+        set(),
         compress_assistant_text_blocks=True,  # MUST NOT bleed into user
     )
     assert result["content"][0]["text"] == long_text
@@ -1031,6 +1066,7 @@ def test_system_text_blocks_skipped_when_skip_system_true(
         msg["content"],
         "",
         [],
+        set(),
         set(),
         skip_system=True,
         compress_assistant_text_blocks=True,
@@ -1050,6 +1086,7 @@ def test_tool_role_text_blocks_compressed_by_default(
         "",
         [],
         set(),
+        set(),
     )
     # tool role ≈ tool output — compress freely
     assert "[compressed]" in result["content"][0]["text"]
@@ -1067,6 +1104,7 @@ def test_unknown_role_text_blocks_skipped_for_safety(
         "",
         [],
         set(),
+        set(),
         compress_assistant_text_blocks=True,
     )
     # Unknown role: be safe, don't compress
@@ -1083,6 +1121,7 @@ def test_min_chars_gates_short_blocks(monkeypatch: pytest.MonkeyPatch) -> None:
         "",
         [],
         set(),
+        set(),
         min_chars=500,
     )
     assert result["content"][0]["text"] == short_text
@@ -1097,6 +1136,7 @@ def test_pinning_skips_already_compressed(monkeypatch: pytest.MonkeyPatch) -> No
         msg["content"],
         "",
         [],
+        set(),
         set(),
     )
     # Already-compressed marker keeps proxy idempotent across turns
@@ -1745,3 +1785,23 @@ def test_detect_content_overrides_html_misroute_for_grep_and_logs(
         "</section></main></body></html>"
     )
     assert _detect_content(html).content_type is ContentType.HTML
+
+
+def test_datetime_prefixed_user_prompt_survives_router() -> None:
+    """Regression (2026-08-23): interactive wrap-copilot prompts were deleted.
+
+    Copilot CLI prepends ``<current_datetime>…</current_datetime>`` to every
+    interactive user turn; the ISO timestamp matched the grep ``file:line:``
+    detector, the one-line prompt classified as SEARCH_RESULTS, and
+    SearchCompressor kept only the datetime line — the model received no
+    request and answered "How can I help you today?". The router must never
+    route this shape to the search line-filter and must keep the prose.
+    """
+    prompt = (
+        "<current_datetime>2026-08-23T09:57:59.792+02:00</current_datetime>\n"
+        "\n"
+        "Please update the PR desc and check .overlay/ for hints."
+    )
+    result = ContentRouter().compress(prompt)
+    assert result.strategy_used is not CompressionStrategy.SEARCH
+    assert "Please update the PR desc" in result.compressed

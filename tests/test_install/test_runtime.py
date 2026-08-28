@@ -281,6 +281,9 @@ def test_build_runtime_command_python_and_docker_user(monkeypatch, tmp_path: Pat
     monkeypatch.setattr("headroom.install.runtime.sys.platform", "linux")
     monkeypatch.setattr("headroom.install.runtime.os.getuid", lambda: 1000, raising=False)
     monkeypatch.setattr("headroom.install.runtime.os.getgid", lambda: 1001, raising=False)
+    # Force the Docker path deterministically regardless of the test host's
+    # `docker` binary (it might resolve to a podman shim).
+    monkeypatch.setenv("HEADROOM_CONTAINER_RUNTIME", "docker")
     docker_manifest = DeploymentManifest(
         profile="default",
         preset="persistent-docker",
@@ -299,6 +302,37 @@ def test_build_runtime_command_python_and_docker_user(monkeypatch, tmp_path: Pat
     command = build_runtime_command(docker_manifest)
     assert "--user" in command
     assert "1000:1001" in command
+    assert "--userns=keep-id" not in command
+
+
+def test_build_runtime_command_podman_uses_keep_id_not_user(monkeypatch, tmp_path: Path) -> None:
+    """Under rootless Podman, --user <host-uid>:<host-gid> selects a subordinate
+    UID that owns none of the bind mounts, so writes into ~/.headroom fail. The
+    command must use --userns=keep-id and drop --user instead (#2804)."""
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setattr("headroom.install.runtime.sys.platform", "linux")
+    monkeypatch.setattr("headroom.install.runtime.os.getuid", lambda: 1000, raising=False)
+    monkeypatch.setattr("headroom.install.runtime.os.getgid", lambda: 1001, raising=False)
+    monkeypatch.setenv("HEADROOM_CONTAINER_RUNTIME", "podman")
+    manifest = DeploymentManifest(
+        profile="default",
+        preset="persistent-docker",
+        runtime_kind="docker",
+        supervisor_kind="none",
+        scope="user",
+        provider_mode="manual",
+        targets=[],
+        port=8787,
+        host="127.0.0.1",
+        backend="anthropic",
+        image="ghcr.io/headroomlabs-ai/headroom:latest",
+        base_env={"HEADROOM_PORT": "8787"},
+        proxy_args=["--host", "127.0.0.1", "--port", "8787"],
+    )
+    command = build_runtime_command(manifest)
+    assert "--userns=keep-id" in command
+    assert "--user" not in command
+    assert "1000:1001" not in command
 
 
 def test_read_pid_handles_invalid_content(monkeypatch, tmp_path: Path) -> None:
@@ -417,15 +451,22 @@ def test_run_foreground_and_detached_helpers(monkeypatch, tmp_path: Path) -> Non
 
     monkeypatch.setattr("headroom.install.runtime.resolve_headroom_command", lambda: ["headroom"])
     monkeypatch.setattr("headroom.install.runtime.sys.platform", "win32")
-    monkeypatch.setattr("headroom.install.runtime.subprocess.DETACHED_PROCESS", 1, raising=False)
+    monkeypatch.setattr("headroom.install.runtime.subprocess.CREATE_NO_WINDOW", 4, raising=False)
     monkeypatch.setattr(
         "headroom.install.runtime.subprocess.CREATE_NEW_PROCESS_GROUP", 2, raising=False
     )
+    nt_calls: list[tuple[list[str], dict]] = []
     fake_proc_nt = FakeProc()
-    monkeypatch.setattr(
-        "headroom.install.runtime.subprocess.Popen", lambda command, **kwargs: fake_proc_nt
-    )
+
+    def fake_popen_nt(command: list[str], **kwargs):
+        nt_calls.append((command, kwargs))
+        return fake_proc_nt
+
+    monkeypatch.setattr("headroom.install.runtime.subprocess.Popen", fake_popen_nt)
     assert start_detached_agent("demo") is fake_proc_nt
+    # DETACHED_PROCESS is not used: it makes CREATE_NO_WINDOW a no-op on
+    # Windows, so a detached console child would pop up a visible window.
+    assert nt_calls[0][1]["creationflags"] == 4 | 2
 
     monkeypatch.setattr("headroom.install.runtime.sys.platform", "linux")
     fake_proc_posix = FakeProc()

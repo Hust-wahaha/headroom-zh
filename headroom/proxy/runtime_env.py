@@ -2,7 +2,7 @@
 
 Most Headroom settings are read once at proxy startup into ``Config`` and are
 visible in ``/health``. A second, smaller class of environment variables is
-read *live* — on every request (the output-shaper family) or captured at module
+read *live* — on every request (output-shaper tuning) or captured at module
 import (the ast-grep read-rewrite threshold). The proxy reads these from its own
 process environment, so a *reused* proxy — one ``headroom wrap`` attaches to
 rather than starting fresh — never sees values a user exports afterwards. The
@@ -17,6 +17,10 @@ the proxy applies them in memory with no restart. Readers call :func:`getenv`
 instead of ``os.environ.get`` so an override wins over the launch-time
 environment; with no override set, behaviour is byte-for-byte identical to
 reading the environment directly.
+
+The output-shaper master switch is rollout-managed. Hot-reloading that legacy
+alias also replaces the proxy's immutable rollout snapshot; the active channel
+and named kill switch still bound the resulting decision.
 
 Scope rule: a variable belongs here only if the proxy reads it *after* startup
 (or captures it at import) AND it is not already reflected in the ``/health``

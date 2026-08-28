@@ -12,12 +12,13 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any
 
-from headroom.proxy.auth_mode import classify_client
+from headroom.proxy.auth_mode import classify_client, supports_mid_turn_coalescing
 from headroom.proxy.helpers import (
     RETRYABLE_OVERLOAD_STATUSES,
     jitter_delay_ms,
     retry_after_ms,
 )
+from headroom.proxy.token_counting import gemini_output_tokens
 
 if TYPE_CHECKING:
     from fastapi.responses import Response, StreamingResponse
@@ -26,6 +27,7 @@ if TYPE_CHECKING:
 import httpx
 
 from headroom.copilot_auth import apply_copilot_api_auth
+from headroom.proxy.stream_output_tokens import estimate_output_tokens
 
 logger = logging.getLogger("headroom.proxy")
 
@@ -224,7 +226,7 @@ class StreamingMixin:
                     usage_meta = data.get("usageMetadata")
                     if usage_meta:
                         usage["input_tokens"] = usage_meta.get("promptTokenCount", 0)
-                        usage["output_tokens"] = usage_meta.get("candidatesTokenCount", 0)
+                        usage["output_tokens"] = gemini_output_tokens(usage_meta)
                         # Gemini also has cachedContentTokenCount for context caching
                         usage["cache_read_input_tokens"] = usage_meta.get(
                             "cachedContentTokenCount", 0
@@ -342,14 +344,20 @@ class StreamingMixin:
                 usage_meta = data.get("usageMetadata")
                 if usage_meta:
                     usage_found["input_tokens"] = usage_meta.get("promptTokenCount", 0)
-                    usage_found["output_tokens"] = usage_meta.get("candidatesTokenCount", 0)
+                    usage_found["output_tokens"] = gemini_output_tokens(usage_meta)
                     usage_found["cache_read_input_tokens"] = usage_meta.get(
                         "cachedContentTokenCount", 0
                     )
 
         return usage_found if usage_found else None
 
-    def _parse_sse_to_response(self, sse_data: str, provider: str) -> dict[str, Any] | None:
+    def _parse_sse_to_response(
+        self,
+        sse_data: str,
+        provider: str,
+        *,
+        require_complete: bool = False,
+    ) -> dict[str, Any] | None:
         """Parse SSE data to reconstruct the API response JSON.
 
         Args:
@@ -357,6 +365,10 @@ class StreamingMixin:
                 from a complete-events bytes buffer (see
                 ``parse_sse_events_from_byte_buffer``).
             provider: Provider type for parsing.
+            require_complete: Reject anything short of a whole, replayable
+                message — see the strictness note below. Off by default so
+                streaming callers keep the lenient reconstruction they were
+                written against.
 
         Returns:
             Reconstructed response dict or None if parsing fails.
@@ -365,11 +377,32 @@ class StreamingMixin:
         ``text_delta``, ``input_json_delta``, ``thinking_delta``,
         ``signature_delta``, ``citations_delta``. Also preserves
         ``redacted_thinking.data`` and accumulates citations as a list.
+
+        Permissive mode answers with whatever blocks it managed to
+        accumulate. That is right for a streaming caller salvaging a
+        partial stream, and wrong for #3130, where the reconstruction is
+        handed to the client *as* the turn: a truncated stream would become
+        a successful — and silently short — message, and an ``error`` event
+        would vanish behind an HTTP 200. ``require_complete`` demands
+        ``message_start``, a terminal ``message_stop``, every opened block
+        closed, no ``error`` event, and no delta type this reconstructor
+        cannot replay; anything else returns None so the caller can fail
+        loudly instead.
         """
         if provider != "anthropic":
             return None  # Only implemented for Anthropic
 
+        # Event framing is CRLF in some intermediaries (and mixed after a
+        # retry through one). Normalize before the line split so a
+        # correctly framed stream is never read as zero events.
+        sse_data = sse_data.replace("\r\n", "\n").replace("\r", "\n")
+
         response: dict[str, Any] = {"content": [], "usage": {}}
+        saw_message_start = False
+        saw_message_stop = False
+        saw_error = False
+        saw_unreplayable_delta = False
+        open_block_indices: set[int] = set()
         # Track blocks by their `index` field so out-of-order events
         # don't corrupt the reconstruction. The current block pointer
         # remains for backward-compat with code that walks this dict
@@ -391,9 +424,9 @@ class StreamingMixin:
         appended_block_keys: set[int] = set()
 
         for line in sse_data.split("\n"):
-            if not line.startswith("data: "):
+            if not line.startswith("data:"):
                 continue
-            data_str = line[6:].strip()
+            data_str = line[5:].strip()
             if not data_str or data_str == "[DONE]":
                 continue
 
@@ -405,8 +438,12 @@ class StreamingMixin:
             event_type = data.get("type", "")
 
             if event_type == "message_start":
+                saw_message_start = True
                 msg = data.get("message", {})
                 response["id"] = msg.get("id")
+                response["type"] = msg.get("type", "message")
+                if "stop_sequence" in msg:
+                    response["stop_sequence"] = msg["stop_sequence"]
                 response["model"] = msg.get("model")
                 response["role"] = msg.get("role", "assistant")
                 response["stop_reason"] = msg.get("stop_reason")
@@ -453,6 +490,7 @@ class StreamingMixin:
                         if _k != "type":
                             current_block[_k] = _v
                 blocks_by_index[block_index] = current_block
+                open_block_indices.add(block_index)
 
             elif event_type == "content_block_delta":
                 # Resolve the target block by index (preferred) or fall
@@ -489,6 +527,10 @@ class StreamingMixin:
                         citation = delta.get("citation")
                         if citation is not None:
                             citations.append(citation)
+                    else:
+                        # A delta this reconstructor has no rule for: the
+                        # accumulated block is missing whatever it carried.
+                        saw_unreplayable_delta = True
 
             elif event_type == "content_block_stop":
                 idx = data.get("index")
@@ -522,6 +564,8 @@ class StreamingMixin:
                     if block_key not in appended_block_keys:
                         response["content"].append(target)
                         appended_block_keys.add(block_key)
+                    if idx is not None:
+                        open_block_indices.discard(idx)
                     current_block = None
 
             elif event_type == "message_delta":
@@ -530,8 +574,37 @@ class StreamingMixin:
                     response["stop_reason"] = delta["stop_reason"]
                 if "stop_details" in delta:
                     response["stop_details"] = delta["stop_details"]
+                if "stop_sequence" in delta:
+                    response["stop_sequence"] = delta["stop_sequence"]
                 if data.get("usage"):
                     response["usage"].update(data["usage"])
+
+            elif event_type == "message_stop":
+                saw_message_stop = True
+
+            elif event_type == "error":
+                # An in-band failure. Permissive callers keep salvaging
+                # what arrived before it; a strict caller must not dress
+                # the remains up as a successful turn.
+                saw_error = True
+
+        if require_complete:
+            if (
+                not saw_message_start
+                or not saw_message_stop
+                or saw_error
+                or saw_unreplayable_delta
+                or open_block_indices
+            ):
+                return None
+            # ``index`` is a response-delta field. Anthropic rejects it on
+            # the next request ("content.0.text.index: Extra inputs are not
+            # permitted"), so it must not survive into a body the client
+            # will persist and echo back.
+            for block in response["content"]:
+                if isinstance(block, dict):
+                    block.pop("index", None)
+            return response
 
         return response if response.get("content") else None
 
@@ -565,8 +638,17 @@ class StreamingMixin:
         }
         events.append(f"event: message_start\ndata: {json.dumps(msg_start)}\n\n".encode())
 
-        # Content blocks
-        for idx, block in enumerate(response.get("content", [])):
+        # Content blocks. `content` is provider/reconstruction-controlled, so a
+        # present-but-null value or a non-list would crash `enumerate`, and a
+        # non-dict element would crash `block.get(...)`. Guard both, matching the
+        # sibling `_record_ccr_feedback_from_response` below. This is reached from
+        # a call site (anthropic.py buffered CCR path) that only catches
+        # ValueError, so an unguarded TypeError/AttributeError would 500 the
+        # streamed request.
+        content = response.get("content")
+        for idx, block in enumerate(content if isinstance(content, list) else []):
+            if not isinstance(block, dict):
+                continue
             # content_block_start
             if block.get("type") == "text":
                 block_start = {
@@ -680,10 +762,13 @@ class StreamingMixin:
             msg_delta_payload["stop_reason"] = response["stop_reason"]
         if "stop_details" in response:
             msg_delta_payload["stop_details"] = response["stop_details"]
+        usage = response.get("usage")
+        if not isinstance(usage, dict):
+            usage = {}
         msg_delta = {
             "type": "message_delta",
             "delta": msg_delta_payload,
-            "usage": {"output_tokens": response.get("usage", {}).get("output_tokens", 0)},
+            "usage": {"output_tokens": usage.get("output_tokens", 0)},
         }
         events.append(f"event: message_delta\ndata: {json.dumps(msg_delta)}\n\n".encode())
 
@@ -868,11 +953,27 @@ class StreamingMixin:
         output_tokens = stream_state["output_tokens"]
         output_tokens_source = "provider"
         if output_tokens is None:
-            output_tokens = stream_state["total_bytes"] // 40
-            output_tokens_source = "estimated_bytes"
+            # No usage chunk from the upstream. Count the stream's OWN TEXT
+            # rather than dividing the raw wire by a constant: `total_bytes`
+            # includes every `data:` prefix, JSON envelope and framing newline,
+            # so its error tracked how chattily the answer was chunked instead
+            # of how long the answer was. Falls back to the byte heuristic only
+            # when no text could be recovered at all.
+            output_tokens, output_tokens_source = estimate_output_tokens(
+                sse_text=full_sse_data,
+                total_bytes=stream_state["total_bytes"],
+            )
+            # Name the actual basis. The old message always said "from N bytes"
+            # even though that is now only true for the fallback rung, and an
+            # operator reading it needs to know which estimate they are looking
+            # at before trusting the number.
+            basis = (
+                "counted from stream text"
+                if output_tokens_source == "estimated_text"
+                else f"estimated from {stream_state['total_bytes']} raw SSE bytes"
+            )
             logger.warning(
-                f"[{request_id}] Could not parse output_tokens from SSE, "
-                f"estimating {output_tokens} from {stream_state['total_bytes']} bytes"
+                f"[{request_id}] No usage chunk in SSE; output_tokens={output_tokens} ({basis})"
             )
 
         outcome_tags = dict(tags or {})
@@ -1020,7 +1121,6 @@ class StreamingMixin:
         4. Streams the final response to the client
         """
         session_key = session_key or self._get_session_key(body)
-        self._active_streams.add(session_key)
 
         # Guard everything up to the generator's own try/finally (which owns
         # cleanup once streaming starts): any exception here — including
@@ -1085,6 +1185,7 @@ class StreamingMixin:
     ) -> Response | StreamingResponse:
         """Actual streaming implementation, guarded by _stream_response's cleanup wrapper."""
         from fastapi.responses import Response, StreamingResponse
+        from starlette.background import BackgroundTask
 
         from headroom.proxy.helpers import MAX_SSE_BUFFER_SIZE
 
@@ -1092,6 +1193,15 @@ class StreamingMixin:
         # ...) from the *client's* User-Agent before copilot-auth
         # potentially rewrites headers for upstream.
         client = classify_client(headers)
+        # Mid-turn message coalescing (queueing a concurrent same-session
+        # request and later replaying it via a `headroom_pending_messages`
+        # SSE event) is a Claude Code-only protocol. Only register the stream
+        # as active for coalescing when the client can consume that protocol,
+        # so concurrent requests from other harnesses (e.g. OpenCode subagents
+        # that share a body-derived session key) are streamed normally instead
+        # of being swallowed. (#1608)
+        if supports_mid_turn_coalescing(client):
+            self._active_streams.add(session_key)
         headers = await apply_copilot_api_auth(headers, url=url)
         start_time = time.time()
 
@@ -1099,18 +1209,20 @@ class StreamingMixin:
         # bytes once before entering the connection-retry loop. When a
         # transform mutated the body we re-serialize canonically; otherwise
         # we forward the original client bytes verbatim.
-        from headroom.proxy.body_forwarding import prepare_outbound_body_bytes
+        from headroom.proxy.body_forwarding import select_outbound_body
         from headroom.proxy.helpers import (
             capture_codex_wire_debug,
             codex_wire_debug_enabled,
             log_outbound_request,
         )
 
-        outbound_bytes, outbound_source = prepare_outbound_body_bytes(
+        outbound = select_outbound_body(
             body=body,
             original_body_bytes=original_body_bytes,
             body_mutated=body_mutated,
+            mutation_reasons=list(mutation_reasons or []),
         )
+        outbound_bytes, outbound_source = outbound.content, outbound.source
         outbound_headers = {**headers, "content-type": "application/json"}
         log_outbound_request(
             forwarder="streaming",
@@ -1121,6 +1233,7 @@ class StreamingMixin:
             mutation_reasons=list(mutation_reasons or []),
             request_id=request_id,
             source=outbound_source,
+            dropped_mutation_reasons=outbound.dropped_mutation_reasons,
         )
         _codex_wire_debug = (
             codex_wire_debug_enabled() and provider == "openai" and "/responses" in url
@@ -1244,11 +1357,22 @@ class StreamingMixin:
             if upstream_response is None:
                 raise last_connect_error or RuntimeError("upstream connection did not start")
         # Retries exhausted (or a transport failure escaped the loop): emit a
-        # clean SSE error instead of letting an h2 StreamReset bubble up as a
-        # 502. Covers ConnectError/timeouts and Local/RemoteProtocolError. (#1639)
+        # clean SSE error instead of letting an h2 StreamReset bubble up as an
+        # unhandled 502. Covers ConnectError/timeouts and Local/RemoteProtocol-
+        # Error. (#1639)
+        #
+        # The status MUST stay non-2xx. No body byte has been forwarded yet, so
+        # the status line is still ours to set, and a 200 here is
+        # indistinguishable — to every Anthropic/OpenAI SDK — from a successful
+        # stream that produced no events: the client reports "empty or malformed
+        # response (HTTP 200)" and cannot retry, because 200 is not retryable.
+        # 502 keeps the structured SSE body for clients that read it while
+        # letting SDK retry logic treat a transient upstream transport failure
+        # as what it is.
         except httpx.TransportError as e:
             error_msg = str(e) or repr(e)
             logger.error(f"[{request_id}] Connection error to upstream API: {error_msg}")
+            self.metrics.record_upstream_connection_error(provider)
 
             async def _error_gen():
                 error_event = {
@@ -1261,7 +1385,11 @@ class StreamingMixin:
                 yield f"event: error\ndata: {json.dumps(error_event)}\n\n".encode()
 
             self._cleanup_mid_turn_stream(session_key)
-            return StreamingResponse(_error_gen(), media_type="text/event-stream")
+            return StreamingResponse(
+                _error_gen(),
+                status_code=502,
+                media_type="text/event-stream",
+            )
 
         # Capture Codex rate-limit window data from the upstream response
         # headers, for *every* status. Codex (gpt-5.x) almost always streams, so
@@ -1637,16 +1765,35 @@ class StreamingMixin:
                     client=client,
                     waste_signals=waste_signals,
                 )
-                if pending_messages:
+                if supports_mid_turn_coalescing(client) and pending_messages:
                     pending_event = json.dumps(
                         {"type": "headroom_pending_messages", "messages": pending_messages}
                     )
                     yield f"event: headroom_pending_messages\ndata: {pending_event}\n\n".encode()
 
+        async def _release_upstream_stream() -> None:
+            # Guarantee the upstream HTTP/2 stream is released even when the
+            # body generator above is never iterated — the client disconnected
+            # before Starlette started sending the response body (routine when a
+            # harness like Claude Code cancels or supersedes an in-flight turn),
+            # so ``generate()`` never entered its own ``aclosing`` and nothing
+            # else closes ``upstream_response``. Each such request otherwise
+            # leaks one open h2 stream; they accumulate on the pooled upstream
+            # connection until it reaches SETTINGS_MAX_CONCURRENT_STREAMS (100)
+            # and no new stream can open ("Max outbound streams is 100, 100
+            # open"), and the proxy goes unhealthy until restart (#2797).
+            # Starlette runs a response's ``background`` task after the body
+            # finishes *and* after an early client disconnect, so this fires in
+            # both cases. ``aclose()`` is idempotent, so on the normal path —
+            # where the generator already closed the stream — this is a no-op.
+            with contextlib.suppress(Exception):
+                await upstream_response.aclose()
+
         return StreamingResponse(
             generate(),
             media_type="text/event-stream",
             headers=forwarded_headers,
+            background=BackgroundTask(_release_upstream_stream),
         )
 
     async def _stream_response_bedrock(
@@ -1666,6 +1813,7 @@ class StreamingMixin:
         original_messages: list[dict] | None = None,
         prefix_tracker: Any | None = None,
         optimized_messages: list[dict] | None = None,
+        backend: Any | None = None,
     ) -> StreamingResponse:
         """Stream response from Bedrock backend with metrics tracking.
 
@@ -1683,6 +1831,11 @@ class StreamingMixin:
         from fastapi.responses import StreamingResponse
 
         from headroom.proxy.outcome import RequestOutcome
+
+        # ``backend`` lets the caller serve this one request from somewhere
+        # other than the configured backend (see proxy/route_advice.py). None
+        # means "the configured one", i.e. what this method always did.
+        backend = backend if backend is not None else self.anthropic_backend
 
         client = classify_client(headers)
 
@@ -1708,9 +1861,17 @@ class StreamingMixin:
 
         async def generate():
             try:
-                assert self.anthropic_backend is not None
+                assert backend is not None
 
-                async for event in self.anthropic_backend.stream_message(body, headers):
+                # Emit a synthetic ping before the first message_start so that
+                # downstream clients (e.g. Claude Code) arm their mid-turn
+                # steering / interruptible state.  The Bedrock-to-Anthropic
+                # translation layer never produces SSE-level keepalives; we
+                # synthesise one here to match the real Anthropic wire format
+                # (issue #902).
+                yield b"event: ping\ndata: {}\n\n"
+
+                async for event in backend.stream_message(body, headers):
                     # Record TTFB on first event
                     if stream_state["ttfb_ms"] is None:
                         stream_state["ttfb_ms"] = (time.time() - start_time) * 1000
@@ -1786,9 +1947,7 @@ class StreamingMixin:
 
             finally:
                 total_latency = (time.time() - start_time) * 1000
-                _backend_name = (
-                    self.anthropic_backend.name if self.anthropic_backend else "anthropic"
-                )
+                _backend_name = backend.name if backend else "anthropic"
 
                 # Update prefix cache tracker for the next turn — mirrors
                 # _finalize_stream_response (direct-API streaming path)
@@ -1887,6 +2046,7 @@ class StreamingMixin:
         waste_signals: dict[str, int] | None = None,
         prefix_tracker: Any | None = None,
         optimized_messages: list[dict] | None = None,
+        backend: Any | None = None,
     ) -> StreamingResponse:
         """Stream OpenAI chat completion response from backend.
 
@@ -1921,7 +2081,11 @@ class StreamingMixin:
         from headroom.proxy.handlers.openai import _infer_openai_cache_write_tokens
         from headroom.proxy.outcome import RequestOutcome
 
-        assert self.anthropic_backend is not None
+        # ``backend`` lets the caller serve this one request from somewhere
+        # other than the configured backend (see proxy/route_advice.py). None
+        # means "the configured one", i.e. what this method always did.
+        backend = backend if backend is not None else self.anthropic_backend
+        assert backend is not None
         client = classify_client(headers)
 
         async def generate():
@@ -1951,7 +2115,7 @@ class StreamingMixin:
                         stream_state[key] = usage[key]
 
             try:
-                async for sse_chunk in self.anthropic_backend.stream_openai_message(body, headers):
+                async for sse_chunk in backend.stream_openai_message(body, headers):
                     chunk_bytes = sse_chunk.encode() if isinstance(sse_chunk, str) else sse_chunk
                     stream_state["sse_buffer"].extend(chunk_bytes)
                     full_sse_bytes.extend(chunk_bytes)
@@ -2053,7 +2217,7 @@ class StreamingMixin:
                 # instead of collapsing the dashboard headline to 0%.
                 outcome = RequestOutcome.from_stream(
                     body=body,
-                    provider=self.anthropic_backend.name,
+                    provider=backend.name,
                     model=model,
                     request_id=request_id,
                     original_tokens=original_tokens,
@@ -2078,7 +2242,7 @@ class StreamingMixin:
                 if tokens_saved > 0:
                     logger.info(
                         f"[{request_id}] {model}: {original_tokens:,} → {optimized_tokens:,} "
-                        f"(saved {tokens_saved:,} tokens) via {self.anthropic_backend.name} [stream]"
+                        f"(saved {tokens_saved:,} tokens) via {backend.name} [stream]"
                     )
 
         return StreamingResponse(

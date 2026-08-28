@@ -226,8 +226,8 @@ analysis = {
     "data": [
         {"ts": 45, "cpu": 92},  # Keep the spike!
         {"ts": 46, "cpu": 95},
-        ...
-    ]
+        ...,
+    ],
 }
 ```
 
@@ -397,11 +397,9 @@ def analyze_field(key, items):
         "unique_ratio": len(set(values)) / len(values),
         # 0.0 = all same (constant)
         # 1.0 = all different (unique IDs)
-
         "variance": statistics.variance(values),  # For numbers
         # Low = stable
         # High = changing
-
         "change_points": detect_spikes(values),
         # Indices where value jumps significantly
     }
@@ -502,14 +500,14 @@ When SmartCrusher compresses, the original content is stored for on-demand retri
 ```python
 @dataclass
 class CompressionEntry:
-    hash: str                    # 16-char SHA256 for retrieval
-    original_content: str        # Full JSON before compression
-    compressed_content: str      # Compressed JSON
+    hash: str  # 16-char SHA256 for retrieval
+    original_content: str  # Full JSON before compression
+    compressed_content: str  # Compressed JSON
     original_item_count: int
     compressed_item_count: int
-    tool_name: str | None        # For feedback tracking
+    tool_name: str | None  # For feedback tracking
     created_at: float
-    ttl: int = 300               # 5 minute default
+    ttl: int = 300  # 5 minute default
 ```
 
 **Features:**
@@ -625,12 +623,12 @@ The feedback system learns from retrieval patterns to improve future compression
 @dataclass
 class ToolPattern:
     tool_name: str
-    total_compressions: int      # Times we compressed this tool
-    total_retrievals: int        # Times LLM asked for more
-    full_retrievals: int         # Retrieved everything (all retrievals — hash-only)
-    search_retrievals: int       # Legacy; always 0 (retrieval is hash-only, no search)
-    common_queries: dict[str, int]   # Legacy query-pattern frequency (no longer populated)
-    queried_fields: dict[str, int]   # Legacy queried-field frequency (no longer populated)
+    total_compressions: int  # Times we compressed this tool
+    total_retrievals: int  # Times LLM asked for more
+    full_retrievals: int  # Retrieved everything (all retrievals — hash-only)
+    search_retrievals: int  # Legacy; always 0 (retrieval is hash-only, no search)
+    common_queries: dict[str, int]  # Legacy query-pattern frequency (no longer populated)
+    queried_fields: dict[str, int]  # Legacy queried-field frequency (no longer populated)
 ```
 
 **Key Metrics:**
@@ -644,12 +642,12 @@ class ToolPattern:
 ```python
 @dataclass
 class CompressionHints:
-    max_items: int = 15          # Target item count
+    max_items: int = 15  # Target item count
     suggested_items: int | None  # Calculated optimal
-    skip_compression: bool       # Don't compress at all
-    preserve_fields: list[str]   # Always keep these fields
-    aggressiveness: float        # 0.0 = aggressive, 1.0 = conservative
-    reason: str                  # Explanation
+    skip_compression: bool  # Don't compress at all
+    preserve_fields: list[str]  # Always keep these fields
+    aggressiveness: float  # 0.0 = aggressive, 1.0 = conservative
+    reason: str  # Explanation
 ```
 
 **Feedback-Driven Adjustment:**
@@ -733,24 +731,26 @@ if self.config.use_feedback_hints and tool_name:
 ```python
 @dataclass
 class CCRToolCall:
-    tool_call_id: str      # For matching response
-    hash_key: str          # CCR hash to retrieve
+    tool_call_id: str  # For matching response
+    hash_key: str  # CCR hash to retrieve
+
 
 @dataclass
 class CCRToolResult:
     tool_call_id: str
-    content: str           # Retrieved data as JSON
+    content: str  # Retrieved data as JSON
     success: bool
     items_retrieved: int
+
 
 class CCRResponseHandler:
     async def handle_response(
         self,
-        response: dict,           # Initial LLM response
-        messages: list,           # Conversation history
-        tools: list,              # Tool definitions
-        api_call_fn: Callable,    # Function to make API calls
-        provider: str,            # "anthropic" or "openai"
+        response: dict,  # Initial LLM response
+        messages: list,  # Conversation history
+        tools: list,  # Tool definitions
+        api_call_fn: Callable,  # Function to make API calls
+        provider: str,  # "anthropic" or "openai"
     ) -> dict:
         """Handle CCR tool calls until final response."""
 ```
@@ -762,11 +762,14 @@ The handler also supports streaming responses via `StreamingCCRHandler`:
 ```python
 class StreamingCCRBuffer:
     """Buffers streaming chunks to detect CCR tool calls."""
+
     chunks: list[bytes]
     detected_ccr: bool
 
+
 class StreamingCCRHandler:
     """Handles CCR in streaming responses."""
+
     async def process_stream(self, stream, messages, tools, api_call_fn):
         """Yields chunks, switching to buffered mode if CCR detected."""
 ```
@@ -848,11 +851,11 @@ The tracker uses simple but effective heuristics:
 @dataclass
 class ContextTrackerConfig:
     enabled: bool = True
-    max_tracked_contexts: int = 100      # LRU eviction
-    relevance_threshold: float = 0.3     # Min score to recommend
-    max_context_age_seconds: float = 300 # 5 minutes
+    max_tracked_contexts: int = 100  # LRU eviction
+    relevance_threshold: float = 0.3  # Min score to recommend
+    max_context_age_seconds: float = 300  # 5 minutes
     proactive_expansion: bool = True
-    max_proactive_expansions: int = 2    # Per query
+    max_proactive_expansions: int = 2  # Per query
 ```
 
 ---

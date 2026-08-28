@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 from types import SimpleNamespace
 
 import httpx
@@ -15,8 +16,15 @@ from headroom.proxy.server import ProxyConfig, create_app
 
 
 class _FakePrefixTracker:
-    def __init__(self, frozen_count: int):
+    def __init__(
+        self,
+        frozen_count: int,
+        previous_original: list[dict] | None = None,
+        previous_forwarded: list[dict] | None = None,
+    ):
         self._frozen_count = frozen_count
+        self._previous_original = previous_original or []
+        self._previous_forwarded = previous_forwarded or []
 
     def get_frozen_message_count(self) -> int:
         return self._frozen_count
@@ -26,10 +34,10 @@ class _FakePrefixTracker:
     # overlay itself is exercised in test_cross_turn_cache_safety.py against the
     # real tracker; these stubs just satisfy the handler's overlay call.
     def get_last_original_messages(self):  # noqa: ANN201
-        return []
+        return copy.deepcopy(self._previous_original)
 
     def get_last_forwarded_messages(self):  # noqa: ANN201
-        return []
+        return copy.deepcopy(self._previous_forwarded)
 
     def update_from_response(self, **kwargs):  # noqa: ANN003
         return None
@@ -110,6 +118,55 @@ def test_openai_cache_mode_freezes_previous_turns() -> None:
 
         assert response.status_code == 200
         assert captured["frozen_message_count"] == 2
+
+
+def test_openai_handler_replays_nonempty_cached_prefix() -> None:
+    captured = {}
+    previous_original = [{"role": "user", "content": "original prefix"}]
+    previous_forwarded = [{"role": "user", "content": "comp"}]
+    fake_tracker = _FakePrefixTracker(0, previous_original, previous_forwarded)
+    with _make_proxy_client() as client:
+        proxy = client.app.state.proxy
+        proxy.session_tracker_store.compute_session_id = lambda request, model, messages: (
+            "stable-session"
+        )
+        proxy.session_tracker_store.resolve_tracker = lambda *args, **kwargs: fake_tracker
+
+        async def _fake_retry(method, url, headers, body, stream=False, **kwargs):  # noqa: ANN001
+            captured["body"] = body
+            return httpx.Response(
+                200,
+                json={
+                    "id": "chatcmpl_overlay",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "message": {"role": "assistant", "content": "ok"},
+                            "finish_reason": "stop",
+                        }
+                    ],
+                    "usage": {"prompt_tokens": 20, "completion_tokens": 3, "total_tokens": 23},
+                },
+            )
+
+        proxy._retry_request = _fake_retry
+        response = client.post(
+            "/v1/chat/completions",
+            headers={"authorization": "Bearer test-key"},
+            json={
+                "model": "gpt-4o-mini",
+                "messages": [
+                    {"role": "user", "content": "original prefix"},
+                    {"role": "user", "content": "new suffix"},
+                ],
+            },
+        )
+
+    assert response.status_code == 200
+    assert captured["body"]["messages"] == [
+        previous_forwarded[0],
+        {"role": "user", "content": "new suffix"},
+    ]
 
 
 @pytest.mark.parametrize("tail_role", ["tool", "function"])

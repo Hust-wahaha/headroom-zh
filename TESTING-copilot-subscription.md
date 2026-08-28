@@ -1,12 +1,11 @@
 # Testing: GitHub Copilot subscription mode (`headroom wrap copilot --subscription`)
 
-This is an **experimental** feature and we need help verifying it on **Linux and
-Windows**. It already works on macOS; the cross-platform gap is small and
-specific (see [Status](#status)). If you have a GitHub Copilot subscription and
-10 minutes, please run one of the flows below and
+This feature has live coverage on macOS and Windows. Additional Linux secret-store
+coverage is still useful (see [Status](#status)). If you have a GitHub Copilot
+subscription and 10 minutes, please run one of the flows below and
 [file a report](https://github.com/chopratejas/headroom/issues/new?template=copilot-subscription-test-report.md).
 
-> ⚠️ This is experimental, and it reads your Copilot login token + routes your
+> ⚠️ This reads your Copilot login token and routes your
 > Copilot CLI traffic through a local Headroom proxy. Only run it if you're
 > comfortable with that. The branch is open for inspection.
 
@@ -61,7 +60,8 @@ real enterprise tenant.
 |----------|:---:|:---:|
 | macOS (Keychain) | ✅ verified | ✅ verified (`copilot-cli`) |
 | Linux (`secret-tool`/libsecret) | ✅ expected | ❓ **needs testing** |
-| Windows (Credential Manager) | ✅ expected | ❓ **needs testing** |
+| Windows (Headroom device auth) | ✅ verified | ✅ verified |
+| Windows (Copilot CLI credential reuse) | ✅ verified after auth | ❌ Copilot CLI 1.0.81 does not expose the legacy Credential Manager schema |
 | Any OS via `GITHUB_COPILOT_TOKEN` env var | ✅ verified by tests | n/a (bypasses discovery) |
 
 The two things we want to learn:
@@ -103,27 +103,49 @@ headroom wrap copilot --subscription -- --model gpt-4o -p "Reply with exactly: H
 
 ## Windows
 
-There is **no native Windows wheel yet**, so pick one:
+For a source checkout with Python and Rust installed, build the current tree with
+the proxy extra and authorize Headroom's dedicated OAuth app:
+
+```powershell
+uv sync --extra proxy --extra dev
+uv run --no-sync headroom copilot-auth login
+uv run --no-sync python e2e/copilot_live.py --vscode-extension `
+  --model gpt-5-mini --model gpt-5.5 `
+  --model gpt-5.6-luna --model gpt-5.6-sol --model gpt-5.6-terra
+```
+
+The live suite uses the official Copilot CLI, exercises subscription wrapping,
+sends requests through an isolated VS Code proxy configuration, and optionally
+drives the installed VS Code extension through `code chat`. It snapshots and
+restores real VS Code settings byte-for-byte, deliberately occupies the requested
+port to verify fallback-port propagation, and checks every selected model in both
+the Copilot response and Headroom's traffic accounting. The Docker-native wrap
+suite additionally captures an A-to-B-to-A model sequence at its mock upstream,
+proving the outbound request bodies change without stale model state. Neither
+suite reads or prints token values.
+
+Packaged-install alternatives:
 
 **A. Mechanism test (easiest — Docker Desktop or WSL2):**
 ```powershell
-$env:HEADROOM_DOCKER_IMAGE = "ghcr.io/chopratejas/headroom:<branch-tag>"   # ask the maintainer for the tag
+$env:HEADROOM_DOCKER_IMAGE = "ghcr.io/headroomlabs-ai/headroom:<branch-tag>"   # ask the maintainer for the tag
 # run the Docker-native installer (scripts/install.ps1), then:
 $env:GITHUB_COPILOT_TOKEN = "<your-token>"
 headroom wrap copilot --subscription -- --model gpt-4o -p "Reply with: HEADROOM_OK"
 ```
 Report whether it prints `HEADROOM_OK`.
 
-**B. Native auto-discovery schema (even without a working install):** after
-`copilot` login, tell us where Windows stored the token:
+**B. Native auto-discovery schema:** after `copilot` login, check whether the
+installed Copilot CLI exposes a reusable Windows credential target:
 ```cmd
 cmd /c "cmdkey /list"
 ```
-Report the `Target:` line that looks Copilot-related (it shows the target name,
-not the secret). That single fact lets us make native Windows discovery work.
+Report only a Copilot-related `Target:` line (it shows the target name, not the
+secret). Copilot CLI 1.0.81 did not expose such a target in live Windows testing,
+so use `headroom copilot-auth login` when native reuse is unavailable.
 
-> Native Windows auto-discovery becomes fully testable once we add a Windows
-> wheel to the build matrix — tracked separately.
+> A native Windows wheel is still tracked separately; source builds can run the
+> full Windows authentication and routing matrix today.
 
 ---
 

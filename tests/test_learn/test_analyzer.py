@@ -155,6 +155,54 @@ class TestDigestBuilder:
         digest = _build_digest(_project(), [])
         assert "0 sessions" in digest or "test-project" in digest
 
+    def test_long_error_output_preserves_tail_root_cause(self):
+        # A traceback's diagnosis lives at the tail; a head-only slice would drop it (#2590).
+        traceback = (
+            "Traceback (most recent call last):\n"
+            + "\n".join(
+                f'  File "mod{i}.py", line {i}, in fn{i}\n    call_{i}()' for i in range(40)
+            )
+            + "\nKeyError: 'the-actual-root-cause'"
+        )
+        sessions = [
+            SessionData(
+                session_id="s1",
+                tool_calls=[
+                    _tc(
+                        name="Bash",
+                        output=traceback,
+                        is_error=True,
+                        error_category=ErrorCategory.UNKNOWN,
+                        msg_index=0,
+                    )
+                ],
+            )
+        ]
+        digest = _build_digest(_project(), sessions)
+        assert "Traceback" in digest
+        assert "KeyError: 'the-actual-root-cause'" in digest
+        assert "…" in digest
+
+    def test_short_error_output_not_truncated(self):
+        short = "ModuleNotFoundError: No module named 'foo'"
+        sessions = [
+            SessionData(
+                session_id="s1",
+                tool_calls=[
+                    _tc(
+                        name="Bash",
+                        output=short,
+                        is_error=True,
+                        error_category=ErrorCategory.MODULE_NOT_FOUND,
+                        msg_index=0,
+                    )
+                ],
+            )
+        ]
+        digest = _build_digest(_project(), sessions)
+        assert short in digest
+        assert "…" not in digest
+
 
 # =============================================================================
 # Prior Patterns Injection Tests
@@ -425,6 +473,7 @@ class TestSessionAnalyzer:
         assert result.total_calls == 1
         assert result.total_failures == 1
         assert result.recommendations == []
+        assert result.analysis_error == "API key not set"
 
     @patch("headroom.learn.analyzer._call_llm")
     def test_passes_events_to_digest(self, mock_call_llm: MagicMock):
@@ -748,6 +797,51 @@ class TestCallCliLlm:
             with pytest.raises(RuntimeError, match="failed.*exit 1"):
                 _call_cli_llm("test digest", "claude-cli")
 
+    def test_claude_cli_nonzero_exit_includes_api_error_from_stdout(self):
+        # Regression: `claude -p --output-format stream-json` writes NOTHING to
+        # stderr on an API failure. It still emits a final `result` event whose
+        # `result` field carries the reason, so a stderr-only message rendered as
+        # a bare "failed (exit 1):" with no cause for the user or the logs.
+        api_error = "API Error: Connection refused — a firewall or proxy may be blocking it"
+        stdout = [
+            _stream_event("system", subtype="init"),
+            _stream_event(
+                "result",
+                subtype="success",
+                is_error=False,
+                terminal_reason="api_error",
+                result=api_error,
+            ),
+        ]
+        popen = _fake_claude_popen(stdout_lines=stdout, stderr_lines=[], returncode=1)
+        with patch("headroom.learn.analyzer.subprocess.Popen", popen):
+            with pytest.raises(RuntimeError) as exc_info:
+                _call_cli_llm("test digest", "claude-cli")
+        message = str(exc_info.value)
+        assert "failed (exit 1)" in message
+        assert api_error in message
+
+    def test_claude_cli_nonzero_exit_with_no_output_says_so(self):
+        popen = _fake_claude_popen(stdout_lines=[], stderr_lines=[], returncode=1)
+        with patch("headroom.learn.analyzer.subprocess.Popen", popen):
+            with pytest.raises(RuntimeError) as exc_info:
+                _call_cli_llm("test digest", "claude-cli")
+        # Never a dangling colon: the message states that nothing was captured.
+        assert "(no output captured)" in str(exc_info.value)
+
+    def test_claude_cli_nonzero_exit_keeps_stderr_when_present(self):
+        popen = _fake_claude_popen(
+            stdout_lines=[_result_event("partial")],
+            stderr_lines=["Error: auth required\n"],
+            returncode=1,
+        )
+        with patch("headroom.learn.analyzer.subprocess.Popen", popen):
+            with pytest.raises(RuntimeError) as exc_info:
+                _call_cli_llm("test digest", "claude-cli")
+        message = str(exc_info.value)
+        assert "auth required" in message
+        assert "partial" in message
+
     def test_claude_cli_unparseable_result_raises_with_context(self):
         stdout = [_result_event("This is not JSON at all")]
         with patch(
@@ -772,7 +866,7 @@ class TestCallCliLlm:
         result = _call_cli_llm("test digest", "codex-cli")
         assert result == {"context_file_rules": [], "memory_file_rules": []}
         cmd = mock_run.call_args[0][0]
-        assert cmd == ["codex", "exec"]
+        assert cmd == ["codex", "exec", "--skip-git-repo-check"]
 
     @patch("headroom.learn.analyzer.subprocess.run")
     def test_gemini_cli_uses_p_flag(self, mock_run: MagicMock):
@@ -794,6 +888,17 @@ class TestCallCliLlm:
         )
         with pytest.raises(RuntimeError, match="failed.*exit 1"):
             _call_cli_llm("test digest", "codex-cli")
+
+    @patch("headroom.learn.analyzer.subprocess.run")
+    def test_codex_nonzero_exit_includes_stdout_when_stderr_empty(self, mock_run: MagicMock):
+        mock_run.return_value = MagicMock(
+            returncode=1,
+            stdout="stream error: rate limit exceeded",
+            stderr="",
+        )
+        with pytest.raises(RuntimeError) as exc_info:
+            _call_cli_llm("test digest", "codex-cli")
+        assert "rate limit exceeded" in str(exc_info.value)
 
     @patch("headroom.learn.analyzer.subprocess.run")
     def test_codex_stderr_truncated_in_error(self, mock_run: MagicMock):

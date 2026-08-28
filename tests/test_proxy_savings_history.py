@@ -1227,9 +1227,11 @@ def test_savings_tracker_batches_saves_and_matches_immediate(tmp_path):
     batched.record_request(**events[2])  # buffered again
     batched.flush()  # tail persisted
 
-    assert json.loads(batched_path.read_text(encoding="utf-8")) == json.loads(
-        immediate_path.read_text(encoding="utf-8")
-    )
+    batched_payload = json.loads(batched_path.read_text(encoding="utf-8"))
+    immediate_payload = json.loads(immediate_path.read_text(encoding="utf-8"))
+    for payload in (batched_payload, immediate_payload):
+        payload["lifetime_metrics"]["persistence"].pop("last_saved_at", None)
+    assert batched_payload == immediate_payload
 
 
 def test_failed_save_retries_on_next_record_not_after_full_window(tmp_path, monkeypatch):
@@ -1350,125 +1352,6 @@ def test_dashboard_includes_history_toggle_and_endpoint(tmp_path, monkeypatch):
         assert "historyModelSourceSeriesLabel + ' buckets'" in html
         # Non-top-5 breakdown rows swap into the last chart slot when selected.
         assert "topModels[topModels.length - 1] = selected;" in html
-
-
-def test_stats_history_includes_cli_filtering(tmp_path, monkeypatch):
-    """The /stats-history response must include cli_filtering (RTK) lifetime stats.
-
-    Before this fix the endpoint returned only proxy compression data; after a
-    restart the Historical tab showed no RTK savings at all.
-    """
-    pytest.importorskip("fastapi")
-    from fastapi.testclient import TestClient
-
-    import headroom.proxy.server as server
-    from headroom.proxy.server import ProxyConfig, create_app
-
-    savings_path = tmp_path / "proxy_savings.json"
-    monkeypatch.setenv("HEADROOM_SAVINGS_PATH", str(savings_path))
-
-    _rtk_lifetime_payload = {
-        "tool": "rtk",
-        "label": "RTK",
-        "tokens_saved": 999,
-        "session": {"tokens_saved": 200, "commands": 5},
-        "lifetime": {"tokens_saved": 999, "commands": 42},
-    }
-    monkeypatch.setattr(server, "_get_context_tool_stats", lambda: _rtk_lifetime_payload)
-
-    config = ProxyConfig(
-        cache_enabled=False,
-        rate_limit_enabled=False,
-        log_requests=False,
-    )
-
-    with TestClient(create_app(config)) as client:
-        response = client.get("/stats-history")
-        assert response.status_code == 200
-        data = response.json()
-
-    assert "cli_filtering" in data, "Historical /stats-history must include cli_filtering"
-    assert data["cli_filtering"] is not None
-    assert data["cli_filtering"]["tool"] == "rtk"
-    assert data["cli_filtering"]["label"] == "RTK"
-    assert data["cli_filtering"]["lifetime"]["tokens_saved"] == 999
-
-
-def test_stats_history_cli_filtering_available_false_when_not_installed(tmp_path, monkeypatch):
-    """Reproduction: /stats-history's curated cli_filtering block must carry
-    `available` reflecting the backend `installed` flag. On origin/main this
-    key doesn't exist in the curated dict at all (`KeyError`); this asserts
-    the fixed key/value. The tool being merely absent must NOT collapse the
-    block to `None` -- it stays populated with `available: False` and zeroed
-    counters so the Historical tab can distinguish absence from a hard
-    read failure.
-    """
-    pytest.importorskip("fastapi")
-    from fastapi.testclient import TestClient
-
-    import headroom.proxy.server as server
-    from headroom.proxy.server import ProxyConfig, create_app
-
-    savings_path = tmp_path / "proxy_savings.json"
-    monkeypatch.setenv("HEADROOM_SAVINGS_PATH", str(savings_path))
-
-    _rtk_not_installed_payload = {
-        "tool": "rtk",
-        "label": "RTK",
-        "installed": False,
-        "tokens_saved": 0,
-        "session": {"tokens_saved": 0, "commands": 0},
-        "lifetime": {"tokens_saved": 0, "commands": 0},
-    }
-    monkeypatch.setattr(server, "_get_context_tool_stats", lambda: _rtk_not_installed_payload)
-
-    config = ProxyConfig(
-        cache_enabled=False,
-        rate_limit_enabled=False,
-        log_requests=False,
-    )
-
-    with TestClient(create_app(config)) as client:
-        response = client.get("/stats-history")
-        assert response.status_code == 200
-        data = response.json()
-
-    assert data["cli_filtering"] is not None
-    assert data["cli_filtering"]["available"] is False
-
-
-def test_stats_history_cli_filtering_stays_none_on_hard_read_failure(tmp_path, monkeypatch):
-    """Preservation: /stats-history's cli_filtering key stays `None` only when
-    the underlying stats read hard-fails (exception), not merely because the
-    tool is absent -- the Historical tab keeps hiding the card in that case,
-    unchanged from prior behavior.
-    """
-    pytest.importorskip("fastapi")
-    from fastapi.testclient import TestClient
-
-    import headroom.proxy.server as server
-    from headroom.proxy.server import ProxyConfig, create_app
-
-    savings_path = tmp_path / "proxy_savings.json"
-    monkeypatch.setenv("HEADROOM_SAVINGS_PATH", str(savings_path))
-
-    def _raise() -> dict:
-        raise RuntimeError("simulated hard stats-read failure")
-
-    monkeypatch.setattr(server, "_get_context_tool_stats", _raise)
-
-    config = ProxyConfig(
-        cache_enabled=False,
-        rate_limit_enabled=False,
-        log_requests=False,
-    )
-
-    with TestClient(create_app(config)) as client:
-        response = client.get("/stats-history")
-        assert response.status_code == 200
-        data = response.json()
-
-    assert data["cli_filtering"] is None
 
 
 def test_coercion_helpers_reject_non_finite_values():

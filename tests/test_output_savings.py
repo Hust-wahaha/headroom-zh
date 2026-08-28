@@ -389,12 +389,7 @@ class TestRecorderBaselineReload:
 
     @staticmethod
     def _key() -> str:
-        return stratum_key(
-            turn_kind="code",
-            input_tokens=8000,
-            model="claude-opus-4-8",
-            has_tools=True,
-        )
+        return SAMPLE_KEY
 
     def test_adopts_baseline_learned_after_start(self, tmp_path):
         path = str(tmp_path / "output_savings.json")
@@ -482,3 +477,99 @@ class TestRecorderBaselineReload:
         relearned.save(path)
 
         assert recorder.estimate().baseline_tokens > baseline_tokens_v1
+
+
+# ---------------------------------------------------------------------------
+# flush durability + event-loop safety
+# ---------------------------------------------------------------------------
+
+# Deterministic stratum key shared by the recorder tests below.
+SAMPLE_KEY = stratum_key(
+    turn_kind="code",
+    input_tokens=8000,
+    model="claude-opus-4-8",
+    has_tools=True,
+)
+
+
+class TestFlushDurability:
+    def test_crash_mid_write_leaves_previous_ledger_intact(self, tmp_path, monkeypatch):
+        import headroom.fsutil
+
+        path = str(tmp_path / "output_savings.json")
+        key = SAMPLE_KEY
+
+        recorder = SavingsRecorder(path, flush_every=1)
+        recorder.record_from_labels([stratum_label("treatment", key)], 200)
+        recorder.flush()
+        assert SavingsLedger.load(path).treatment[key].n == 1
+
+        def _die_before_rename(*args, **kwargs):
+            raise OSError(5, "simulated crash before rename")
+
+        monkeypatch.setattr(headroom.fsutil.os, "replace", _die_before_rename)
+        recorder.record_from_labels([stratum_label("treatment", key)], 210)
+        recorder.flush()  # OSError swallowed by the recorder — fail-open by design
+
+        # The pre-crash sample must survive and no temp residue may be left
+        # behind: a failed save may not corrupt or clutter the ledger.
+        assert SavingsLedger.load(path).treatment[key].n == 1
+        assert not list(tmp_path.glob("*.tmp"))
+
+    def test_corrupt_ledger_warns_and_starts_empty(self, tmp_path, caplog):
+        import logging
+
+        path = tmp_path / "output_savings.json"
+        path.write_text("{not json")
+
+        with caplog.at_level(logging.WARNING):
+            SavingsRecorder(str(path))
+
+        assert caplog.records, "corrupt ledger was swallowed silently"
+
+    def test_emit_request_outcome_flushes_off_the_loop_thread(self, tmp_path, monkeypatch):
+        import asyncio
+        import threading
+
+        from headroom.proxy.outcome import RequestOutcome, emit_request_outcome
+
+        path = str(tmp_path / "output_savings.json")
+        recorder = SavingsRecorder(path, flush_every=1)
+        monkeypatch.setattr("headroom.proxy.output_savings.get_recorder", lambda: recorder)
+
+        saved_on_threads = []
+        real_save = SavingsLedger.save
+
+        def _spy_save(self, save_path):
+            saved_on_threads.append(threading.get_ident())
+            real_save(self, save_path)
+
+        monkeypatch.setattr(SavingsLedger, "save", _spy_save)
+
+        class _Metrics:
+            async def record_request(self, **kwargs):
+                pass
+
+        class _Handler:
+            def __init__(self):
+                self.metrics = _Metrics()
+                self.cost_tracker = None
+                self.logger = None
+
+        outcome = RequestOutcome(
+            request_id="req-shaper",
+            provider="openai",
+            model="gpt-5",
+            status_code=200,
+            original_tokens=100,
+            optimized_tokens=80,
+            output_tokens=50,
+            tokens_saved=20,
+            attempted_input_tokens=100,
+            transforms_applied=(stratum_label("treatment", SAMPLE_KEY),),
+        )
+        asyncio.run(emit_request_outcome(_Handler(), outcome))
+
+        loop_thread = threading.get_ident()
+        assert saved_on_threads, "flush never ran"
+        assert all(t != loop_thread for t in saved_on_threads)

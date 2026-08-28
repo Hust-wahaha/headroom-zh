@@ -15,6 +15,7 @@ import os
 import re
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta
+from pathlib import Path
 
 from headroom import paths as _paths
 from headroom.pricing.litellm_pricing import resolve_litellm_model
@@ -134,6 +135,16 @@ def _parse_kv(kv_str: str) -> dict[str, str]:
     return result
 
 
+def _decode_perf_savings(value: str) -> list[dict[str, object]]:
+    # Local import keeps the analyzer usable against old logs/install layouts.
+    try:
+        from headroom.proxy.savings_attribution import decode
+
+        return decode(value)
+    except Exception:
+        return []
+
+
 @dataclass
 class PerfRecord:
     """A single parsed PERF log entry."""
@@ -146,6 +157,13 @@ class PerfRecord:
     tokens_before: int = 0
     tokens_after: int = 0
     tokens_saved: int = 0
+    # Tokens the forwarded request GREW by (PERF ``tok_inflated``). Both
+    # endpoints are clamped — ``tok_saved`` at zero and ``tok_inflated`` at zero
+    # — so a turn that left the proxy bigger reports ``tok_saved=0`` and hides
+    # its growth in a field nothing downstream read. Carrying it here is what
+    # lets the report state net alongside gross instead of implying they agree.
+    tokens_inflated: int = 0
+    tool_saved: int = 0
     cache_read: int = 0
     cache_write: int = 0
     cache_hit_pct: int = 0
@@ -155,6 +173,12 @@ class PerfRecord:
     tokens_out: int = 0
     ttfb_ms: float = 0.0
     stages: dict[str, float] = field(default_factory=dict)
+    savings_breakdown: list[dict[str, object]] = field(default_factory=list)
+    # True when the proxy answered from its own response cache and never
+    # contacted the upstream. Such a turn has all-zero token counters and no
+    # upstream stage timings, so without this flag it reads as a turn that
+    # did nothing (#3019). Absent from pre-#3019 logs, hence the default.
+    from_response_cache: bool = False
 
 
 @dataclass
@@ -201,6 +225,10 @@ class PerfReport:
     transform_records: list[TransformRecord] = field(default_factory=list)
     toin_records: list[ToinRecord] = field(default_factory=list)
     log_files_read: int = 0
+    # Rotated files skipped unopened because they were last written before the
+    # requested window. Reported so coverage stays honest: `log_files_read` on
+    # its own would silently understate how much log exists on disk.
+    log_files_skipped: int = 0
     total_lines_parsed: int = 0
     # Window covered by the report. `requested_hours` is what the caller
     # asked for; `oldest_kept_ts` / `newest_kept_ts` are the actual
@@ -285,7 +313,31 @@ def parse_log_files(last_n_hours: float = 168.0) -> PerfReport:
             report.newest_kept_ts = ts_str
 
     # Collect log files: proxy.log, proxy.log.1, proxy.log.2, ...
-    log_files = sorted(log_dir.glob("proxy.log*"), key=lambda p: p.stat().st_mtime)
+    #
+    # A rotated file last written before the cutoff cannot contain a record
+    # inside the window, so skip it without opening it. Without this the cost
+    # of a windowed query is O(total log history) rather than O(window):
+    # `/stats` recomputes throughput over the last hour on a 10s cache TTL, so
+    # a dashboard polling it re-read and re-regexed every byte of every
+    # rotated log, forever, for an answer that lives in the tail of the newest
+    # file. Measured on a developer machine with six rotations (54 MB).
+    #
+    # mtime is the safe discriminator: the logs are append-only, so a file
+    # untouched since before the cutoff has no line written after it. Files
+    # are stat'd once and the value reused for the sort.
+    cutoff_epoch = cutoff.timestamp() if cutoff is not None else None
+    dated_files: list[tuple[float, Path]] = []
+    for path in log_dir.glob("proxy.log*"):
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            # Rotated away between glob and stat — nothing to read.
+            continue
+        if cutoff_epoch is not None and mtime < cutoff_epoch:
+            report.log_files_skipped += 1
+            continue
+        dated_files.append((mtime, path))
+    log_files = [path for _, path in sorted(dated_files, key=lambda pair: pair[0])]
 
     for log_file in log_files:
         report.log_files_read += 1
@@ -351,6 +403,9 @@ def parse_log_files(last_n_hours: float = 168.0) -> PerfReport:
                                 tokens_before=int(kv.get("tok_before", 0)),
                                 tokens_after=int(kv.get("tok_after", 0)),
                                 tokens_saved=int(kv.get("tok_saved", 0)),
+                                tokens_inflated=int(kv.get("tok_inflated", 0)),
+                                tool_saved=int(kv.get("tool_saved", 0)),
+                                savings_breakdown=_decode_perf_savings(kv.get("savings", "none")),
                                 cache_read=int(kv.get("cache_read", 0)),
                                 cache_write=int(kv.get("cache_write", 0)),
                                 cache_hit_pct=int(kv.get("cache_hit_pct", 0)),
@@ -359,6 +414,7 @@ def parse_log_files(last_n_hours: float = 168.0) -> PerfReport:
                                 total_ms=float(kv.get("total_ms", 0)),
                                 tokens_out=int(kv.get("tok_out", 0)),
                                 ttfb_ms=float(kv.get("ttfb_ms", 0)),
+                                from_response_cache=kv.get("cached", "0") == "1",
                                 stages=stages_by_rid.get(m.group("rid"), {}),
                             )
                         )
@@ -441,72 +497,15 @@ def parse_log_files(last_n_hours: float = 168.0) -> PerfReport:
     return report
 
 
-def _context_tool_lifetime_savings() -> dict | None:
-    """Lifetime savings from the configured CLI context tool (RTK / lean-ctx).
-
-    ``perf`` reports a windowed view of the proxy's *compression* logs. The CLI
-    context tool (RTK) keeps its own lifetime counter that never lands in
-    ``proxy.log``, so without this it stays invisible in ``headroom perf`` even
-    when it dwarfs proxy-side savings. Lifetime (not session) is the right scope
-    here: ``perf`` is a one-shot CLI, so the proxy-session baseline ``/stats``
-    subtracts is meaningless out of process.
-
-    Best-effort: returns ``None`` when no tool is installed or its stats cannot
-    be read, so the report degrades to proxy-only rather than erroring.
-    """
-    try:
-        from headroom.proxy.helpers import _get_context_tool_stats
-
-        stats = _get_context_tool_stats()
-    except Exception:
-        return None
-    if not stats or not stats.get("installed", False):
-        return None
-    lifetime = stats.get("lifetime") or {}
-    tokens_saved = int(lifetime.get("tokens_saved", 0) or 0)
-    if tokens_saved <= 0:
-        return None
-    return {
-        "tool": str(stats.get("tool", "rtk")),
-        "label": str(stats.get("label", "RTK")),
-        "tokens_saved": tokens_saved,
-        "commands": int(lifetime.get("commands", 0) or 0),
-        "savings_pct": round(float(lifetime.get("savings_pct", 0.0) or 0.0), 1),
-    }
-
-
-def _cli_filtering_report_lines() -> list[str]:
-    """Render the context-tool (RTK) lifetime savings section, or [] if absent."""
-    cli = _context_tool_lifetime_savings()
-    if not cli:
-        return []
-    return [
-        f"{cli['label']} CLI Filtering (lifetime, all-time)",
-        "-" * 40,
-        f"  Tokens saved:  {cli['tokens_saved']:,} ({cli['savings_pct']:.1f}%)",
-        f"  Commands:      {cli['commands']:,}",
-        f"  Note: {cli['label']}'s own lifetime counter — not limited to the --hours window.",
-        "",
-    ]
-
-
 def format_report(report: PerfReport) -> str:
     """Format a PerfReport into a human-readable string."""
     lines: list[str] = []
-    cli_filtering_lines = _cli_filtering_report_lines()
 
     if not report.perf_records and not report.router_records:
-        if cli_filtering_lines:
-            # RTK savings are independent of proxy logs — surface them even when
-            # there is no proxy traffic in the window.
-            lines.append("No proxy performance data in ~/.headroom/logs/ for this window.")
-            lines.append("")
-            lines.extend(cli_filtering_lines)
-        else:
-            lines.append("No performance data found in ~/.headroom/logs/")
-            lines.append("")
-            lines.append("Start the proxy to begin collecting data:")
-            lines.append("  headroom proxy")
+        lines.append("No performance data found in ~/.headroom/logs/")
+        lines.append("")
+        lines.append("Start the proxy to begin collecting data:")
+        lines.append("  headroom proxy")
         return "\n".join(lines)
 
     # Header
@@ -537,11 +536,39 @@ def format_report(report: PerfReport) -> str:
         total_before = sum(r.tokens_before for r in records)
         total_after = sum(r.tokens_after for r in records)
         total_saved = sum(r.tokens_saved for r in records)
+        total_tool_saved = sum(r.tool_saved for r in records)
+        total_headline_saved = total_saved + total_tool_saved
         pct = (total_saved / total_before * 100) if total_before > 0 else 0
+        # All-layers denominator: deferred tool schemas were never in tok_before (they
+        # don't reach count_messages), so the pre-Headroom world is tok_before + them.
+        # Same construction the proxy's /api/stats uses for total_before_compression —
+        # the headline number and the headline percent must share a numerator, or the
+        # tile reads "60,920 saved (0.1%)" off two different definitions of saved.
+        headline_before = total_before + total_tool_saved
+        headline_pct = (total_headline_saved / headline_before * 100) if headline_before > 0 else 0
 
         lines.append(f"Requests:     {len(records)}")
-        lines.append(f"Tokens:       {total_before:,} -> {total_after:,} ({pct:.1f}% reduction)")
-        lines.append(f"Total saved:  {total_saved:,} tokens")
+        lines.append(f"Tokens:       {total_before:,} -> {total_after:,} ({pct:.1f}% messages)")
+        # ONE headline. Tool-schema deferral can't move tok_before/after (messages never
+        # include tool bytes), so it used to render as a rival "Tool saved" line — which
+        # read as a side metric and hid the win on tool-heavy turns where tok_saved=0.
+        lines.append(f"Tokens saved: {total_headline_saved:,} ({headline_pct:.1f}% reduction)")
+        # Gross vs net. ``tok_saved`` is clamped at zero per request, so turns
+        # where Headroom made the body BIGGER (CCR proactive expansion, memory
+        # injection) contribute nothing negative to the headline — their growth
+        # lands in ``tok_inflated`` instead, which nothing here used to read.
+        # Printing "321,239,562 -> 313,274,727" directly above "8,455,763 saved"
+        # implies the two reconcile; they differ by exactly the inflation. Show
+        # it whenever it is non-zero so the arithmetic closes on the page.
+        total_inflated = sum(r.tokens_inflated for r in records)
+        if total_inflated > 0:
+            lines.append(
+                f"  · inflated      {total_inflated:,} "
+                f"(net message reduction {total_before - total_after:,})"
+            )
+        if total_tool_saved > 0:
+            lines.append(f"  · messages       {max(0, total_saved):,}")
+            lines.append(f"  · tool schemas   {total_tool_saved:,}")
         lines.append("")
 
         # Per-model breakdown with list prices
@@ -552,19 +579,37 @@ def format_report(report: PerfReport) -> str:
         lines.append("Per-Model Breakdown")
         lines.append("-" * 40)
         for model, model_recs in sorted(by_model.items()):
+            # Same all-layers construction as the headline above. This loop used to
+            # sum ``tokens_saved`` alone, so every row reported message compression
+            # only while the headline it sat under counted deferral too. The rows
+            # then failed to add up to the total printed inches above them — in the
+            # report that prompted this, four rows summing to 36,071 under a
+            # headline of 625,277, because 589,206 tokens of tool-schema deferral
+            # had no row to land in. A tool-heavy model read "0 tokens saved".
             m_saved = sum(r.tokens_saved for r in model_recs)
+            m_tool_saved = sum(r.tool_saved for r in model_recs)
+            m_headline_saved = m_saved + m_tool_saved
             m_before = sum(r.tokens_before for r in model_recs)
-            m_pct = (m_saved / m_before * 100) if m_before > 0 else 0
+            m_headline_before = m_before + m_tool_saved
+            m_pct = (m_headline_saved / m_headline_before * 100) if m_headline_before > 0 else 0
             list_price = _get_list_price(model)
             price_str = f"${list_price:.2f}/MTok" if list_price else "unknown"
             est_str = (
-                f"  ~${m_saved * list_price / 1_000_000:.2f} at list price" if list_price else ""
+                f"  ~${m_headline_saved * list_price / 1_000_000:.2f} at list price"
+                if list_price
+                else ""
             )
             lines.append(
                 f"  {model}: {len(model_recs)} reqs, "
-                f"{m_saved:,} tokens saved ({m_pct:.0f}%), "
+                f"{m_headline_saved:,} tokens saved ({m_pct:.0f}%), "
                 f"list price {price_str}{est_str}"
             )
+            # Only split the row when there is a split to show; a compression-only
+            # model keeps the single-line shape it has always had.
+            if m_tool_saved > 0:
+                lines.append(
+                    f"      · messages {max(0, m_saved):,}  · tool schemas {m_tool_saved:,}"
+                )
         lines.append("  * Actual bill savings depend on provider caching behavior")
         lines.append("")
 
@@ -691,6 +736,31 @@ def format_report(report: PerfReport) -> str:
             lines.append(
                 f"  {name}: {avg_pct:.1f}% avg reduction, {len(recs)} uses, {total_s:,} saved"
             )
+        # This table is built ONLY from "Transform NAME: B -> A tokens (saved N)"
+        # lines, which just one engine emits (transforms/pipeline.py). The
+        # OpenAI-Responses engine (transforms/compression_units.py +
+        # compression_batches.py) applies the same strategies and contains no
+        # logging calls at all, so none of its work appears above. On real
+        # traffic that hid ~7M of ~8.5M message-token savings — the table read
+        # "content_router: 189,783 saved" against a PERF total 44x larger, which
+        # invites exactly the wrong conclusion about which compressors work.
+        #
+        # State the divergence, NOT a coverage ratio. The two totals are
+        # different populations and neither strictly contains the other: the
+        # Transform lines carry no request_id, fire once per pipeline STAGE (so
+        # several can describe one request), and are emitted before the forwarder
+        # decides anything — a mutation later discarded by the signed-thinking
+        # byte-lock still logs its "saved" here while the request's PERF line
+        # correctly reports 0. So "table covers X of Y" would be a false subset
+        # claim in both directions; report the two sums and let the reader judge.
+        table_total = sum(r.tokens_saved for r in report.transform_records)
+        perf_total = sum(r.tokens_saved for r in report.perf_records)
+        if table_total != perf_total:
+            lines.append(
+                f"  ! stage-level total {table_total:,} != PERF message total {perf_total:,} "
+                "— this table sees only engines that emit a Transform line, counts "
+                "per stage, and does not check whether the mutation shipped"
+            )
         lines.append("")
 
     # Router routing breakdown
@@ -710,10 +780,23 @@ def format_report(report: PerfReport) -> str:
                 f"  Excluded:    {total_excluded} ({total_excluded / total_all * 100:.0f}%) — Read/Glob outputs"
             )
             lines.append(
-                f"  Skipped:     {total_skipped} ({total_skipped / total_all * 100:.0f}%) — <50 words"
+                f"  Skipped:     {total_skipped} ({total_skipped / total_all * 100:.0f}%) — below size floor"
             )
             lines.append(
                 f"  Unchanged:   {total_unchanged} ({total_unchanged / total_all * 100:.0f}%) — ratio too high"
+            )
+            # These four buckets are NOT the router's full outcome space — the
+            # `[router] route_counts=` line carries 17 keys, and the ones omitted
+            # here (cache_hit, system_msg, error_protected, already_compressed,
+            # …) are individually larger than "Excluded". Percentages taken over
+            # this subset therefore overstate every share: on real traffic the
+            # "skipped" bucket read 77% here against 49.5% of actual terminal
+            # fates, which reads as a mis-set threshold rather than a narrow
+            # denominator. Say what the denominator is instead of implying it is
+            # everything.
+            lines.append(
+                f"  (shares are of these 4 buckets only, n={total_all}; "
+                "see `[router] route_counts=` for the full outcome space)"
             )
         if total_excluded > total_compressed * 3:
             lines.append("  ! Excluded tools dominate — consider compressing stale Read outputs")
@@ -751,10 +834,6 @@ def format_report(report: PerfReport) -> str:
             lines.append(f"  {i}. {rec}")
         lines.append("")
 
-    # CLI context-tool (RTK) lifetime savings — its own counter never reaches
-    # proxy.log, so surface it here or it stays invisible in `headroom perf`.
-    lines.extend(cli_filtering_lines)
-
     # Footer
     lines.append(
         f"Log files: {report.log_files_read} | Lines parsed: {report.total_lines_parsed:,}"
@@ -786,6 +865,7 @@ PERF_RECORD_FIELDS = [
     "tokens_before",
     "tokens_after",
     "tokens_saved",
+    "tool_saved",
     "cache_read",
     "cache_write",
     "cache_hit_pct",
@@ -795,6 +875,11 @@ PERF_RECORD_FIELDS = [
     "tokens_out",
     "ttfb_ms",
     "stages",
+    "savings_breakdown",
+    # Appended last so every existing CSV column keeps its position; a reader
+    # that indexes by name is unaffected either way.
+    "from_response_cache",
+    "tokens_inflated",
 ]
 
 
@@ -1029,6 +1114,8 @@ def build_perf_summary(report: PerfReport) -> dict:
     total_before = sum(r.tokens_before for r in records)
     total_after = sum(r.tokens_after for r in records)
     total_saved = sum(r.tokens_saved for r in records)
+    total_tool_saved = sum(r.tool_saved for r in records)
+    total_headline_saved = total_saved + total_tool_saved
 
     total_cr = sum(r.cache_read for r in records)
     total_cw = sum(r.cache_write for r in records)
@@ -1042,7 +1129,9 @@ def build_perf_summary(report: PerfReport) -> dict:
     for model, recs in sorted(by_model_groups.items()):
         m_before = sum(r.tokens_before for r in recs)
         m_after = sum(r.tokens_after for r in recs)
-        m_saved = sum(r.tokens_saved for r in recs)
+        m_message_saved = sum(r.tokens_saved for r in recs)
+        m_tool_saved = sum(r.tool_saved for r in recs)
+        m_saved = m_message_saved + m_tool_saved
         by_model.append(
             {
                 "model": model,
@@ -1050,7 +1139,9 @@ def build_perf_summary(report: PerfReport) -> dict:
                 "tokens_before": m_before,
                 "tokens_after": m_after,
                 "tokens_saved": m_saved,
-                "savings_pct": _pct(m_saved, m_before),
+                "message_tokens_saved": m_message_saved,
+                "tool_tokens_saved": m_tool_saved,
+                "savings_pct": _pct(m_saved, m_before + m_tool_saved),
                 "list_price_per_mtok": _get_list_price(model),
             }
         )
@@ -1074,6 +1165,37 @@ def build_perf_summary(report: PerfReport) -> dict:
             }
         )
 
+    by_source_groups: dict[tuple[str, bool], dict[str, int | float | str | bool]] = {}
+    for record in records:
+        for item in record.savings_breakdown:
+            source = str(item.get("source") or "other")
+            realized = bool(item.get("realized", True))
+            key = (source, realized)
+            row = by_source_groups.setdefault(
+                key,
+                {
+                    "source": source,
+                    "realized": realized,
+                    "events": 0,
+                    "tokens": 0,
+                    "usd": 0.0,
+                },
+            )
+            row["events"] = int(row["events"]) + 1
+            raw_tokens = item.get("tokens", 0)
+            raw_usd = item.get("usd", 0.0)
+            tokens = int(raw_tokens) if isinstance(raw_tokens, (str, int, float)) else 0
+            usd = float(raw_usd) if isinstance(raw_usd, (str, int, float)) else 0.0
+            row["tokens"] = int(row["tokens"]) + max(0, tokens)
+            row["usd"] = round(
+                float(row["usd"]) + usd,
+                12,
+            )
+    by_source = sorted(
+        by_source_groups.values(),
+        key=lambda row: (-int(row["tokens"]), str(row["source"])),
+    )
+
     return {
         "window_hours": report.requested_hours,
         "actual_window": {
@@ -1084,20 +1206,24 @@ def build_perf_summary(report: PerfReport) -> dict:
         "total_requests": len(records),
         "total_tokens_before": total_before,
         "total_tokens_after": total_after,
+        # total_tokens_saved is the headline (messages + tool-schema deferral); the two
+        # components stay for consumers that break the number down. See
+        # headroom.proxy.tool_schema_savings_policy.
+        "total_tokens_saved": total_headline_saved,
+        "total_savings_pct": _pct(total_headline_saved, total_before + total_tool_saved),
         "tokens_saved": total_saved,
+        "tool_saved": total_tool_saved,
         "savings_pct": _pct(total_saved, total_before),
         "cache_read_tokens": total_cr,
         "cache_write_tokens": total_cw,
         "cache_hit_pct": cache_hit_pct,
         "by_model": by_model,
         "by_transform": by_transform,
+        "by_source": by_source,
         "overhead": build_overhead_summary(report),
         "throughput": calculate_throughput(report),
         "log_files_read": report.log_files_read,
         "total_lines_parsed": report.total_lines_parsed,
-        # RTK/CLI context-tool lifetime savings (its own counter, not in
-        # proxy.log) — None when no tool is installed. Mirrors the text report.
-        "cli_filtering": _context_tool_lifetime_savings(),
     }
 
 

@@ -363,9 +363,15 @@ class TestTokenizerRegistry:
         assert isinstance(tokenizer, TiktokenCounter)
 
     def test_get_anthropic_model(self):
-        """Test getting tokenizer for Anthropic model."""
+        """Anthropic (Claude) has no public tokenizer, so it is priced against a
+        real BPE proxy (tiktoken o200k_base) rather than a character estimate —
+        for consistent, monotone before/after counts. Falls back to the estimator
+        only when the tiktoken vocab can't be loaded."""
         tokenizer = get_tokenizer("claude-3-sonnet")
-        assert isinstance(tokenizer, EstimatingTokenCounter)
+        if isinstance(tokenizer, TiktokenCounter):
+            assert tokenizer.encoding_name == "o200k_base"
+        else:  # vocab unavailable in this environment → documented fallback
+            assert isinstance(tokenizer, EstimatingTokenCounter)
 
     def test_get_unknown_model_fallback(self):
         """Test fallback for unknown model."""

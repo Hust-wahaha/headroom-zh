@@ -23,6 +23,12 @@ def _clear_caches(monkeypatch, tmp_path):
     """Isolate every test from global state: cache dir, platform lru_cache, env."""
     binaries.detect_platform.cache_clear()
     binaries._registry.cache_clear()
+    # Null the shipped SHA-256 pins so mechanics tests can serve small mock
+    # archives (whose digests won't match production pins); the verification
+    # tests below set their own pin explicitly.
+    for _tool in binaries._registry().get("tools", {}).values():
+        for _asset in _tool.get("assets", {}).values():
+            _asset["sha256"] = None
     monkeypatch.setenv("HEADROOM_BINARIES_CACHE", str(tmp_path / "cache"))
     monkeypatch.delenv("HEADROOM_BINARIES_MIRROR", raising=False)
     monkeypatch.delenv("HEADROOM_BINARIES_OFFLINE", raising=False)
@@ -255,6 +261,30 @@ def test_fetch_extract_zip(monkeypatch, fake_urlopen):
     assert path.exists()
     assert path.name.endswith("scc.exe")
     assert path.read_bytes() == payload
+
+
+def test_download_retries_transient_network_failure(monkeypatch, tmp_path):
+    attempts = 0
+    sleeps: list[float] = []
+
+    def flaky_urlopen(req, timeout=None):  # noqa: ARG001
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            import urllib.error
+
+            raise urllib.error.URLError("temporary GitHub release failure")
+        return _FakeResponse(b"binary")
+
+    monkeypatch.setattr(binaries.urllib.request, "urlopen", flaky_urlopen)
+    monkeypatch.setattr(binaries.time, "sleep", sleeps.append)
+
+    destination = tmp_path / "download"
+    binaries._download("https://github.com/example/tool", destination, progress=False)
+
+    assert attempts == 3
+    assert sleeps == [0.25, 0.5]
+    assert destination.read_bytes() == b"binary"
 
 
 def test_sha256_mismatch_raises_and_deletes(monkeypatch, fake_urlopen, tmp_path):

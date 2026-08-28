@@ -97,11 +97,7 @@ _replace_or_append_steering_block = replace_or_append_steering_block
 
 @dataclass(frozen=True)
 class OutputShaperSettings:
-    """Runtime settings, resolved once per request from the environment.
-
-    Env-driven (like HEADROOM_INTERCEPT_ENABLED) so the proxy picks it up
-    without config plumbing through the server. Off by default.
-    """
+    """Output-shaping settings with rollout enablement injected by the proxy."""
 
     enabled: bool = False
     verbosity_level: int = 2
@@ -109,12 +105,19 @@ class OutputShaperSettings:
     mechanical_effort: str = "low"
 
     @classmethod
-    def from_env(cls) -> OutputShaperSettings:
-        enabled = runtime_env.getenv("HEADROOM_OUTPUT_SHAPER", "").lower() in (
-            "1",
-            "true",
-            "yes",
-        )
+    def from_env(cls, *, enabled: bool | None = None) -> OutputShaperSettings:
+        """Resolve tuning; running proxies always inject the resolved gate.
+
+        ``None`` preserves the helper's direct-call compatibility for SDK/tests,
+        but proxy request paths never use it and therefore never re-resolve the
+        rollout alias.
+        """
+        if enabled is None:
+            enabled = runtime_env.getenv("HEADROOM_OUTPUT_SHAPER", "").lower() in (
+                "1",
+                "true",
+                "yes",
+            )
         try:
             level = int(runtime_env.getenv("HEADROOM_VERBOSITY_LEVEL", "2"))
         except ValueError:

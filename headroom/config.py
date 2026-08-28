@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import fnmatch
+import json
 from collections.abc import Iterable
 from dataclasses import InitVar, dataclass, field
 from datetime import datetime
@@ -10,6 +11,7 @@ from enum import Enum
 from typing import Any, Literal
 
 from headroom.models.config import ML_MODEL_DEFAULTS
+from headroom.rollout import RolloutSnapshot, resolve_rollout
 
 
 class HeadroomMode(str, Enum):
@@ -213,6 +215,9 @@ class AnchorConfig:
 # Bash is NOT excluded — its outputs (build logs, test output) are ideal compression targets.
 # To protect Bash or other non-excluded tools from lossy compression, use
 # HEADROOM_PROTECT_TOOL_RESULTS=Bash or --protect-tool-results Bash.
+# headroom_retrieve: its entire contract is returning already-retrieved, original
+# CCR content verbatim. Recompressing it writes a new <<ccr:hash>> marker the
+# agent can never redeem (#1077).
 DEFAULT_EXCLUDE_TOOLS: frozenset[str] = frozenset(
     {
         "Read",
@@ -222,6 +227,10 @@ DEFAULT_EXCLUDE_TOOLS: frozenset[str] = frozenset(
         "Edit",
         "WebSearch",
         "WebFetch",
+        "headroom_retrieve",
+        # Copilot CLI's file-read tool (its `Read` equivalent): raw file bytes
+        # the model byte-patches against.
+        "view",
         # Lowercase variants for case-insensitive matching
         "read",
         "glob",
@@ -235,18 +244,34 @@ DEFAULT_EXCLUDE_TOOLS: frozenset[str] = frozenset(
 
 # These excluded web-tool results must remain byte-faithful. Even the
 # excluded-tool lossless fold rewrites formatted JSON.
+# Three independent consumers key off this frozenset, all in
+# transforms/content_router.py: ContentRouter's two per-block CCR-retrieve
+# guards, and _cross_turn_dedup_messages's verbatim_tool_ids -- the latter has
+# no dedicated guard of its own, so removing headroom_retrieve from here would
+# silently reopen the retrieval loop for that path with cross-turn dedup on.
 DEFAULT_VERBATIM_EXCLUDE_TOOLS: frozenset[str] = frozenset(
     {
         "WebSearch",
         "WebFetch",
         "web_search",
         "web_fetch",
+        "headroom_retrieve",
+        # `view` (Copilot CLI file read) must stay BYTE-EXACT: the model produces
+        # line/byte-precise edits against it, and even "lossless" JSON rewrites
+        # or cross-turn dedup folds break old_str matching and force re-reads.
+        "view",
     }
 )
 
 
 def _tool_name_aliases(name: str) -> tuple[str, ...]:
     """Return equivalent spellings for tool exclusion matching."""
+    if not isinstance(name, str):
+        # Pre-existing fragility (not introduced here): a malformed message can
+        # put a non-string value in the tool-name map (see _build_tool_name_map's
+        # truthy-only `if tc_id and name:` filter). Fail safe -- no aliases means
+        # is_tool_excluded() returns False -- rather than crashing the pipeline.
+        return ()
     aliases = [name]
     lname = name.lower()
 
@@ -264,6 +289,37 @@ def _tool_name_aliases(name: str) -> tuple[str, ...]:
             aliases.append(parts[2])
 
     return tuple(dict.fromkeys(aliases))
+
+
+# Hermes Agent's deferred-tool bridge. Hermes loads on-demand tools via a
+# `tool_search`/`tool_describe`/`tool_call` indirection; on the wire the
+# emitted tool call is named `tool_call` and the REAL tool name lives in the
+# arguments payload (`{"name": "...", "arguments": {...}}`). Tool exclusion /
+# protect lists match on the real name, so we must unwrap this bridge before
+# building the tool_call_id -> name map, or whitelists silently no-op for all
+# deferred tools.
+_HERMES_TOOL_CALL_WRAPPER = "tool_call"
+
+
+def unwrap_tool_call_name(name: str, arguments: Any) -> str:
+    """Extract the real tool name from a Hermes deferred ``tool_call`` wrapper.
+
+    Non-wrapper names pass through unchanged. Malformed/unparseable wrappers
+    fail open and return the wrapper name (caller decides what that means).
+    """
+    if name != _HERMES_TOOL_CALL_WRAPPER:
+        return name
+    raw = arguments
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except (ValueError, TypeError):
+            return name
+    if isinstance(raw, dict):
+        inner = raw.get("name")
+        if isinstance(inner, str) and inner.strip():
+            return inner.strip()
+    return name
 
 
 def is_tool_excluded(name: str, exclude_tools: Iterable[str]) -> bool:
@@ -624,8 +680,13 @@ class HeadroomConfig:
     content_router_enabled: InitVar[bool | None] = None
 
     # Tool-result interceptors (ast-grep Read outline, etc.). Opt-in for now.
-    # Env var HEADROOM_INTERCEPT_ENABLED=1 also enables (for CLI `--intercept-tool-results`).
+    # The legacy env alias and this typed request still obey the canary rollout gate.
     intercept_tool_results: bool = False
+
+    # Immutable runtime rollout state. ``None`` is resolved once here so every
+    # pipeline built from this config observes the same decisions even if the
+    # process environment later changes.
+    rollout: RolloutSnapshot | None = None
 
     # Debugging - opt-in diff artifact generation
     generate_diff_artifact: bool = False  # Enable to get detailed transform diffs
@@ -633,6 +694,11 @@ class HeadroomConfig:
     # Canonical pipeline lifecycle extensions
     pipeline_extensions: list[Any] = field(default_factory=list)
     discover_pipeline_extensions: bool = True
+
+    def __post_init__(self, content_router_enabled: bool | None = None) -> None:
+        if self.rollout is None:
+            requested = ("tool_result_interceptors",) if self.intercept_tool_results else ()
+            self.rollout = resolve_rollout(requested=requested)
 
     def get_context_limit(self, model: str) -> int | None:
         """

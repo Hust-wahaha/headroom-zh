@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
 log = logging.getLogger(__name__)
@@ -47,6 +47,35 @@ class TurnContext:
     messages: list[dict[str, Any]]
     tools: Any = None  # provider-native tools value (list, or None)
     config: Any = None
+    # The handler's live request tags and provider-native counters let the hook
+    # runner attribute savings with the exact same tokenizer as the canonical
+    # RequestOutcome. Optional defaults preserve the public extension API.
+    tags: dict[str, Any] = field(default_factory=dict)
+    count_messages: Callable[[list[dict[str, Any]]], int] | None = None
+    count_tools: Callable[[Any], int] | None = None
+
+    def record_savings(
+        self,
+        source: str,
+        *,
+        tokens: int = 0,
+        usd: float = 0.0,
+        realized: bool = True,
+        estimated: bool = False,
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        """Attribute savings without changing the request's headline totals."""
+        from headroom.proxy.savings_attribution import record_savings
+
+        record_savings(
+            self.tags,
+            source,
+            tokens=tokens,
+            usd=usd,
+            realized=realized,
+            estimated=estimated,
+            details=details,
+        )
 
 
 @runtime_checkable
@@ -55,6 +84,12 @@ class TurnHook(Protocol):
     either); missing methods are simply skipped."""
 
     name: str
+
+    # Optional: set True if this hook's ``on_request`` needs no later re-drive
+    # (a fold-only hook). Such hooks run on streaming turns too; hooks that may
+    # re-drive in ``on_response`` leave it unset and run buffered-only. Absent ⇒
+    # False (conservative). See :func:`run_request_hooks`.
+    stream_safe: bool
 
     def on_request(self, ctx: TurnContext) -> None:
         """Inspect / mutate ``ctx`` (e.g. ``ctx.tools``) before it goes upstream."""
@@ -86,14 +121,51 @@ def clear_turn_hooks() -> None:
     _hooks.clear()
 
 
-def run_request_hooks(ctx: TurnContext) -> None:
-    """Run every hook's ``on_request``. Inert when none are registered; never raises."""
+def run_request_hooks(ctx: TurnContext, *, stream_safe_only: bool = False) -> None:
+    """Run each hook's ``on_request``. Inert when none registered; never raises.
+
+    ``on_request`` mutates the outbound request before the upstream send, so it is
+    safe on a streamed turn *as long as the hook needs no later re-drive*. A hook
+    that may re-drive the model in ``on_response`` (e.g. defer a tool, then reload
+    it when the model asks) can't run on a stream — the bytes are already flowing,
+    there's nothing to re-drive. So on streaming turns the handler passes
+    ``stream_safe_only=True`` and only hooks that opt in via a truthy ``stream_safe``
+    attribute run; fold-only hooks (which never re-drive) set it and thus keep
+    working on streamed OpenAI-compatible traffic. Default off ⇒ conservative:
+    a hook is treated as buffered-only unless it declares itself stream-safe.
+    """
     for hook in _hooks:
+        if stream_safe_only and not getattr(hook, "stream_safe", False):
+            continue
         fn = getattr(hook, "on_request", None)
         if fn is None:
             continue
+        before_messages = before_tools = None
         try:
+            if ctx.count_messages is not None:
+                before_messages = ctx.count_messages(ctx.messages)
+            if ctx.count_tools is not None:
+                before_tools = ctx.count_tools(ctx.tools)
             fn(ctx)
+            message_saved = (
+                max(0, before_messages - ctx.count_messages(ctx.messages))
+                if before_messages is not None and ctx.count_messages is not None
+                else 0
+            )
+            tool_saved = (
+                max(0, before_tools - ctx.count_tools(ctx.tools))
+                if before_tools is not None and ctx.count_tools is not None
+                else 0
+            )
+            if message_saved or tool_saved:
+                ctx.record_savings(
+                    getattr(hook, "savings_source", getattr(hook, "name", type(hook).__name__)),
+                    tokens=message_saved + tool_saved,
+                    details={
+                        "message_tokens_saved": message_saved,
+                        "tool_tokens_saved": tool_saved,
+                    },
+                )
         except Exception:  # a hook must never break the proxy
             log.exception("turn hook %r on_request failed", getattr(hook, "name", hook))
 

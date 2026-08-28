@@ -218,7 +218,7 @@ long Chinese context that still has to remain actionable after compression.
 
 - **ContentRouter** — detects content type, selects the right compressor
 - **SmartCrusher / CodeCompressor / Kompress-v2-base / kompress_zh** — compress JSON, AST, or prose
-- **CacheAligner** — stabilizes prefixes so provider KV caches actually hit
+- **CacheAligner** — detects and warns about volatile content that can bust provider KV cache prefixes; never rewrites prompts
 - **CCR** — stores originals locally; LLM calls `headroom_retrieve` if it needs them
 
 → [Architecture](https://headroom-docs.vercel.app/docs/architecture) · [CCR reversible compression](https://headroom-docs.vercel.app/docs/ccr) · [Kompress-v2-base](https://huggingface.co/chopratejas/kompress-v2-base) · [kompress_zh baseline model card](https://huggingface.co/Deserveall/kompress_zh-baseline-v1-lora)
@@ -250,7 +250,9 @@ headroom proxy --port 8787              # drop-in proxy, zero code changes
 headroom perf
 ```
 
-To use headroom, it is recommended you launch a wrapped agent session each time so that all necessary setup is completed. When wrapping a coding agent, headroom starts a local proxy, sets up an MCP server that provides tools such as rtk and tokensave, and launches a coding agent session configured to proxy requests to headroom.
+To use headroom, it is recommended you launch a wrapped agent session each time so that all necessary setup is completed. When wrapping a coding agent, headroom starts a local proxy, installs **Serena** for semantic code navigation, and launches a coding agent session configured to proxy requests through headroom.
+
+Serena is registered at **user scope** (for Claude Code, in `~/.claude.json`), so it stays available in your other projects until you run `headroom unwrap`. To skip it entirely, wrap with `--code-memory none`.
 
 The `headroom` CLI ships **only** via the PyPI package. The npm `headroom-ai` is the TypeScript SDK — a library you import (`import { compress } from 'headroom-ai'`), not a CLI, so it provides no `headroom` command.
 
@@ -373,10 +375,11 @@ or estimated with a confidence band.
 |--------------|:---------------:|----------------------------------|
 | Claude Code  | ✅              | `--memory` · `--code-graph` · `--1m` · `--tool-search` |
 | Codex        | ✅              | shares memory with Claude        |
-| Grok CLI     | ✅              | routes via `GROK_CLI_CHAT_PROXY_BASE_URL` |
+| Grok CLI     | ✅              | routes via `GROK_MODELS_BASE_URL` |
 | Cursor       | Manual setup    | starts proxy and prints base URLs for Cursor settings |
 | Aider        | ✅              | starts proxy + launches          |
 | Copilot CLI  | ✅              | starts proxy + launches          |
+| VS Code Copilot | ✅           | transparent proxy; preserves selected model |
 | OpenClaw     | ✅              | installs as ContextEngine plugin |
 | OpenCode     | ✅              | injects config · starts proxy + launches |
 | Cline        | ✅              | starts proxy + injects config    |
@@ -430,7 +433,59 @@ For GitHub.com Enterprise Cloud URLs such as
 override. Headroom uses GitHub's normal token-exchange endpoint and the Copilot
 API endpoint advertised for the signed-in account.
 
-Platform support note: macOS auth reuse via Copilot CLI Keychain storage has been smoke-tested. Windows Credential Manager, Linux Secret Service / `secret-tool`, and Docker/CI token-injection paths are implemented or planned as auth-discovery paths, but still need real OS validation before they should be considered fully vetted. For Docker and CI, prefer passing an explicit `GITHUB_COPILOT_TOKEN` or `GITHUB_COPILOT_GITHUB_TOKEN` rather than relying on host keychain access.
+Platform support note: macOS auth reuse via Copilot CLI Keychain storage and
+Windows Headroom device authentication have been live-tested. Copilot CLI 1.0.81
+does not expose its working Windows login through the legacy Credential Manager
+schema Headroom recognizes, so run `headroom copilot-auth login` on Windows.
+Linux Secret Service / `secret-tool` reuse still needs real OS validation. For
+Docker and CI, prefer passing an explicit `GITHUB_COPILOT_TOKEN` or
+`GITHUB_COPILOT_GITHUB_TOKEN` rather than relying on host keychain access.
+
+### GitHub Copilot in Visual Studio Code
+
+Headroom transparently overrides Copilot's API proxy endpoint, so the normal VS
+Code model picker remains authoritative. GPT-5.5, GPT-5.6 Luna/Sol/Terra, Claude
+Sonnet/Opus, and other Copilot models keep their original model IDs while traffic
+passes through the local compression proxy. Headroom does not patch VS Code or
+change Codex settings:
+
+```bash
+headroom copilot-auth login
+headroom wrap vscode
+```
+
+Keep the command running and use Copilot normally. Headroom holds the short-lived
+upstream Copilot token only in the proxy process.
+See the [cross-platform VS Code Copilot guide](https://headroom-docs.vercel.app/docs/vscode-copilot)
+for paths, credential flow, remote-development notes, undo steps, and troubleshooting.
+
+### Claude Code in Visual Studio Code
+
+The official Claude Code extension embeds Claude Code and reads the same user
+settings as the CLI. Install Headroom's proxy dependencies, then run the wrapper
+from the project you plan to open in VS Code:
+
+```bash
+pip install "headroom-ai[proxy]"
+headroom wrap vscode-claude
+```
+
+On the first run, reload the VS Code window. Keep the wrapper terminal running
+while you use the Claude Code panel; inspect the dashboard or proxy log printed
+at startup to see requests and savings.
+Headroom preserves your Anthropic authentication and selected model.
+
+Press `Ctrl+C` to stop the proxy. Restart the same command before using Claude
+Code again, or completely restore the settings that existed before setup:
+
+```bash
+headroom unwrap vscode-claude
+```
+
+See the
+[VS Code Claude Code guide](https://headroom-docs.vercel.app/docs/vscode-claude-code)
+for verification, configuration paths, custom profiles, remote development, and
+troubleshooting.
 
 ## When to use · When to skip
 
@@ -470,7 +525,7 @@ Platform support note: macOS auth reuse via Copilot CLI Keychain storage has bee
 - **Kompress-v2-base** — our HuggingFace model, trained on agentic traces.
 - **kompress_zh** — an additional Chinese plain-text compressor, routed only for Chinese-dominant prose.
 - **Image compression** — 40–90% reduction via trained ML router.
-- **CacheAligner** — stabilizes prefixes so Anthropic/OpenAI KV caches actually hit.
+- **CacheAligner** - detects and warns about volatile content that can bust provider KV cache prefixes; never rewrites prompts.
 - **Live-zone compression** — compresses only new bytes (fresh tool output, latest turn); frozen prefix stays byte-identical so provider cache is not busted. History is never dropped.
 - **CCR** — reversible compression; LLM retrieves originals on demand.
 - **Cross-agent memory** — shared store, agent provenance, auto-dedup.
@@ -516,7 +571,7 @@ monthly LLM spend.
 uv tool install --python 3.13 "headroom-ai[all]"  # CLI, isolated app env
 pip install "headroom-ai[all]"                    # Python, everything — includes the `headroom` CLI
 npm install headroom-ai                           # TypeScript SDK (library only — no `headroom` CLI)
-docker pull ghcr.io/chopratejas/headroom:latest
+docker pull ghcr.io/headroomlabs-ai/headroom:latest
 ```
 
 Granular extras: `[proxy]`, `[mcp]`, `[ml]` (Kompress + kompress_zh), `[code]`,
@@ -703,12 +758,10 @@ Headroom runs **locally**, covers **every** content type, works with every major
 |                                                                              | Scope                                          | Deploy                             | Local | Reversible |
 |------------------------------------------------------------------------------|------------------------------------------------|------------------------------------|:-----:|:----------:|
 | **Headroom**                                                                 | All context — tools, RAG, logs, files, history | Proxy · library · middleware · MCP | Yes   | Yes        |
-| [RTK](https://github.com/rtk-ai/rtk)                                        | CLI command outputs                            | CLI wrapper                        | Yes   | No         |
-| [lean-ctx](https://github.com/yvgude/lean-ctx)                               | Tool output, files, shell, history             | Proxy · library · middleware · MCP · CLI | Yes | Yes    |
 | [Compresr](https://compresr.ai), [Token Co.](https://thetokencompany.ai)    | Text sent to their API                         | Hosted API call                    | No    | No         |
 | OpenAI Compaction                                                            | Conversation history                           | Provider-native                    | No    | No         |
 
-> **Attribution.** Headroom ships with the excellent [RTK](https://github.com/rtk-ai/rtk) binary for shell-output rewriting — `git show --short`, scoped `ls`, summarized installers. Huge thanks to the RTK team; their tool is a first-class part of our stack, and Headroom compresses everything downstream of it. Headroom can also use [lean-ctx](https://github.com/yvgude/lean-ctx) as the selected CLI context tool; set `HEADROOM_CONTEXT_TOOL=lean-ctx` before running `headroom wrap ...`.
+> **Stack & integrations.** Headroom is the **proxy** — that's what we build and offer, and it compresses everything flowing through it no matter what sits upstream. Our recommended companion is **[Serena](https://github.com/oraios/serena)** (installed by default when you wrap an agent) for semantic code navigation — plus **Ponytail** if you want leaner model output. Everything else is your call: you're free to attach your own tooling — code-memory MCP, Graphify, Caveman, or any MCP server — and Headroom compresses downstream of all of it.
 
 ## Contributing
 

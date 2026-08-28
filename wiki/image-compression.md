@@ -61,13 +61,15 @@ client = HeadroomClient(provider="openai")
 
 response = client.chat.completions.create(
     model="gpt-4o",
-    messages=[{
-        "role": "user",
-        "content": [
-            {"type": "text", "text": "What animal is this?"},
-            {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,..."}}
-        ]
-    }]
+    messages=[
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "What animal is this?"},
+                {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,..."}},
+            ],
+        }
+    ],
 )
 # Image automatically compressed with detail="low" (87% savings)
 ```
@@ -106,8 +108,8 @@ from headroom.image import ImageCompressor
 
 compressor = ImageCompressor(
     model_id="chopratejas/technique-router",  # HuggingFace model
-    use_siglip=True,   # Enable image analysis
-    device="cuda",     # Use GPU if available
+    use_siglip=True,  # Enable image analysis
+    device="cuda",  # Use GPU if available
 )
 ```
 
@@ -229,9 +231,11 @@ The HuggingFace model downloads on first use:
 ```python
 # Force a specific cache directory
 import os
+
 os.environ["HF_HOME"] = "/path/to/cache"
 
 from headroom.image import ImageCompressor
+
 compressor = ImageCompressor()
 ```
 
@@ -290,10 +294,10 @@ class ImageCompressor:
 ```python
 @dataclass
 class CompressionResult:
-    technique: Technique      # full_low, preserve, crop, transcode
-    original_tokens: int      # Estimated tokens before
-    compressed_tokens: int    # Estimated tokens after
-    confidence: float         # Router confidence (0-1)
+    technique: Technique  # full_low, preserve, crop, transcode
+    original_tokens: int  # Estimated tokens before
+    compressed_tokens: int  # Estimated tokens after
+    confidence: float  # Router confidence (0-1)
 
     @property
     def savings_percent(self) -> float:
@@ -304,10 +308,10 @@ class CompressionResult:
 
 ```python
 class Technique(Enum):
-    FULL_LOW = "full_low"     # 87% savings
-    PRESERVE = "preserve"     # 0% savings
-    CROP = "crop"             # 50-90% savings
-    TRANSCODE = "transcode"   # 99% savings
+    FULL_LOW = "full_low"  # 87% savings
+    PRESERVE = "preserve"  # 0% savings
+    CROP = "crop"  # 50-90% savings
+    TRANSCODE = "transcode"  # 99% savings
 ```
 
 ## See Also

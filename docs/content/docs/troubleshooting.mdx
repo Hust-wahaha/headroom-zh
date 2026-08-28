@@ -202,7 +202,7 @@ ENABLE_TOOL_SEARCH=true ANTHROPIC_BASE_URL=http://localhost:8787 claude
 
 When deferral is off, the proxy log also prints a one-time hint naming the fix.
 
-See [issue #746](https://github.com/chopratejas/headroom/issues/746) for the full analysis.
+See [issue #746](https://github.com/headroomlabs-ai/headroom/issues/746) for the full analysis.
 
 <Callout type="warning" title="Claude Code VSCode extension caveat">
   Anthropic's VSCode extension webview does not currently render the deferred-tool
@@ -222,6 +222,18 @@ See [issue #746](https://github.com/chopratejas/headroom/issues/746) for the ful
 **Fix**: Use Headroom for normal proxied API sessions, and launch Claude directly (without `ANTHROPIC_BASE_URL`) when you need Claude Remote Control.
 
 `ENABLE_TOOL_SEARCH` is unaffected and can stay enabled for context-window savings while routing through Headroom.
+
+## Server-managed settings unavailable through custom ANTHROPIC_BASE_URL
+
+**Symptom**: Settings pushed from **Admin Settings > Claude Code > Managed settings** in the claude.ai console (server-managed settings) don't apply to sessions running through Headroom, even though they apply fine without the proxy.
+
+**Cause**: This is a Claude-side gate, not a Headroom limitation. Per Anthropic's docs, server-managed settings require a direct connection to `api.anthropic.com`; if `ANTHROPIC_BASE_URL` is set to any non-default host — which is exactly what wrapping via Headroom does — Claude Code skips the settings fetch entirely for that session. The request never reaches Headroom, so there is no endpoint for Headroom to implement or proxy.
+
+This is separate from the OS-level `managed-settings.json` file (macOS `/Library/Application Support/ClaudeCode/`, Linux `/etc/claude-code/`, Windows `C:\Program Files\ClaudeCode\`): that file is read straight from local disk at startup and is unaffected by `ANTHROPIC_BASE_URL` or Headroom. If that file isn't taking effect, the cause is unrelated to proxying (path, permissions, or JSON syntax) — check `claude --debug-file <path>` and search the log for `Remote settings`.
+
+**Fix**: None available on the Headroom side — this is an intentional Anthropic security boundary (a proxy in the path could otherwise forge org policy). If your org relies on server-managed settings, deploy the same policy as [endpoint-managed settings](https://code.claude.com/docs/en/settings#settings-files) (MDM profile, Windows registry, or a local `managed-settings.json`) instead, since those are read locally and unaffected by proxying.
+
+See [Server-managed settings platform availability](https://code.claude.com/docs/en/server-managed-settings#platform-availability) and [issue #3074](https://github.com/headroomlabs-ai/headroom/issues/3074).
 
 ## Compression Too Aggressive
 
@@ -396,6 +408,35 @@ Threat: Trojan:Win64/Lazy!MTB
 
 4. **Report the false positive to Microsoft** so a corrected signature ships for everyone: submit `sg.exe` at the [Microsoft Security Intelligence sample submission](https://www.microsoft.com/en-us/wdsi/filesubmission) page.
 
+### uv build errors: "src does not appear to be a Python project"
+
+**Symptom**: `uv tool install "headroom-ai[all]"` fails to build a dependency (commonly `litellm` or `cryptography`) with:
+
+```text
+error: Failed to build: <package>==<version>
+Caused by: `src does not appear to be a Python project, as neither `pyproject.toml`
+nor `setup.py` are present`
+```
+
+or a wheel install fails with `Unknown wheel data type: .DS_Store`.
+
+**Cause**: Corrupted or stale entries in uv's local build/wheel cache, not a Headroom dependency-pin problem. Headroom does not pin exact versions of `litellm` or `cryptography` that would trigger this.
+
+**Fix**: clear uv's cache and reinstall:
+
+```bash
+uv cache clean
+uv tool install "headroom-ai[all]"
+```
+
+To clear the cache for just one package instead:
+
+```bash
+uv cache clean litellm
+```
+
+If the failure is specifically for `ast-grep-cli==0.44.1`, that release is already excluded by Headroom's dependency pin (`ast-grep-cli>=0.30.0,!=0.44.1`) due to a compromised supply-chain build ([ast-grep/ast-grep#2799](https://github.com/ast-grep/ast-grep/issues/2799)) — `uv cache clean` and a plain reinstall should pick up a safe version automatically.
+
 ## Provider-Specific Issues
 
 ### OpenAI: Invalid API key
@@ -529,4 +570,4 @@ print(f"Tokens: {result.tokens_before} -> {result.tokens_after}")
 1. Enable debug logging and check the output
 2. Use `simulate()` to see what transforms would apply
 3. Run `validate_setup()` for configuration issues
-4. File an issue at [github.com/chopratejas/headroom](https://github.com/chopratejas/headroom/issues) with your Headroom version, Python version, provider, debug log output, and minimal reproduction code
+4. File an issue at [github.com/headroomlabs-ai/headroom](https://github.com/headroomlabs-ai/headroom/issues) with your Headroom version, Python version, provider, debug log output, and minimal reproduction code

@@ -9,6 +9,8 @@ Forwarding original then mismatches the cached prefix and busts the prompt cache
 so the cache still hits — in BOTH proxy modes.
 """
 
+import copy
+
 from headroom.cache.prefix_tracker import overlay_cached_prefix
 
 
@@ -70,6 +72,77 @@ def test_shorter_current_or_optimized_returns_unchanged():
     assert overlay_cached_prefix([M("user", "x")], [M("user", "x")], PREV_ORIG, PREV_FWD) == [
         M("user", "x")
     ]
+
+
+def test_overlay_requires_positional_alignment_with_originals():
+    optimized = [M("user", "x")]
+    current = [M("user", "x"), M("assistant", "ok")]
+    assert overlay_cached_prefix(optimized, current, PREV_ORIG, PREV_FWD) == optimized
+
+    optimized = [M("user", "x"), M("assistant", "ok"), M("user", "tail")]
+    current = [M("user", "x"), M("assistant", "ok")]
+    previous = [M("user", "x"), M("assistant", "ok")]
+    forwarded = [M("user", "compressed"), M("assistant", "ok")]
+    assert overlay_cached_prefix(optimized, current, previous, forwarded) == optimized
+
+
+def test_overlay_never_inflates_forwarded_payload():
+    optimized = [M("user", "small"), M("assistant", "ok"), M("user", "tail")]
+    inflated_forwarded = [M("user", "x" * 1000), M("assistant", "ok")]
+    previous = [M("user", "small"), M("assistant", "ok")]
+    current = previous + [M("user", "tail")]
+    assert overlay_cached_prefix(optimized, current, previous, inflated_forwarded) == optimized
+
+
+def test_overlay_returns_optimized_when_json_sizing_fails(monkeypatch):
+    optimized = [M("user", "stable"), M("user", "tail")]
+    current = [M("user", "stable"), M("user", "tail")]
+    previous = [M("user", "stable")]
+    forwarded = [M("user", "compressed")]
+
+    monkeypatch.setattr(
+        "headroom.cache.prefix_tracker.json.dumps",
+        lambda *args, **kwargs: (_ for _ in ()).throw(TypeError("cannot size")),
+    )
+
+    assert overlay_cached_prefix(optimized, current, previous, forwarded) == optimized
+
+
+def test_overlay_never_inflates_cache_control_only_replay():
+    previous = [M("user", "stable"), M("assistant", "ok")]
+    current = [
+        M("user", "stable"),
+        {**M("assistant", "ok"), "cache_control": {"type": "ephemeral"}},
+    ]
+    optimized = copy.deepcopy(current)
+    inflated_forwarded = [M("user", "x" * 1000), M("assistant", "ok")]
+    assert overlay_cached_prefix(optimized, current, previous, inflated_forwarded) == optimized
+
+
+def test_block_append_overlay_never_inflates_forwarded_payload():
+    previous = [
+        {
+            "role": "user",
+            "content": [{"type": "text", "text": "stable"}],
+        }
+    ]
+    current = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "stable"},
+                {"type": "text", "text": "tail"},
+            ],
+        }
+    ]
+    optimized = copy.deepcopy(current)
+    forwarded = [
+        {
+            "role": "user",
+            "content": [{"type": "text", "text": "x" * 1000}],
+        }
+    ]
+    assert overlay_cached_prefix(optimized, current, previous, forwarded) == optimized
 
 
 def test_cache_hit_property_prefix_matches_last_forward():

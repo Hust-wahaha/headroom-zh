@@ -167,7 +167,7 @@ def _get_parser(language: str) -> Any:
         except Exception as e:
             raise ValueError(
                 f"Language '{language}' is not supported by tree-sitter. "
-                f"Supported: python, javascript, typescript, go, rust, java, c, cpp, csharp. "
+                f"Supported: python, javascript, typescript, go, rust, java, c, cpp, csharp, php. "
                 f"Error: {e}"
             ) from e
 
@@ -223,6 +223,7 @@ class CodeLanguage(Enum):
     CPP = "cpp"
     PERL = "perl"
     CSHARP = "csharp"
+    PHP = "php"
     UNKNOWN = "unknown"
 
 
@@ -247,6 +248,10 @@ _LANGUAGE_ALIASES: dict[str, CodeLanguage] = {
     "cc": CodeLanguage.CPP,
     "hpp": CodeLanguage.CPP,
     "pl": CodeLanguage.PERL,
+    "phtml": CodeLanguage.PHP,
+    "php5": CodeLanguage.PHP,
+    "php7": CodeLanguage.PHP,
+    "php8": CodeLanguage.PHP,
 }
 
 
@@ -461,6 +466,23 @@ _LANG_CONFIGS: dict[CodeLanguage, LangConfig] = {
         container_node_types=frozenset({"namespace_declaration"}),
         opaque_node_types=frozenset({"preproc_if"}),
     ),
+    CodeLanguage.PHP: LangConfig(
+        import_nodes=frozenset({"namespace_use_declaration"}),
+        function_nodes=frozenset({"function_definition", "method_declaration"}),
+        class_nodes=frozenset({"class_declaration", "interface_declaration", "trait_declaration"}),
+        type_nodes=frozenset({"enum_declaration"}),
+        body_node_types=frozenset({"compound_statement"}),
+        decorator_node=None,
+        comment_prefix="//",
+        uses_colon_after_signature=False,
+        # Statement-scoped `namespace App;` hoists to the top of the output
+        # (before the use declarations); the rarer block-scoped
+        # `namespace A { ... }` form takes the same path and is preserved
+        # verbatim — valid output, no compression inside the block.
+        package_node="namespace_definition",
+        detection_hints=("<?php", "function ", "namespace ", "->", "$this"),
+        class_body_node_types=frozenset({"declaration_list"}),
+    ),
 }
 
 
@@ -666,6 +688,16 @@ _LANGUAGE_PREFILTER: dict[CodeLanguage, list[re.Pattern[str]]] = {
         ),
         re.compile(r"\bget;\s*set;", re.MULTILINE),
     ],
+    CodeLanguage.PHP: [
+        re.compile(r"<\?php\b"),
+        re.compile(r"^\s*namespace\s+[\w\\]+\s*;", re.MULTILINE),
+        re.compile(r"^\s*use\s+[\w\\]+(\s+as\s+\w+)?\s*;", re.MULTILINE),
+        re.compile(
+            r"^\s*(public|private|protected|static|abstract|final)?\s*function\s+\w+\s*\(",
+            re.MULTILINE,
+        ),
+        re.compile(r"\$this->|->\w+\s*\(", re.MULTILINE),
+    ],
 }
 
 
@@ -719,6 +751,13 @@ def detect_language(code: str) -> tuple[CodeLanguage, float]:
     if CodeLanguage.CPP in candidates and CodeLanguage.C in candidates:
         if candidates[CodeLanguage.CPP] >= 2:
             candidates[CodeLanguage.C] = 0
+
+    # Disambiguation: PHP's sigil variables ($x) overlap Perl's prefilter.
+    # An explicit `<?php` open tag is unambiguous — no Perl source contains
+    # it, so drop Perl from the candidates before the Perl-dominance guard
+    # below returns UNKNOWN for what is actually PHP.
+    if CodeLanguage.PHP in candidates and "<?php" in sample:
+        candidates.pop(CodeLanguage.PERL, None)
 
     perl_score = candidates.get(CodeLanguage.PERL, 0)
     if perl_score > 0:

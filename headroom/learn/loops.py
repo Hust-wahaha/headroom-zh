@@ -7,13 +7,12 @@ being a one-time cost. Two loop shapes matter:
 1. **Error loops** — the same call fails, the agent retries, it fails again
    (e.g. a wrong path read N times). Every repetition is pure waste.
 
-2. **RTK re-fetch loops** — RTK (Realtime Token Kompress) rewrites a shell
-   command to truncate its output (``grep foo`` → ``grep foo | head -50``).
-   When the truncation drops what the agent needed, the agent re-runs a
-   *variant* of the same command to fetch more (``head -100``, a new offset,
-   a narrower pattern). Each call succeeds (``is_error=False``) but returns
-   insufficient output, so the loop is invisible to failure-only analysis.
-   See ``docs/rtk-architecture.md`` for why RTK truncates commands.
+2. **Re-fetch loops** — a shell command's output is limited or truncated
+   (``grep foo | head -50``). When the limit drops what the agent needed, the
+   agent re-runs a *variant* of the same command to fetch more (``head -100``,
+   a new offset, a narrower pattern). Each call succeeds (``is_error=False``)
+   but returns insufficient output, so the loop is invisible to failure-only
+   analysis.
 
 This module collapses such variants to a canonical signature, counts the
 repetitions, and measures the wasted tokens so the analyzer can (a) surface
@@ -41,7 +40,7 @@ DEFAULT_MIN_OCCURRENCES = 3
 # estimate. The analyzer's digest builder uses the same 4:1 approximation.
 _BYTES_PER_TOKEN = 4
 
-# Pagination / output-limiting fragments that vary between RTK re-fetch
+# Pagination / output-limiting fragments that vary between re-fetch
 # attempts but do NOT change which command is being run. Stripping these is
 # what collapses ``grep foo | head -50`` and ``grep foo | head -100`` to one
 # signature. Order-independent: applied as a global substitution.
@@ -83,14 +82,14 @@ class LoopPattern:
 
     @property
     def kind(self) -> str:
-        return "error-loop" if self.is_error_loop else "rtk-refetch-loop"
+        return "error-loop" if self.is_error_loop else "refetch-loop"
 
 
 def _canonical_signature(tc: ToolCall) -> str:
     """Collapse a tool call to a signature stable across re-fetch variants.
 
     For shell commands this strips pagination/limit fragments and bare
-    integers so RTK truncation variants of the same command map together.
+    integers so output-limit variants of the same command map together.
     For other tools the input summary is normalized on whitespace only.
     """
     raw = tc.input_summary.strip()
@@ -140,7 +139,7 @@ def detect_loops(
             wasted = sum(_tokens(c) for c in calls)
         else:
             # Re-fetch loop: the first call is legitimate; the N-1 follow-ups
-            # are the redundant re-fetches RTK truncation provoked.
+            # are the redundant re-fetches the output truncation provoked.
             per_call = sorted((_tokens(c) for c in calls), reverse=True)
             wasted = sum(per_call[1:])
         loops.append(
